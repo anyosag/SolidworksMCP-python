@@ -91,7 +91,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "automation_stop_macro_recording": _PLANNED,
     "batch_process_files": _PLANNED,
     "create_template": _PLANNED,
-    "execute_workflow": _PLANNED,
+    "execute_workflow": _UNCHECKED,
     "generate_vba_code": _UNCHECKED,
     "manage_design_table": _PLANNED,
     "optimize_performance": _PLANNED,

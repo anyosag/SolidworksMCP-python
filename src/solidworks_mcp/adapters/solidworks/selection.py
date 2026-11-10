@@ -43,7 +43,12 @@ class SolidWorksSelectionMixin:
     ) -> AdapterResult[list[dict[str, Any]]]:
         sw_app = getattr(self, "swApp", None)
         active_model = getattr(sw_app, "ActiveDoc", None) if sw_app else None
-        if active_model is not None:
+        # Keep the flagged currentModel when ActiveDoc is the same document;
+        # swapping in the fresh, unflagged wrapper made the next tool flag
+        # it again (906 GetIDsOfNames round trips for a part).
+        if active_model is not None and not _sw_type_info.same_com_object(
+            active_model, self.currentModel
+        ):
             self.currentModel = active_model
         if not self.currentModel:
             return AdapterResult(
@@ -233,7 +238,12 @@ class SolidWorksSelectionMixin:
         """
         sw_app = getattr(self, "swApp", None)
         active_model = getattr(sw_app, "ActiveDoc", None) if sw_app else None
-        if active_model is not None:
+        # Keep the flagged currentModel when ActiveDoc is the same document;
+        # swapping in the fresh, unflagged wrapper made the next tool flag
+        # it again (906 GetIDsOfNames round trips for a part).
+        if active_model is not None and not _sw_type_info.same_com_object(
+            active_model, self.currentModel
+        ):
             self.currentModel = active_model
         if not self.currentModel:
             return AdapterResult(

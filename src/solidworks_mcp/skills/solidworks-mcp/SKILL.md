@@ -15,9 +15,13 @@ checking the result, and what doesn't work yet.
 - Call `get_model_info` first. It says which document is active (it follows
   a switch the user made in the SolidWorks window). `list_open_documents`
   lists every open document; `activate_document` switches.
-- Call tools one at a time and wait for each result. The server pauses
-  after every SolidWorks call on purpose: driving SolidWorks back-to-back
-  crashes it.
+- Call tools one at a time and wait for each result. The server keeps a
+  short pause between SolidWorks calls on purpose: driving SolidWorks
+  back-to-back crashes it.
+- Each call is a round trip, and round trips are most of a build's time.
+  Run a known sequence in one call with `execute_workflow` (below).
+- If your client loads tool schemas on demand (a tool search), load every
+  tool the job needs in one search, not one per tool.
 
 ## The build order
 
@@ -44,6 +48,19 @@ A solid feature always comes from a closed sketch:
 Repeat 2-5 for each feature. For holes in a ring or a row, draw every
 circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
 and cut once: `pattern_circular` and `mirror_feature` can't repeat a cut yet.
+
+Give `create_part` its `material` when you know the exact name; it saves a
+`set_material` call.
+
+## Several steps in one call
+
+`execute_workflow` runs a list of steps, each `{"tool": ..., "arguments":
+{...}}`, in order, exactly as separate calls would; for a tool that takes
+`input_data`, give its fields directly. A sketch and its feature (steps 2-5)
+fit in one call. With the default `error_handling: "stop"` it stops at the
+first failed step; the error's `data.steps` shows what ran. Read every
+step's result, including each feature's `measured_change`, before the next
+call. Up to 25 steps per call.
 
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
@@ -98,12 +115,19 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
   description opens with "Beta: ..." or "Experimental: ...", and a successful
   result carries the same sentence as `warning`. Read it, and check the
   result (`verify_model`, `list_features`) before building on it.
-- 40 tools are planned: registered, but nothing implements them. Their
-  description says "Not available yet" and every call returns
-  `not_supported`. Use the tool their description names instead.
+- 39 tools are planned: nothing implements them. The server leaves them
+  out of its tool list unless it runs with
+  `SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=true`; then their description says "Not
+  available yet" and every call returns `not_supported`. Use the tool their
+  description names instead.
 - Some tools ignore some of their inputs, and a few behave in ways you must
   work around. The list, with the workaround for each:
   [references/errors-and-limits.md](references/errors-and-limits.md).
+
+## Long sessions
+
+SolidWorks slows down as documents pile up. Close a part with `close_model`
+once it is saved and you are done with it.
 
 ## When to write VBA instead
 

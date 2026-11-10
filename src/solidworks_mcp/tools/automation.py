@@ -7,19 +7,30 @@ for configuration-driven variants, execute_workflow for scripted pipelines,
 create_template for reusable standards, and optimize_performance for tuning.
 """
 
-from typing import Any
+import json
+import time
+from typing import Any, Literal
 
 from fastmcp import FastMCP
-from pydantic import Field
+from fastmcp.exceptions import ValidationError as FastMCPValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from ..adapters.base import SolidWorksAdapter
+from .error_classifier import INVALID_INPUT, Classification, ErrorClassifier
 from .input_compat import CompatInput
 from .tool_boundary import (
+    InvalidInputError,
+    ToolOperationError,
     UnsupportedOperationError,
+    describe_validation_error,
+    error_payload,
+    normalize_input,
     require_capability,
     require_success,
     with_tool_boundary,
 )
+
+_STEP_CLASSIFIER = ErrorClassifier()
 
 # Input schemas using Python 3.14 built-in types
 
@@ -213,24 +224,64 @@ class DesignTableInput(CompatInput):
             self.auto_create_configurations = True
 
 
+#: Most steps one ``execute_workflow`` call runs, so one call can't hold the
+#: server (and SolidWorks) for minutes.
+MAX_WORKFLOW_STEPS = 25
+
+
+class WorkflowStep(BaseModel):
+    """One tool call inside ``execute_workflow``.
+
+    Attributes:
+        arguments (dict[str, Any]): The tool's arguments.
+        tool (str): The tool name.
+    """
+
+    tool: str = Field(description="Tool to call, e.g. `create_sketch`")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "The tool's arguments. For a tool that takes `input_data`, its "
+            "fields may be given directly; they are wrapped in `input_data`."
+        ),
+    )
+
+
 class WorkflowInput(CompatInput):
     """Input schema for workflow automation.
 
     Attributes:
         error_handling (str): The error handling value.
         parallel_execution (bool): The parallel execution value.
-        steps (list[dict[str, Any]]): The steps value.
+        steps (list[WorkflowStep]): The steps value.
         workflow_name (str): The workflow name value.
     """
 
-    workflow_name: str = Field(description="Name of the workflow")
-    steps: list[dict[str, Any]] = Field(description="List of workflow steps")
+    workflow_name: str = Field(
+        default="workflow", description="Name for the run, echoed in the reply"
+    )
+    steps: list[WorkflowStep] = Field(
+        min_length=1,
+        max_length=MAX_WORKFLOW_STEPS,
+        description=f"The tool calls to make, in order (at most {MAX_WORKFLOW_STEPS})",
+    )
     parallel_execution: bool = Field(
-        default=False, description="Execute compatible steps in parallel"
+        default=False,
+        description="Must stay false: SolidWorks runs one call at a time",
     )
-    error_handling: str = Field(
-        default="stop", description="Error handling strategy (stop, skip, retry)"
+    error_handling: Literal["stop", "continue"] = Field(
+        default="stop",
+        description=(
+            "`stop` (default) ends the run at the first failed step; "
+            "`continue` runs every step and reports each one's outcome"
+        ),
     )
+
+    @field_validator("error_handling", mode="before")
+    @classmethod
+    def _skip_means_continue(cls, value: Any) -> Any:
+        """Accept the old spelling ``skip`` for ``continue``."""
+        return "continue" if value == "skip" else value
 
 
 class TemplateInput(CompatInput):
@@ -267,6 +318,90 @@ class TemplateInput(CompatInput):
     metadata: dict[str, Any] = Field(
         default={}, description="Template metadata and properties"
     )
+
+
+_STEP_INPUT_HINT = (
+    "Fix the step's arguments to match that tool's input schema, then run the "
+    "workflow again from that step."
+)
+
+
+def _step_arguments(tool: Any, arguments: dict[str, Any]) -> dict[str, Any]:
+    """The arguments to call ``tool`` with, wrapping bare fields in ``input_data``.
+
+    Most tools take a single ``input_data`` object. A step may give its fields
+    directly (``{"depth": 10}``); they are wrapped so the call matches the
+    tool's schema. Arguments that already name ``input_data``, or a tool with
+    other parameters, are passed as they are.
+    """
+    properties = (getattr(tool, "parameters", None) or {}).get("properties") or {}
+    if set(properties) == {"input_data"} and "input_data" not in arguments:
+        return {"input_data": arguments}
+    return arguments
+
+
+def _tool_result_payload(result: Any) -> dict[str, Any]:
+    """A tool call's reply as the dict the tool returned."""
+    structured = getattr(result, "structured_content", None)
+    if isinstance(structured, dict):
+        return structured
+    text = "".join(
+        str(getattr(block, "text", "")) for block in getattr(result, "content", ())
+    )
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return {"status": "success", "result": text}
+    return (
+        parsed if isinstance(parsed, dict) else {"status": "success", "result": parsed}
+    )
+
+
+async def _run_workflow_step(
+    mcp: Any, number: int, step: WorkflowStep, tool: Any
+) -> dict[str, Any]:
+    """Run one step through FastMCP's own ``call_tool``, as a separate call would.
+
+    A step's tool reports its own failures as error payloads, inside its own
+    error boundary. What can still raise is FastMCP rejecting the arguments
+    before the tool runs; that becomes this step's error payload, so the
+    workflow can say which step it was.
+
+    Returns:
+        dict[str, Any]: ``step``, ``tool``, ``status`` and the tool's ``result``.
+    """
+    started = time.perf_counter()
+    try:
+        reply = await mcp.call_tool(step.tool, _step_arguments(tool, step.arguments))
+    except (ValidationError, FastMCPValidationError) as exc:
+        # FastMCP raises its own ValidationError for bad arguments, with
+        # pydantic's error as the cause.
+        cause = exc if isinstance(exc, ValidationError) else exc.__cause__
+        detail = (
+            describe_validation_error(cause)
+            if isinstance(cause, ValidationError)
+            else str(exc)
+        )
+        result = error_payload(
+            f"Invalid input: {detail}",
+            Classification(INVALID_INPUT, _STEP_INPUT_HINT),
+            time.perf_counter() - started,
+        )
+    except Exception as exc:
+        message = f"{step.tool} failed: {exc}"
+        result = error_payload(
+            message,
+            _STEP_CLASSIFIER.classify(message, exc),
+            time.perf_counter() - started,
+        )
+    else:
+        result = _tool_result_payload(reply)
+    return {
+        "step": number,
+        "tool": step.tool,
+        "status": result.get("status", "success"),
+        "result": result,
+    }
 
 
 async def register_automation_tools(
@@ -490,35 +625,95 @@ End Sub
 
     @mcp.tool()
     async def execute_workflow(input_data: WorkflowInput) -> dict[str, Any]:
-        """Run a named sequence of tool steps, in order or in parallel, with an error policy.
+        """Run several tool calls in one request, in order, and return every step's result.
 
-        Not available yet: no adapter implements it, so every call returns an error with
-        `error_type: "not_supported"`. It is planned for a future release. Call the
-        tools one at a time instead. Changes: once available, whatever the steps change.
-        Returns: once available, each step's result under `data`.
+        Use it to do a common job in one call instead of one per step, e.g.
+        `create_sketch`, `add_rectangle`, `exit_sketch` and `create_extrusion`. Each
+        step is `{tool, arguments}`; for a tool that takes `input_data`, give its
+        fields directly. Steps run one at a time exactly as separate calls would, with
+        the same checks and the same pauses SolidWorks needs. Every tool name is checked
+        before anything runs. With `error_handling: "stop"` (the default) the run ends
+        at the first failed step, and the error's `data.steps` shows what ran. Check
+        each feature's `measured_change` before building on it. Changes: whatever its
+        steps change. Returns: `steps` (each `step`, `tool`, `status` and the tool's
+        own `result`), `completed`, and `failed` (step numbers).
 
         Args:
-            input_data: The workflow. `workflow_name` and `steps` (a list of step
-                mappings) are required; `parallel_execution` and `error_handling`
-                have defaults.
+            input_data: The run. `steps` (1 to 25 `{tool, arguments}`) is required;
+                `workflow_name` and `error_handling` (`stop` or `continue`) have
+                defaults.
 
         Returns:
-            dict[str, Any]: The step results, or a `not_supported` error.
+            dict[str, Any]: Every step's result.
         """
-        require_capability(
-            adapter,
-            "execute_workflow",
-            "Active adapter does not support execute_workflow; "
-            f"workflow '{input_data.workflow_name}' was not run.",
-        )
-        result = await adapter.execute_workflow(input_data.model_dump())
-        require_success(result, "Workflow execution failed")
-        return {
+        input_data = normalize_input(input_data, WorkflowInput)
+        if input_data.parallel_execution:
+            raise InvalidInputError(
+                "parallel_execution: steps run one at a time; SolidWorks takes one "
+                "call at a time"
+            )
+        tools_by_step: list[Any] = []
+        problems: list[str] = []
+        for number, step in enumerate(input_data.steps, start=1):
+            if step.tool == "execute_workflow":
+                problems.append(f"steps[{number}]: execute_workflow can't be a step")
+                tools_by_step.append(None)
+                continue
+            tool = await mcp.get_tool(step.tool)
+            if tool is None:
+                problems.append(f"steps[{number}]: no tool named `{step.tool}`")
+            tools_by_step.append(tool)
+        if problems:
+            raise InvalidInputError("; ".join(problems) + ". Nothing was run.")
+
+        started = time.perf_counter()
+        results: list[dict[str, Any]] = []
+        failed: list[int] = []
+        for number, (step, tool) in enumerate(
+            zip(input_data.steps, tools_by_step, strict=True), start=1
+        ):
+            record = await _run_workflow_step(mcp, number, step, tool)
+            results.append(record)
+            if record["status"] != "error":
+                continue
+            failed.append(number)
+            if input_data.error_handling == "stop":
+                step_result = record["result"]
+                step_type = step_result.get("error_type")
+                raise ToolOperationError(
+                    f"Step {number} ({step.tool}) failed: "
+                    f"{step_result.get('message', 'no message')}",
+                    time.perf_counter() - started,
+                    {
+                        "workflow_name": input_data.workflow_name,
+                        "completed": number - 1,
+                        "failed_step": number,
+                        "steps": results,
+                    },
+                    # Report the failed step's own error_type and hint.
+                    Classification(step_type, str(step_result.get("hint") or ""))
+                    if step_type
+                    else None,
+                )
+
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Workflow '{input_data.workflow_name}' completed",
-            "data": result.data,
-            "execution_time": result.execution_time,
+            "message": (
+                f"Ran {len(results)} steps of '{input_data.workflow_name}'"
+                + (f"; {len(failed)} failed" if failed else "")
+            ),
+            "workflow_name": input_data.workflow_name,
+            "completed": len(results) - len(failed),
+            "failed": failed,
+            "steps": results,
+            "execution_time": time.perf_counter() - started,
         }
+        if failed:
+            reply["warning"] = (
+                f"{len(failed)} of {len(results)} steps failed (steps {failed}); "
+                "read each one's result"
+            )
+        return reply
 
     @mcp.tool()
     async def create_template(input_data: TemplateInput) -> dict[str, Any]:

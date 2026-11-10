@@ -608,35 +608,72 @@ def _resolve_solidworks_year(requested_year: int | None, config: Any) -> int | N
     return _extract_year(getattr(config, "solidworks_path", None))
 
 
+#: The last index read, by file: ``(path, (mtime_ns, size), index)``. The SW
+#: 2026 index is 2.8 MB of JSON, and every lookup used to parse it again.
+_loaded_index: tuple[Path, tuple[int, int], dict[str, Any]] | None = None
+
+
 def _load_index_file(index_file: Path) -> dict[str, Any] | None:
-    """Read a saved index.
+    """Read a saved index, reusing the last one read while its file is unchanged.
 
     Args:
         index_file (Path): The JSON file.
 
     Returns:
         dict[str, Any] | None: The index, or None when the file is missing
-        or isn't a JSON object.
+        or isn't a JSON object. Callers must not modify it.
     """
+    global _loaded_index
+    try:
+        stat = index_file.stat()
+    except OSError:
+        return None
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    if (
+        _loaded_index is not None
+        and _loaded_index[0] == index_file
+        and _loaded_index[1] == stamp
+    ):
+        return _loaded_index[2]
     try:
         with index_file.open("r", encoding="utf-8") as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    _loaded_index = (index_file, stamp, data)
+    return data
 
 
-def _find_index_file(year: int) -> Path | None:
+def _config_index_dir(config: Any) -> Path | None:
+    """The index folder in the server's cache folder, when the config has one.
+
+    The relative ``_INDEX_DIRS`` resolve against the process's working
+    directory, which an MCP client sets to wherever its session started, so
+    the index was rebuilt (and a ``.generated`` folder created) in every new
+    folder.
+    """
+    cache_dir = getattr(config, "cache_dir", None)
+    if isinstance(cache_dir, (str, Path)) and str(cache_dir):
+        return Path(cache_dir) / "docs-index"
+    return None
+
+
+def _find_index_file(year: int, config: Any = None) -> Path | None:
     """Find the saved index for a SolidWorks year.
 
     Args:
         year (int): The type library's year.
+        config (Any): Server configuration; its cache folder is searched first.
 
     Returns:
         Path | None: The first ``solidworks_docs_index_<year>.json`` in the
         index folders, or None.
     """
-    for directory in _INDEX_DIRS:
+    preferred = _config_index_dir(config)
+    directories = (preferred, *_INDEX_DIRS) if preferred else _INDEX_DIRS
+    for directory in directories:
         candidate = directory / f"solidworks_docs_index_{year}.json"
         if candidate.is_file():
             return candidate
@@ -718,7 +755,9 @@ def _maybe_refresh_index(
         return index, index_file
     logger.info("Docs index older than {} days; rebuilding it", max_age)
     try:
-        discovery, fresh_file = _build_index(year, strict=False)
+        discovery, fresh_file = _build_index(
+            year, strict=False, output_dir=_config_index_dir(config)
+        )
     except TypeLibraryUnavailable as exc:
         logger.warning("Docs index refresh failed, using existing index: {}", exc)
         return index, index_file
@@ -813,7 +852,7 @@ def _index_for_lookup(
     except TypeLibraryUnavailable as exc:
         return _IndexForLookup({}, None, "unavailable", str(exc), year)
     library_year = year_of(major)
-    index_file = _find_index_file(library_year)
+    index_file = _find_index_file(library_year, config)
     index = _load_index_file(index_file) if index_file else None
     if (
         index_file is not None
@@ -826,7 +865,9 @@ def _index_for_lookup(
         )
         return _IndexForLookup(index, index_file, "ready")
     try:
-        discovery, fresh_file = _build_index(library_year, strict=True)
+        discovery, fresh_file = _build_index(
+            library_year, strict=True, output_dir=_config_index_dir(config)
+        )
     except TypeLibraryUnavailable as exc:
         return _IndexForLookup({}, None, "unavailable", str(exc), year)
     return _IndexForLookup(discovery.index, fresh_file, "rebuilt")
@@ -1231,7 +1272,11 @@ async def register_docs_discovery_tools(
         """
         start_time = time.time()
         normalized = normalize_input(input_data, DiscoverDocsInput)
-        output_dir = Path(normalized.output_dir) if normalized.output_dir else None
+        output_dir = (
+            Path(normalized.output_dir)
+            if normalized.output_dir
+            else _config_index_dir(config)
+        )
         year = _resolve_solidworks_year(normalized.year, config)
 
         logger.info("Starting SolidWorks documentation discovery...")

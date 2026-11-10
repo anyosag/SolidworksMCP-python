@@ -12,6 +12,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`execute_workflow` runs several tool calls in one request** (was
+  planned). Up to 25 `{tool, arguments}` steps run in order, exactly as
+  separate calls would, and the run stops at the first failed step unless
+  `error_handling` is `continue`. A sketch and its feature fit in one call.
+  Experimental until a live test runs it.
+
+### Changed
+
+- **Faster per call** (docs/agents/mcp-speed-review.md): the settle pause is
+  now a gap kept *before* the next SolidWorks call, so an agent's own turn
+  usually covers it, and read-only calls open no gap
+  (`SOLIDWORKS_MCP_SETTLE_MODE=after` restores the fixed sleep). A document
+  already flagged is no longer flagged again on every `get_model_info`, and
+  method DISPIDs are reused between objects of the same kind
+  (`SOLIDWORKS_MCP_DISPID_MEMO=0` turns that off). `get_mass_properties`
+  rebuilds only what is out of date, and `list_features` walks the tree once
+  when that finds every feature.
+- **Faster start**: the server answers the client's handshake before
+  connecting to SolidWorks, then attaches in the background (a tool call
+  connects, and launches SolidWorks, if that hasn't happened). The optional
+  agent and database modules load only when used, and the SolidWorks method
+  table is cached instead of importing the 6.3 MB gen_py wrapper. Mock
+  startup went from 4.8 s to 3.4 s.
+- **Smaller tool list**: planned tools are hidden unless
+  `SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=true`, and listed schemas leave out
+  nullable wrappers and input aliases (calls still accept both;
+  `SOLIDWORKS_MCP_COMPACT_TOOL_SCHEMAS=false` lists them as before). 48k
+  tokens became 34k.
+- The API docs index is kept in the server's cache folder, not the folder
+  the client happened to start the server in, and is parsed once.
+
 ## [2.0.0] - 2026-11-09
 
 ### Added

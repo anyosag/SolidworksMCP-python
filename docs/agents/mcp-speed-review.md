@@ -2,7 +2,9 @@
 
 A read-and-measure review of where wall-clock time goes when an agent uses
 this server, from server start to the last tool result, with a ranked list of
-changes. Nothing here has been implemented yet.
+changes. The findings were then implemented on the same branch; see
+[What was implemented](#what-was-implemented) for what changed, the switches
+that turn each change off, and what still needs a live check.
 
 - **Date:** 2026-11-10, on `main` at v2.0.0 (`f84e60f`).
 - **Machine:** Windows 11, SOLIDWORKS 2026 SP4.1 Student installed, Python
@@ -417,6 +419,68 @@ changing; land those after it merges.
   keep-minimized change and were left alone. One note for it:
   `_zoom_to_fit` (`pywin32_adapter.py:2266-2302`) redraws twice around the
   zoom, and redraws of a minimized window may be wasted work.
+
+## What was implemented
+
+Every change below has unit tests on the mock or fake-COM path. None has run
+against live SolidWorks yet (the keep-minimized session was using it), so each
+change that touches COM has a switch to turn it off without a code change.
+
+| # | Change | Where | Switch (default) |
+| --- | --- | --- | --- |
+| 1 | `execute_workflow` runs up to 25 `{tool, arguments}` steps in order through FastMCP's own `call_tool`, stops at the first failed step (or `continue`), and refuses unknown tools before running anything. Support level: experimental. | `tools/automation.py` | — |
+| 2 | Settle gap: wait *before* an operation for what is left of the last one's gap; read-only operations open no gap; the circuit breaker paces each adapter method before its first COM call. | `adapters/pywin32_adapter.py` (`_ComPacer`, `_READ_ONLY_OPERATIONS`), `adapters/circuit_breaker.py` | `SOLIDWORKS_MCP_SETTLE_MODE=gap`; `after` restores the old sleep |
+| 3a | Keep the flagged `currentModel` when `ActiveDoc` wraps the same COM object (`sw_type_info.same_com_object`), in `_sync_current_model_from_active`, `list_features` and `get_selected_entities`. | `adapters/solidworks/io.py`, `adapters/solidworks/selection.py` | — |
+| 3b | DISPID memo: the DISPIDs the first object of an `(interface, document type)` returns are copied into later objects' method maps, after two canary `GetIDsOfNames` checks; a mismatch disables the memo for that pair. | `adapters/sw_type_info.py` | `SOLIDWORKS_MCP_DISPID_MEMO=1` |
+| 4 | `pydantic_ai` and `agents.history_db` imported where used. | `server.py` | — |
+| 5 | The method-name table is cached as JSON, keyed by the gen_py file's size and mtime. | `adapters/sw_type_info.py` | `SOLIDWORKS_MCP_TYPEINFO_CACHE=1`, `SOLIDWORKS_MCP_TYPEINFO_CACHE_DIR` |
+| 6 | No connect before stdio. A middleware attaches in the background after `notifications/initialized` (only to a running SolidWorks, never launching it), and every tool call connects first if needed. A failed connect isn't retried for 30 s. | `server.py` (`_ConnectOnDemand`, `ensure_connected`), `PyWin32Adapter.is_application_running` | — |
+| 7 | Planned tools hidden from the tool list; listed schemas compacted (nullable wrappers and input aliases left out; calls still accept both). | `server.py`, `tools/schema_compaction.py` | `SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=false`, `SOLIDWORKS_MCP_COMPACT_TOOL_SCHEMAS=true` |
+| 8 | `get_mass_properties` calls `EditRebuild3()` instead of `ForceRebuild3(False)`. | `adapters/solidworks/io.py` | — |
+| 9 | No separate change: finding 2's read rule removes the before/after reads' settle. Reusing the "after" summary by `GetUpdateStamp` was dropped, because every feature follows a sketch, which changes the stamp, so it would almost never hit. | — | — |
+| 10 | Skill: batching with `execute_workflow`, one tool search for all schemas, `create_part` with `material`, closing finished documents, planned tools now hidden. | `skills/solidworks-mcp/` | — |
+| 11 | `list_features` runs the reverse walk only when the forward walk visited fewer features than `GetFeatureCount`. | `adapters/pywin32_adapter.py` | — |
+| 12 | The docs index lives in the server's cache folder (`<data_dir>/cache/docs-index`), and the last index read is kept in memory while its file is unchanged. | `tools/docs_discovery.py` | — |
+| 13 | The router skips its complexity analysis when there is no VBA route. The connection pool was left as it is (off by default). | `adapters/intelligent_router.py` | — |
+
+Supporting changes: `ToolOperationError` takes an optional `classification`,
+so `execute_workflow` reports its failed step's own `error_type` and `hint`;
+the tests point the type-info cache and the docs index away from the user's
+folders.
+
+### Measured after the changes
+
+Same machine and methods as below; all **measured** without SolidWorks.
+
+| What | Before | After |
+| --- | --- | --- |
+| Mock startup, spawn to `initialize` reply (median of 5) | 4.83 s | 3.42 s |
+| `tools/list` reply after `initialize` | 0.19 s | 0.13 s |
+| `import solidworks_mcp.server` (+ first `FastMCP()`) | 4.35 s | 2.98 s |
+| Method-table load at connect | 1.31 s (gen_py import) | 0.002–0.013 s (cached; the first run still pays 1.26 s and writes the cache) |
+| `_FlagAsMethod` calls per `get_model_info` on an unchanged document | 906 | 0 |
+| Server Python per tool call (fake COM, pause 0) | 0.32 ms | 0.23 ms |
+| Settle waits for the plate's 21 operations, back-to-back | 6.00 s | 3.75 s |
+| The same, as 16 tool calls with a 1.0 s agent turn between them | 6.00 s | 0.51 s |
+| Tool list (o200k tokens) | 156 tools, 48.4k | 117 tools, 34.3k |
+
+The 0.51 s left is the pause each feature tool's after-read takes behind its
+own feature (two features at 0.25 s): the same gap as before, just no
+longer added after the reply. Real connects and SolidWorks's own work are
+still unmeasured.
+
+### Still to check on live SolidWorks before merging
+
+- **Pacing (2):** L3, the soak test, on a cold and a warmed SolidWorks. If it
+  crashes, set `SOLIDWORKS_MCP_SETTLE_MODE=after`.
+- **DISPID memo (3b):** L2. Watch the log for "DISPIDs for … differ between
+  objects"; if it appears, the memo turned itself off for that interface.
+- **Connect on demand (6):** start a client with SolidWorks running (the
+  background attach should connect before the first tool call) and with it
+  closed (the first tool call should launch it).
+- **Mass properties (8):** L4.
+- **`execute_workflow` (1):** a live demo of the plate in one call, then move it
+  from experimental to stable.
 
 ## Live measurements to take
 

@@ -281,6 +281,13 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         if bucket.state == CircuitState.HALF_OPEN:
             bucket.half_open_calls += 1
 
+        # Keep the settle gap ahead of any COM call the adapter method makes
+        # before its own _handle_com_operation (see PyWin32Adapter.pace_before_com).
+        # Looked up on the class so a test double's auto-attributes don't count.
+        pace = getattr(type(self.adapter), "pace_before_com", None)
+        if callable(pace):
+            pace(self.adapter)
+
         t0 = time.time()
         try:
             result = await operation()
@@ -416,6 +423,15 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             bool: True if connected, otherwise False.
         """
         return self.adapter.is_connected()
+
+    def is_application_running(self) -> bool:
+        """Forward the wrapped adapter's running check (True when it has none).
+
+        Returns:
+            bool: Whether the application is running.
+        """
+        probe = getattr(type(self.adapter), "is_application_running", None)
+        return True if not callable(probe) else bool(probe(self.adapter))
 
     async def health_check(self) -> AdapterHealth:
         """Get health check with circuit breaker status.

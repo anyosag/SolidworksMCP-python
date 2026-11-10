@@ -567,3 +567,25 @@ async def test_a_removed_input_is_refused_before_the_tool_runs() -> None:
         assert "`components` is no longer an input" in result["message"]
     assert kept == {"status": "success"}
     assert len(ran) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_raiser_can_name_the_failure_itself() -> None:
+    """A known classification wins over classifying the message again."""
+    from solidworks_mcp.tools.error_classifier import Classification
+    from solidworks_mcp.tools.tool_boundary import ToolOperationError, tool_boundary
+
+    async def run() -> dict:
+        raise ToolOperationError(
+            "Step 2 (add_line) failed: Invalid input: x1: required",
+            0.5,
+            {"steps": []},
+            Classification("invalid_input", "Fix x1."),
+        )
+
+    result = await tool_boundary(run)()
+
+    assert result["error_type"] == "invalid_input"
+    assert result["hint"] == "Fix x1."
+    assert result["data"] == {"steps": []}
+    assert result["execution_time"] == 0.5

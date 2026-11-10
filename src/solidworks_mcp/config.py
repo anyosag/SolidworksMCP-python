@@ -380,6 +380,24 @@ class SolidWorksMCPConfig(BaseModel):
         description="Age in days after which the docs index is treated as stale.",
     )
 
+    # === Tool list the client sees ===
+    show_planned_tools: bool = Field(
+        default=False,
+        description=(
+            "List the planned tools, which only return not_supported. Off by "
+            "default: they cost the agent context and tempt wasted calls. "
+            "Enable with SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=true."
+        ),
+    )
+    compact_tool_schemas: bool = Field(
+        default=True,
+        description=(
+            "Advertise optional fields as their plain type and leave input "
+            "aliases out of tool schemas. Validation is unchanged: nulls and "
+            "aliases are still accepted."
+        ),
+    )
+
     # === Development & Testing ===
     debug: bool = Field(default=False, description="Enable debug mode")
 
