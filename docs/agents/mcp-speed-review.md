@@ -469,23 +469,81 @@ own feature (two features at 0.25 s): the same gap as before, just no
 longer added after the reply. Real connects and SolidWorks's own work are
 still unmeasured.
 
-### Still to check on live SolidWorks before merging
+### Checked on live SolidWorks (2026-11-10)
 
-- **Pacing (2):** L3, the soak test, on a cold and a warmed SolidWorks. If it
-  crashes, set `SOLIDWORKS_MCP_SETTLE_MODE=after`.
-- **DISPID memo (3b):** L2. Watch the log for "DISPIDs for … differ between
-  objects"; if it appears, the memo turned itself off for that interface.
-- **Connect on demand (6):** start a client with SolidWorks running (the
-  background attach should connect before the first tool call) and with it
-  closed (the first tool call should launch it).
-- **Mass properties (8):** L4.
-- **`execute_workflow` (1):** a live demo of the plate in one call, then move it
-  from experimental to stable.
+SOLIDWORKS 2026 SP4.1, about two hours after launch, with no other session
+using it, scratch documents only. **Measured.**
+
+**The plate over stdio.** A client script spawned the server, sent
+`initialize` and `notifications/initialized`, waited 2 s for an agent's first
+turn, then drove the plate build with a 1.5 s agent turn between calls. The
+`main` run used `main` (v2.0.0) on the same virtualenv. All three runs built
+the same geometry (volume +60,000 mm³, then −785.4 mm³). `add_fillet` failed
+the same way in all three (`FeatureFillet3` added no feature after
+`select_face_edges` with `side: top`, `edge_type: linear`), an existing
+fault, not a regression.
+
+| | `main` | Branch, one call per step | Branch, `execute_workflow` |
+| --- | --- | --- | --- |
+| Spawn to `initialize` reply | 4.68 s (includes the connect) | 3.13 s (connects later, in the background) | 3.11 s |
+| Tool calls for the build | 13 | 13 | 5 |
+| Server time for those calls | 39.1 s | 21.6 s | 21.1 s |
+| Wall time including the 1.5 s turns | 58.6 s | 41.1 s | 28.6 s |
+| `get_model_info` reply | 6.36 s | 0.16 s | 0.18 s |
+| `create_part` reply | 8.18 s | 7.30 s | 7.05 s |
+
+The background attach connected before the first tool call, with the method
+table read from the cache. With real agent turns (3–6 s rather than 1.5 s),
+the 8 calls `execute_workflow` saves are worth a further 24–48 s.
+
+**Per-change checks.**
+
+| Check | Result |
+| --- | --- |
+| L1: flagging a fresh part wrapper, memo off | 0.31–0.66 s (896 names; 0.34–0.73 ms each, two to three times the earlier 0.25 ms estimate) |
+| L1: the same with the memo | 0.004 s |
+| Memo-filled DISPIDs against SolidWorks' own `GetIDsOfNames` | 896 of 896 match on a part, 943 of 943 on an assembly |
+| L2: two parts | identical DISPIDs |
+| L2: part against assembly, `IModelDoc2` names | **19 differ**: exactly the names `IModelDoc2` shares with `IPartDoc` (`FirstFeature`, `EditSuppress`, `Dummy1`–`8`, …). See below. |
+| 3a: `ActiveDoc` against the flagged `currentModel` | recognised as the same object; `get_model_info` kept the flagged model |
+| L4: mass after `set_dimension` 10 → 20 mm | 60,000 → 120,000 mm³ with `EditRebuild3`, the same after `ForceRebuild3` (0.17 s each on this small part) |
+| Pacing soak (L3), `tests/live/test_live_sw_regression.py` in gap mode at the production pauses (0.25 s / 1.0 s) | No crash. First pass: 45 passed before `-x` stopped at the failure below (3.5 min). Second full pass with it deselected: 56 passed, 2 skipped (no local test assembly), 5.6 min. No memo-mismatch warnings. |
+| `test_list_features_assembly_resolves_real_components_and_subassembly` | Fails ("sub-assembly recursion did not surface nested parts"), identically on `main` v2.0.0 and with the memo off: an existing failure. |
+
+**A memo fault the live check found, and its fix.** A document's dispatch
+resolves a name that both `IModelDoc2` and the document's own interface
+declare to the document type's DISPID. The first version keyed plain
+`flag_methods(doc, "IModelDoc2")` calls with no document type, so a part's
+numbers could have reached an assembly through those 19 names and invoked the
+wrong method; its two canaries would not have noticed. Now document
+interfaces use the memo only with a known document type, the canaries always
+include names shared by document interfaces, and
+`_sync_current_model_from_active` no longer guesses "part" for a document
+whose type it can't read.
+
+**A hazard for live testing, not specific to this branch.** An earlier
+attempt at the `main` run collided with another session working in
+SolidWorks: after `create_part` that session's part was active,
+`get_model_info` followed it, and four plate features landed in it (since
+removed). Any tool that re-reads `ActiveDoc` follows a document switch made by
+someone else, in `main` as on this branch. Live checks need SolidWorks to
+themselves.
+
+### Still to check
+
+- **Pacing on a cold SolidWorks:** the soak ran on a session about two hours
+  old; pitfall #26's crashes came in the first minutes after launch.
+- **Connect on demand with SolidWorks closed:** the first tool call should
+  launch it. Not run: SolidWorks was in use.
+- **`execute_workflow` to stable:** a live demo the user signs off, once the
+  `add_fillet` fault above is understood.
 
 ## Live measurements to take
 
-None of these were run: the keep-minimized session was using SolidWorks.
-Each one is read-only or uses a scratch part.
+Written before any live run. L1, L2, L4 and a warmed L3 have since been run
+(see [Checked on live SolidWorks](#checked-on-live-solidworks-2026-11-10));
+L3 on a cold session and L5–L8 are still open. Each one is read-only or uses
+a scratch part.
 
 | ID | Measure | How | Decides |
 | --- | --- | --- | --- |

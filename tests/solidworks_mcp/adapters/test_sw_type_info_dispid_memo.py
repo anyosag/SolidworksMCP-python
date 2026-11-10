@@ -64,7 +64,7 @@ def memo(monkeypatch):
     monkeypatch.setattr(
         sw_type_info,
         "_interface_methods",
-        {"IModelDoc2": frozenset(_NUMBERING) | {"NotOnThisObject"}},
+        {"IFeature": frozenset(_NUMBERING) | {"NotOnThisObject"}},
     )
     monkeypatch.setattr(sw_type_info, "_flag_cache", {})
     monkeypatch.setattr(sw_type_info, "_dispid_memo", {})
@@ -79,12 +79,12 @@ def memo(monkeypatch):
 def test_the_second_object_costs_two_round_trips(memo) -> None:
     calls: list[str] = []
     first = _Dispatch(_NUMBERING, calls)
-    assert memo.flag_methods(first, "IModelDoc2") == 4
+    assert memo.flag_methods(first, "IFeature") == 4
     assert len(calls) == 5  # every name, including the one that isn't there
 
     calls.clear()
     second = _Dispatch(_NUMBERING, calls)
-    assert memo.flag_methods(second, "IModelDoc2") == 4
+    assert memo.flag_methods(second, "IFeature") == 4
 
     assert sorted(calls) == ["ForceRebuild3", "GetType"]  # the two canaries
     funcs = second._olerepr_.mapFuncs
@@ -94,23 +94,26 @@ def test_the_second_object_costs_two_round_trips(memo) -> None:
 
 
 def test_a_different_numbering_disables_the_memo_for_that_kind(memo) -> None:
-    memo.flag_methods(_Dispatch(_NUMBERING, []), "IModelDoc2")
+    memo.flag_methods(_Dispatch(_NUMBERING, []), "IFeature")
     renumbered = {name: dispid + 1000 for name, dispid in _NUMBERING.items()}
     calls: list[str] = []
     other = _Dispatch(renumbered, calls)
 
-    memo.flag_methods(other, "IModelDoc2")
+    memo.flag_methods(other, "IFeature")
 
     assert other._olerepr_.mapFuncs["GetTitle"].dispid == 1101
-    assert ("IModelDoc2", None) in memo._dispid_memo_unsafe
-    assert ("IModelDoc2", None) not in memo._dispid_memo
+    assert ("IFeature", None) in memo._dispid_memo_unsafe
+    assert ("IFeature", None) not in memo._dispid_memo
     # From now on every object of that kind is flagged name by name.
     calls.clear()
-    memo.flag_methods(_Dispatch(_NUMBERING, calls), "IModelDoc2")
+    memo.flag_methods(_Dispatch(_NUMBERING, calls), "IFeature")
     assert len(calls) == 5
 
 
 def test_the_context_keeps_document_types_apart(memo, monkeypatch) -> None:
+    monkeypatch.setattr(
+        sw_type_info, "_interface_methods", {"IModelDoc2": frozenset(_NUMBERING)}
+    )
     monkeypatch.setattr(
         sw_type_info, "DOC_TYPE_TO_INTERFACES", {1: ("IModelDoc2",), 2: ("IModelDoc2",)}
     )
@@ -119,16 +122,58 @@ def test_the_context_keeps_document_types_apart(memo, monkeypatch) -> None:
 
     memo.flag_doc(_Dispatch(_NUMBERING, calls), 2)
 
-    assert len(calls) == 5  # nothing learned from a part is used on an assembly
+    assert len(calls) == 4  # nothing learned from a part is used on an assembly
     assert set(memo._dispid_memo) == {("IModelDoc2", 1), ("IModelDoc2", 2)}
 
 
-def test_the_switch_turns_the_memo_off(memo, monkeypatch) -> None:
-    monkeypatch.setenv("SOLIDWORKS_MCP_DISPID_MEMO", "0")
+def test_a_document_interface_without_a_type_never_uses_the_memo(
+    memo, monkeypatch
+) -> None:
+    """Live SW 2026: 19 names get different DISPIDs on parts and assemblies."""
+    monkeypatch.setattr(
+        sw_type_info, "_interface_methods", {"IModelDoc2": frozenset(_NUMBERING)}
+    )
     memo.flag_methods(_Dispatch(_NUMBERING, []), "IModelDoc2")
     calls: list[str] = []
 
     memo.flag_methods(_Dispatch(_NUMBERING, calls), "IModelDoc2")
+
+    assert len(calls) == 4
+    assert memo._dispid_memo == {}
+
+
+def test_a_shared_document_name_catches_a_mislabelled_document(
+    memo, monkeypatch
+) -> None:
+    """The canaries include names two document interfaces declare."""
+    monkeypatch.setattr(
+        sw_type_info,
+        "_interface_methods",
+        {
+            "IModelDoc2": frozenset(_NUMBERING),
+            "IPartDoc": frozenset({"GetPathName"}),  # shared with IModelDoc2
+        },
+    )
+    monkeypatch.setattr(sw_type_info, "DOC_TYPE_TO_INTERFACES", {1: ("IModelDoc2",)})
+    memo.flag_doc(_Dispatch(_NUMBERING, []), 1)
+    # An assembly flagged as a part: only the shared name is numbered apart.
+    assembly_numbering = {**_NUMBERING, "GetPathName": 9102}
+    calls: list[str] = []
+    other = _Dispatch(assembly_numbering, calls)
+
+    memo.flag_doc(other, 1)
+
+    assert "GetPathName" in calls
+    assert other._olerepr_.mapFuncs["GetPathName"].dispid == 9102
+    assert ("IModelDoc2", 1) in memo._dispid_memo_unsafe
+
+
+def test_the_switch_turns_the_memo_off(memo, monkeypatch) -> None:
+    monkeypatch.setenv("SOLIDWORKS_MCP_DISPID_MEMO", "0")
+    memo.flag_methods(_Dispatch(_NUMBERING, []), "IFeature")
+    calls: list[str] = []
+
+    memo.flag_methods(_Dispatch(_NUMBERING, calls), "IFeature")
 
     assert len(calls) == 5
     assert memo._dispid_memo == {}
@@ -143,8 +188,8 @@ def test_objects_without_a_method_map_flag_every_name(memo) -> None:
             self.flagged.append(name)
 
     first, second = _Plain(), _Plain()
-    memo.flag_methods(first, "IModelDoc2")
-    memo.flag_methods(second, "IModelDoc2")
+    memo.flag_methods(first, "IFeature")
+    memo.flag_methods(second, "IFeature")
 
     assert len(second.flagged) == 5
     assert memo._dispid_memo == {}
@@ -181,7 +226,7 @@ def test_names_shared_by_two_interfaces_are_flagged_once(memo, monkeypatch) -> N
 
 
 def test_invalidating_everything_clears_the_memo(memo) -> None:
-    memo.flag_methods(_Dispatch(_NUMBERING, []), "IModelDoc2")
+    memo.flag_methods(_Dispatch(_NUMBERING, []), "IFeature")
     memo._dispid_memo_unsafe.add(("IView", None))
 
     memo.invalidate_flag_cache()

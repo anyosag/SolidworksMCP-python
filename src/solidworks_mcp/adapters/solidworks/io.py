@@ -1355,13 +1355,20 @@ class SolidWorksIOMixin:
             return adapter.currentModel
         if active_model is not None:
             doc_type = adapter._get_attr_or_call(active_model, "GetType")
-            adapter._attempt(
-                lambda: _sw_type_info.flag_doc(
-                    active_model,
-                    int(doc_type) if isinstance(doc_type, (int, float)) else 1,
-                ),
-                default=0,
-            )
+            if isinstance(doc_type, (int, float)):
+                adapter._attempt(
+                    lambda: _sw_type_info.flag_doc(active_model, int(doc_type)),
+                    default=0,
+                )
+            else:
+                # Type unknown: flag as a part did before, but name by name,
+                # never from the DISPID memo (it is per document type).
+                adapter._attempt(
+                    lambda: _sw_type_info.flag_methods(
+                        active_model, *_sw_type_info.DOC_TYPE_TO_INTERFACES[1]
+                    ),
+                    default=0,
+                )
             adapter.currentModel = active_model
         return adapter.currentModel
 

@@ -359,18 +359,42 @@ def _method_map(obj: Any) -> dict[str, Any] | None:
     return funcs if isinstance(funcs, dict) else None
 
 
+#: Document interfaces. A document's dispatch answers for ``IModelDoc2``
+#: *and* its own interface, and resolves a name both declare (25 of them:
+#: ``FirstFeature``, ``EditSuppress``, ...) to the document type's DISPID.
+#: Checked live on SW 2026: those 19 IModelDoc2/IPartDoc names get one DISPID
+#: on a part and another on an assembly. So document DISPIDs are memoised
+#: only per known document type.
+_DOCUMENT_INTERFACES = frozenset(
+    {"IModelDoc2", "IPartDoc", "IAssemblyDoc", "IDrawingDoc"}
+)
+_DOCUMENT_TYPES = frozenset({1, 2, 3})
+
+
+def _shared_document_names() -> frozenset[str]:
+    """Names more than one document interface declares (numbered per type)."""
+    seen: dict[str, int] = {}
+    for iface in _DOCUMENT_INTERFACES:
+        for name in _interface_methods.get(iface, ()):
+            seen[name] = seen.get(name, 0) + 1
+    return frozenset(name for name, count in seen.items() if count > 1)
+
+
 def _memo_matches(obj: Any, memo: dict[str, int]) -> bool:
     """Whether ``obj`` resolves a few of ``memo``'s names to the same DISPIDs.
 
     A cheap guard (one round trip per canary instead of one per name) that
     SolidWorks numbers this object's members the way it numbered the object
-    the memo was learned from.
+    the memo was learned from. The canaries include up to two names shared
+    by document interfaces, the ones whose DISPID changes with the document
+    type, so a document of another type fails the check.
     """
     oleobj = getattr(obj, "_oleobj_", None)
     if oleobj is None:
         return False
     names = sorted(memo)
-    canaries = {names[0], names[-1]}
+    shared = sorted(set(memo) & _shared_document_names())
+    canaries = {names[0], names[-1], *shared[:2]}
     try:
         return all(oleobj.GetIDsOfNames(0, name) == memo[name] for name in canaries)
     except Exception:
@@ -392,6 +416,8 @@ def _flag_interface(
         funcs is not None
         and PYWIN32_AVAILABLE
         and key not in _dispid_memo_unsafe
+        # A document's DISPIDs depend on its type: no type, no memo.
+        and (iface not in _DOCUMENT_INTERFACES or context in _DOCUMENT_TYPES)
         and _switch_on("SOLIDWORKS_MCP_DISPID_MEMO")
     )
     memo = _dispid_memo.get(key) if memo_on else None
@@ -452,7 +478,8 @@ def flag_methods(obj: Any, *interfaces: str, context: Any = None) -> int:
             ``"IAssemblyDoc"``, ``"IPartDoc"``, ``"IDrawingDoc"``.
         context: What kind of object this is beyond its interfaces (the
             document type for ``flag_doc``), so DISPIDs are never shared
-            between objects SolidWorks might number differently.
+            between objects SolidWorks numbers differently. Document
+            interfaces use the memo only with a document type (1, 2 or 3).
 
     Returns:
         Number of methods successfully flagged.

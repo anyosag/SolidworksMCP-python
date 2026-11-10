@@ -215,3 +215,26 @@ class TestIsApplicationRunning:
         monkeypatch.setattr(pywin32_adapter, "PYWIN32_AVAILABLE", False)
 
         assert adapter.is_application_running() is False
+
+
+def test_an_unreadable_document_type_is_flagged_without_the_memo(
+    adapter, monkeypatch
+) -> None:
+    """A document of unknown type gets the part interfaces, name by name."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        pywin32_adapter.sw_type_info,
+        "flag_methods",
+        lambda doc, *interfaces, **kwargs: calls.append((interfaces, kwargs)),
+    )
+
+    class _Unknown(_Doc):
+        GetType = None  # unreadable
+
+    app = _App(_Identity())
+    app_doc = _Unknown(app.identity)
+    adapter.swApp = SimpleNamespace(ActiveDoc=app_doc)
+    adapter.currentModel = None
+
+    assert adapter._sync_current_model_from_active() is app_doc
+    assert calls == [(("IModelDoc2", "IPartDoc"), {})]

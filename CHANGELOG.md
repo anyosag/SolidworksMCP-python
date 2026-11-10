@@ -27,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   usually covers it, and read-only calls open no gap
   (`SOLIDWORKS_MCP_SETTLE_MODE=after` restores the fixed sleep). A document
   already flagged is no longer flagged again on every `get_model_info`, and
-  method DISPIDs are reused between objects of the same kind
-  (`SOLIDWORKS_MCP_DISPID_MEMO=0` turns that off). `get_mass_properties`
+  method DISPIDs are reused between objects of the same interface and
+  document type, after a canary check (`SOLIDWORKS_MCP_DISPID_MEMO=0` turns
+  that off). On SolidWorks 2026 this cut `get_model_info` from 6.4 s to 0.2 s
+  in a live plate build, and the build's server time from 39 s to 22 s. `get_mass_properties`
   rebuilds only what is out of date, and `list_features` walks the tree once
   when that finds every feature.
 - **Faster start**: the server answers the client's handshake before
