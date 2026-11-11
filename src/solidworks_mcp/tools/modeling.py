@@ -17,6 +17,7 @@ from ..adapters.base import (
     SolidWorksAdapter,
     SweepParameters,
 )
+from ..adapters.solidworks.cut_check import shortfall_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
@@ -135,6 +136,36 @@ def _attach_measured_change(
             "may have accepted it without doing anything. Check the sketch, "
             "the direction and the depth."
         )
+    return reply
+
+
+def _flag_a_shallow_cut(
+    reply: dict[str, Any], applied: Any, input_data: Any
+) -> dict[str, Any]:
+    """Warn when a blind cut removed far less than its floor area x depth.
+
+    Args:
+        reply: The cut's reply, with ``measured_change`` when measured.
+        applied: The cut's ``parameters`` from the adapter.
+        input_data: The cut's input (``end_condition``, ``depth``).
+
+    Returns:
+        dict[str, Any]: ``reply``, with ``cut_extrude.floor_area_mm2`` and a
+        ``warning`` when the depth ran outside the part.
+    """
+    floor = applied.get("floor_area_mm2") if isinstance(applied, dict) else None
+    if not isinstance(floor, int | float):
+        return reply
+    reply["cut_extrude"]["floor_area_mm2"] = round(float(floor), 4)
+    delta = (reply.get("measured_change") or {}).get("volume_delta_mm3")
+    if str(input_data.end_condition).lower() != "blind" or not isinstance(
+        delta, int | float
+    ):
+        return reply
+    warning = shortfall_warning(-float(delta), float(floor), float(input_data.depth))
+    if warning is not None:
+        own = reply.get("warning")
+        reply["warning"] = f"{own} {warning}" if own else warning
     return reply
 
 
@@ -1948,7 +1979,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
-        return _attach_measured_change(reply, before, after)
+        reply = _attach_measured_change(reply, before, after)
+        return _flag_a_shallow_cut(reply, feature_params, input_data)
 
     @mcp.tool()
     async def add_fillet(input_data: AddFilletInput) -> dict[str, Any]:

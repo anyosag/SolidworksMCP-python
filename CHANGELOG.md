@@ -87,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call is cancelled after `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5)
   and reported as `error_type: solidworks_dialog`, with its text, instead of
   hanging the server. It never answers Save or Don't Save.
+- **The assembly save guard knows this session's own saved edits.** A
+  user's part that this session has already saved, and that nobody has saved
+  since (its file's modified time is unchanged), counts as this session's
+  work: later assembly saves write it without asking again. A part saved
+  elsewhere in the meantime asks, as before.
+- **A blind cut that mostly missed the part says so.** `create_cut_extrude`
+  measures the cut's floor (its planar faces facing along the sketch normal)
+  and reports `cut_extrude.floor_area_mm2`. When it removed less than half
+  of floor area times depth, the reply carries a `warning`: most of the
+  depth was outside the part, as with the dish rack's cut from an offset
+  plane that took 1.13 mm³ of 9.05 mm³.
 - **`export_stl` takes mesh settings for one file**: `resolution` (coarse,
   fine or custom), `deviation_mm` and `angle_deg` (which make it custom),
   `units` and `binary`. SolidWorks keeps these as the user's STL options;

@@ -17,7 +17,7 @@ from ..base import (
     SolidWorksFeature,
     SweepParameters,
 )
-from . import limits
+from . import cut_check, limits
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -1857,6 +1857,16 @@ def _create_cut_extrude_impl(
             if rename_error is None:
                 feature_name = adapter._attempt(lambda: feature.Name, default=name)
 
+        # A blind cut's floor area, to tell whether its depth went into the
+        # material (cut_check; the tool compares it with the volume removed).
+        floor_mm2 = None
+        if not (through_one or through_both) and not normalized.draft_angle:
+            sketch_feature = adapter._attempt(
+                lambda: adapter.currentModel.FeatureByName(target_sketch)
+            )
+            if sketch_feature is not None:
+                floor_mm2 = cut_check.measure_floor(adapter, feature, sketch_feature)
+
         flipped = used_reverse != wanted
         if through_both:
             choice = "both_directions"
@@ -1885,6 +1895,7 @@ def _create_cut_extrude_impl(
                 "direction_flipped": flipped,
                 # How the side was picked; see _create_cut_extrude_choosing_side.
                 "direction_choice": choice,
+                "floor_area_mm2": floor_mm2,
             },
             properties={"created": datetime.now().isoformat()},
         )

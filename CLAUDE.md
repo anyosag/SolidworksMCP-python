@@ -301,8 +301,10 @@ updated 2026-04-24.
   to answer. Find what opened the dialog and make that call silent.
 - **`confirmation_required`:** saving an assembly would overwrite the user's
   own modified part files (`data.files`); nothing was written. Call again with
-  `overwrite_modified_references: true` once the user agrees. Saves are always
-  silent (`adapters/solidworks/saving.py`; pitfalls #36 and #37).
+  `overwrite_modified_references: true` once the user agrees. A file this
+  session created, or already saved and nobody has saved since (same modified
+  time), is the session's own and never asks. Saves are always silent
+  (`adapters/solidworks/saving.py`; pitfalls #36 and #37).
 
 ### 16. A tool returns `active_document_changed`
 

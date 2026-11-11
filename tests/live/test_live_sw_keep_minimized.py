@@ -151,8 +151,9 @@ async def test_assembly_save_over_a_users_part_needs_confirmation(
     live_adapter: Any, scratch: Any, minimized: Any, tmp_path: Path
 ) -> None:
     part, assembly = await _assembly_with_modified_part(live_adapter, scratch, tmp_path)
-    # Make the part "the user's": a file this session didn't write.
+    # Make the part "the user's": a file this session didn't write or save.
     saving.session_paths(live_adapter).discard(saving.normalize(str(part)))
+    saving.session_saves(live_adapter).pop(saving.normalize(str(part)), None)
     part_before = part.stat().st_mtime
     assembly_before = assembly.stat().st_mtime
 

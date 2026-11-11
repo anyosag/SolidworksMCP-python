@@ -20,6 +20,9 @@ Before an assembly save writes its modified parts, they are sorted:
 
 * never saved, virtual, or created or first saved by this server session:
   saved with the assembly;
+* saved by this session before, and unchanged on disk since: its unsaved
+  changes are this session's own edits (the Cellvis dish rack's parts were
+  the user's files, and every assembly save after the first asked again);
 * any other modified file - the user's own work - is not overwritten unless
   the caller passed ``overwrite_modified_references``. The save returns
   :class:`NeedsConfirmation` instead, and the tool reports
@@ -117,12 +120,45 @@ def remember(adapter: Any, path: str) -> None:
     session_paths(adapter).add(normalize(path))
 
 
+def _modified_time(path: str) -> float | None:
+    """The file's modification time, or None when it can't be read."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def session_saves(adapter: Any) -> dict[str, float | None]:
+    """The files this session saved, with their modification time just after."""
+    saves = getattr(adapter, "_session_saves", None)
+    if saves is None:
+        saves = {}
+        adapter._session_saves = saves
+    return saves
+
+
+def record_save(adapter: Any, path: str) -> None:
+    """Record that this session saved ``path`` (and when the file then changed)."""
+    session_saves(adapter)[normalize(path)] = _modified_time(path)
+
+
+def saved_by_session(adapter: Any, path: str) -> bool:
+    """Whether this session saved ``path`` and nobody has saved it since."""
+    key = normalize(path)
+    saves = session_saves(adapter)
+    if key not in saves:
+        return False
+    recorded, now = saves[key], _modified_time(path)
+    return recorded is not None and now == recorded
+
+
 @dataclass
 class Reference:
     """A document an assembly uses that has unsaved changes."""
 
     path: str
-    #: Never saved, virtual, or written by this session: saved without asking.
+    #: Never saved, virtual, written by this session, or saved by it and
+    #: unchanged on disk since: saved without asking.
     new: bool
 
 
@@ -178,6 +214,7 @@ def modified_references(adapter: Any, assembly: Any) -> list[Reference]:
             or virtual
             or not os.path.exists(path)
             or normalize(path) in session_paths(adapter)
+            or saved_by_session(adapter, path)
         )
         key = normalize(path) if path else f"<unsaved {len(references)}>"
         references.setdefault(key, Reference(path=path, new=new))
@@ -288,6 +325,10 @@ def save_document(
 
     if not os.path.exists(target):
         raise Exception(f"File not written after save: {target}")
+    record_save(adapter, target)
+    for reference in references:
+        if reference.path and os.path.exists(reference.path):
+            record_save(adapter, reference.path)
     return {
         "file_path": target,
         "saved_references": [r.path for r in references if r.path],

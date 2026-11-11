@@ -55,6 +55,12 @@ hexagonal holes is one call, not 150 `add_line` calls.
 4. `exit_sketch`, then `create_cut_extrude` with `end_condition: "ThroughAll"`.
    Check the volume fell by the holes' total area times the thickness.
 
+A blind cut's reply gives `cut_extrude.floor_area_mm2`. A `warning` that it
+removed far less than floor area times depth means most of the depth was
+outside the part (a sketch on an offset plane, or the wrong side): don't
+build on it; `undo`, then fix the plane or depth, or use `"UpToNext"` or
+`"ThroughAll"`.
+
 ## Before a 3D print
 
 1. `verify_model` with the size and volume you expect.
