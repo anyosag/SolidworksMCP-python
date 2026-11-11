@@ -12,15 +12,23 @@ adapter fixture / scratch-doc cleanup in each file, they live here:
 * ``live_adapter`` connects a ``PyWin32Adapter`` per test.
 * ``connected_adapter`` is a thin alias (the regression suite's name for it);
   ``scratch`` wraps the adapter in ``_ScratchSession``, which on teardown
-  closes only the never-saved documents a test created and deletes only the
+  closes only the documents a test created (never saved, or saved to its
+  ``written_files``) or opened from its ``opened_files``, and deletes only the
   files it wrote - safe against a SolidWorks session with real work open.
-* ``_pace_live_tests`` (autouse) drains every open document and idles
-  ``SW_TEST_PACE_SECONDS`` after each test (default 0 = off;
-  ``dev-test-combined`` sets 4). This is the recovery the per-batch
+* No test or fixture calls ``CloseAllDocuments``: it closes the user's
+  documents too, unsaved changes included.
+* ``_pace_live_tests`` (autouse) closes the documents the tests left open and
+  idles ``SW_TEST_PACE_SECONDS`` after each test (default 0 = off;
+  ``dev-test-combined`` sets 4). It closes a document only if it wasn't open
+  when the run started and it was never saved or lives in the temp folder,
+  where the tests write their files. This is the recovery the per-batch
   ``sw_close_all_and_settle`` drain provided - a long uninterrupted run
   degrades (open assemblies accumulate, then ``create_part`` / ``open_model``
   start throwing ``RPC_E_DISCONNECTED``); doing it in-process per test is the
   same effect without a pytest subprocess per batch.
+
+Don't create new documents in SolidWorks by hand while the suite runs: a new,
+never-saved document looks the same as a test's and may be closed.
 
 **Headless (opt-in, off by default).** Set ``SOLIDWORKS_MCP_HEADLESS=1`` and
 every ``connect()`` leaves the SolidWorks window hidden instead of showing
@@ -142,8 +150,67 @@ def _require_running_solidworks() -> None:
         )
 
 
+def _running_solidworks_app() -> object | None:
+    """The running SolidWorks, late bound, or ``None``. Never launches it."""
+    if not _solidworks_running():
+        return None
+    try:
+        import pythoncom
+        import win32com.client
+        from win32com.client import dynamic
+
+        pythoncom.CoInitialize()
+        return dynamic.Dispatch(win32com.client.GetActiveObject("SldWorks.Application"))
+    except Exception:  # noqa: BLE001 - no SolidWorks to talk to
+        return None
+
+
+def _call(obj: object, name: str) -> object:
+    """A COM member that late binding may resolve as a property or a method."""
+    attr = getattr(obj, name)
+    return attr() if callable(attr) else attr
+
+
+def _open_documents(app: object) -> list[tuple[str, str]]:
+    """``(title, path)`` of each open document; ``path`` is ``""`` if never saved."""
+    raw = _call(app, "GetDocuments") or ()
+    docs = raw if isinstance(raw, (list, tuple)) else [raw]
+    rows: list[tuple[str, str]] = []
+    for doc in docs:
+        if doc is None:
+            continue
+        try:
+            title, path = _call(doc, "GetTitle"), _call(doc, "GetPathName")
+        except Exception:  # noqa: BLE001 - a document closing as we look
+            continue
+        if title:
+            rows.append((str(title), str(path or "")))
+    return rows
+
+
+#: Titles of the documents open when the live run started, which the pacing
+#: drain never closes; ``None`` when they couldn't be read (then it closes
+#: nothing).
+_RUN_BASELINE: set[str] | None = None
+
+
+def _snapshot_run_baseline() -> None:
+    """Record the documents open before any live test runs."""
+    global _RUN_BASELINE
+    if not _solidworks_running():
+        _RUN_BASELINE = set()
+        return
+    app = _running_solidworks_app()
+    try:
+        _RUN_BASELINE = (
+            {title for title, _ in _open_documents(app)} if app is not None else None
+        )
+    except Exception:  # noqa: BLE001 - unreadable: the drain will close nothing
+        _RUN_BASELINE = None
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Apply live pacing defaults and wait for SolidWorks to finish warming up."""
+    """Apply live pacing defaults, wait for SolidWorks to warm up, note open documents."""
     if not _REAL_ENABLED or platform.system() != "Windows":
         return
     for name, value in _LIVE_PACING_DEFAULTS.items():
@@ -166,6 +233,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             flush=True,
         )
         time.sleep(wait)
+    _snapshot_run_baseline()
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -203,9 +271,11 @@ class _ScratchSession:
     """A connected adapter plus cleanup of only the scratch docs a test made.
 
     A document is closed on teardown only when it is new since the baseline
-    snapshot **and** either was never saved *or* was saved to one of this
-    test's own ``written_files`` paths. A real file the user already had open
-    is never touched, even if the baseline snapshot comes back empty.
+    snapshot **and** it was never saved, was saved to one of this test's own
+    ``written_files`` paths, or was opened from one of its ``opened_files``
+    (such as a SolidWorks sample). A real file the user already had open is
+    never touched, even if the baseline snapshot comes back empty.
+    ``written_files`` are deleted afterwards; ``opened_files`` never are.
     """
 
     def __init__(self, adapter) -> None:  # noqa: ANN001
@@ -213,6 +283,7 @@ class _ScratchSession:
         self.adapter = adapter
         self._baseline: set[str] = self._open_titles()
         self.written_files: list[str] = []
+        self.opened_files: list[str] = []
 
     def _open_docs(self) -> list:
         """Return the currently open ``IModelDoc2`` dispatches (never ``None``)."""
@@ -236,7 +307,10 @@ class _ScratchSession:
 
     def cleanup(self) -> None:
         """Close every scratch document opened here, and delete any files written."""
-        owned = {os.path.normcase(os.path.abspath(f)) for f in self.written_files}
+        owned = {
+            os.path.normcase(os.path.abspath(f))
+            for f in [*self.written_files, *self.opened_files]
+        }
         for d in self._open_docs():
             title = self.adapter._attempt(
                 lambda d=d: self.adapter._get_attr_or_call(d, "GetTitle"), default=None
@@ -267,36 +341,51 @@ def _demo_keep_open() -> bool:
     return os.getenv("SW_DEMO_KEEP_OPEN", "").lower() in {"1", "true", "yes"}
 
 
-def _close_all_documents() -> None:
-    """Close every open document on a throwaway connection (best effort)."""
-    try:  # pragma: no cover - only meaningful with a live SolidWorks
-        import asyncio
+def _in_temp_folder(path: str) -> bool:
+    """True when ``path`` is inside the temp folder, where tests write files."""
+    import tempfile
 
-        from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
+    temp = os.path.normcase(os.path.realpath(tempfile.gettempdir()))
+    return os.path.normcase(os.path.realpath(path)).startswith(temp + os.sep)
 
-        async def _drain() -> None:
-            if not _solidworks_running():
-                return  # never relaunch a crashed SolidWorks just to drain it
+
+def _close_leftover_documents() -> None:
+    """Close the documents the live tests left open, never the user's (best effort).
+
+    A document is closed only when it wasn't open when the run started
+    (``_RUN_BASELINE``) and it was never saved or lives in the temp folder.
+    Its unsaved changes are discarded: they are a test's. With no baseline,
+    nothing is closed.
+    """
+    import time
+
+    if _RUN_BASELINE is None:
+        return
+    app = _running_solidworks_app()  # never relaunches a crashed SolidWorks
+    if app is None:
+        return
+    try:
+        leftovers = [
+            title
+            for title, path in _open_documents(app)
+            if title not in _RUN_BASELINE and (not path or _in_temp_folder(path))
+        ]
+        for title in leftovers:
             if os.getenv("SW_DEMO_TRACE", "").strip().lower() in _TRUTHY:
-                print("[live] closing every open document", flush=True)
-            adapter = PyWin32Adapter({})
-            await adapter.connect()
-            try:
-                adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
-            finally:
-                await adapter.disconnect()
-
-        asyncio.run(_drain())
+                print(f"[live] closing leftover document {title}", flush=True)
+            app.CloseDoc(title)
+            time.sleep(0.5)  # back-to-back calls crash SW 2026 (pitfall #26)
     except Exception:  # noqa: BLE001 - the drain is a courtesy, never a failure
         pass
 
 
 @pytest.fixture(autouse=True)
 def _pace_live_tests() -> Iterator[None]:
-    """After each live test: drain every open document, then idle.
+    """After each live test: close the documents tests left open, then idle.
 
-    In a demo (``SW_DEMO_KEEP_OPEN``) the drain runs *before* the test
-    instead, so the test starts clean and its part is left open afterwards.
+    Only tests' documents are closed (``_close_leftover_documents``). In a
+    demo (``SW_DEMO_KEEP_OPEN``) the drain runs *before* the test instead, so
+    the test starts clean and its part is left open afterwards.
 
     Only active when ``SW_TEST_PACE_SECONDS`` is set (``dev-test-combined``
     sets 4); a bare ``pytest tests/live/`` stays fast. This is what the
@@ -311,7 +400,7 @@ def _pace_live_tests() -> Iterator[None]:
 
     keep_open = _demo_keep_open()
     if keep_open:
-        _close_all_documents()
+        _close_leftover_documents()
 
     yield
 
@@ -323,7 +412,7 @@ def _pace_live_tests() -> Iterator[None]:
         return
 
     if not keep_open:
-        _close_all_documents()
+        _close_leftover_documents()
 
     time.sleep(pace)
 
