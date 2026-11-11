@@ -101,6 +101,11 @@ class ExportStlInput(ExportFileInput):
                 f"{' and '.join(tolerances)} need resolution 'custom', not "
                 f"{self.resolution!r}"
             )
+        if self.resolution == "custom" and not tolerances:
+            raise ValueError(
+                "resolution 'custom' needs deviation_mm or angle_deg: SolidWorks "
+                "takes custom only with its own tolerances"
+            )
 
     def mesh_settings(self) -> dict[str, Any]:
         """The mesh settings given, by name (empty: keep the user's)."""

@@ -1179,6 +1179,30 @@ SolidWorks is never used until something binds to it again.
 
 ---
 
+## 40. STL options: custom resolution is ignored until a tolerance is written
+
+The STL export options are application preferences (`ISldWorks.Get/SetUserPreference*`,
+"System Options > Export > STL" in the `swconst` help): `swSTLQuality` (integer 78,
+`swSTLQuality_e` coarse 1, fine 2, custom 3), `swSTLDeviation` and `swSTLAngleTolerance`
+(doubles 2 and 3), `swExportStlUnits` (integer 211, `swLengthUnit_e`) and
+`swSTLBinaryFormat` (toggle 69).
+
+- **Units:** the help gives none for the tolerances. SolidWorks 2026 stores metres and
+  radians: a user's 30 degrees read back as `0.5235987755983`.
+- **Custom resolution follows the tolerances.** `SetUserPreferenceIntegerValue(78, 3)`
+  returns True but reads back unchanged. After writing a deviation or an angle off the
+  coarse/fine presets, the same call sticks. Rewriting a preset value doesn't make it
+  stick. SolidWorks derives the resolution from the tolerances.
+- So `stl_settings.py` writes the tolerances first, doesn't check custom's read-back,
+  refuses custom without a tolerance, and restores the user's tolerances before their
+  resolution.
+- The deviation SolidWorks reports depends on the active document: 6.8e-5 with a 40 mm
+  part open, 5.95e-4 with none. Compare before and after with the same document open.
+
+Measured 2026-11-11 on SOLIDWORKS 2026 with `probe_stl_quality.py` (every value restored).
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests

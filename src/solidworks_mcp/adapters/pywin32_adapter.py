@@ -3575,9 +3575,9 @@ class PyWin32Adapter(
         applied = self._handle_com_operation(
             "set_stl_options", lambda: stl_settings.apply_changes(app, changes)
         )
-        if not applied.is_success:
+        if not applied.is_success or applied.data is None:
             return cast(AdapterResult[dict[str, Any]], applied)
-        previous = applied.data or []
+        previous, labels = applied.data.previous, applied.data.labels
         try:
             exported = await self.export_file(file_path, "stl")
         finally:
@@ -3595,10 +3595,7 @@ class PyWin32Adapter(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "file_path": os.path.abspath(file_path),
-                "mesh": {
-                    "applied": [label for *_rest, label in changes],
-                    "restored": not not_restored,
-                },
+                "mesh": {"applied": labels, "restored": not not_restored},
             },
             execution_time=exported.execution_time,
         )

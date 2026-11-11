@@ -2162,6 +2162,9 @@ class TestPyWin32AdapterBranches:
         failed = await adapter.create_sketch("Top")
         assert failed.is_error
         assert "Plane 'Top' not found in the part" in (failed.error or "")
+        # SolidWorks' select error stays out of the message: on SW 2026 it
+        # is a "Type mismatch" HRESULT, which made it com_type_mismatch.
+        assert "select failed" not in (failed.error or "")
 
     @pytest.mark.asyncio
     async def test_create_sketch_empty_plane_and_total_select_failure(

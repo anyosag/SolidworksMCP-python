@@ -73,7 +73,7 @@ async def test_the_mesh_applies_to_the_export_and_the_users_come_back(
     assert adapter.swApp.values[("integer", stl.STL_QUALITY)] == 2
     assert adapter.swApp.values[("integer", stl.STL_UNITS)] == 3
     assert result.data["mesh"] == {
-        "applied": ["resolution custom", "deviation 0.01 mm", "units mm"],
+        "applied": ["deviation 0.01 mm", "resolution custom", "units mm"],
         "restored": True,
     }
 

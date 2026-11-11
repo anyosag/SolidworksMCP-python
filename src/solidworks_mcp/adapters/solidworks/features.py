@@ -71,6 +71,12 @@ class SolidWorksFeaturesMixin:
         here in the async layer for the same reason as ``mirror_feature``.
         An unreadable volume is not treated as failure.
 
+        The volume is read with ``get_model_geometry_summary``, which doesn't
+        rebuild: ``get_mass_properties`` starts with ``ForceRebuild3``, and a
+        rebuild clears the selection (COM pitfall #23), so a fillet of the
+        current selection (``select_edges``, ``select_face_edges``, empty
+        ``edge_names``) found nothing selected (first live run, 2026-11-11).
+
         Args:
             radius: Fillet radius in millimetres.
             edge_names: Edge names, ``"x,y,z"`` points or ``"face:x,y,z"``
@@ -81,17 +87,18 @@ class SolidWorksFeaturesMixin:
             ``volume_before`` / ``volume_after`` in its properties when they
             could be read. ``ERROR`` when the volume did not change.
         """
-        before = await self.get_mass_properties()
-        volume_before = (
-            before.data.volume if before.is_success and before.data else None
-        )
+        volume_before = await _volume_keeping_selection(self)
+        # FeatureFillet3 on SW 2025+ returns a number, not the feature, so the
+        # new fillet's name comes from the tree (listing keeps the selection).
+        tree_before = await self.list_features(include_suppressed=True)
 
         result = _add_fillet_impl(self, radius, edge_names)
+        if result.is_success and result.data is not None:
+            _name_from_tree(result.data, tree_before, await self.list_features(True))
         if not result.is_success or result.data is None or volume_before is None:
             return result
 
-        after = await self.get_mass_properties()
-        volume_after = after.data.volume if after.is_success and after.data else None
+        volume_after = await _volume_keeping_selection(self)
         if volume_after is None:
             return result
         if abs(volume_after - volume_before) <= 1e-7 * max(volume_before, 1.0):
@@ -1904,6 +1911,41 @@ def _create_cut_extrude_impl(
         AdapterResult[SolidWorksFeature],
         adapter._handle_com_operation("create_cut_extrude", _cut_operation),
     )
+
+
+def _name_from_tree(
+    feature: SolidWorksFeature,
+    before: AdapterResult[list[dict[str, Any]]],
+    after: AdapterResult[list[dict[str, Any]]],
+) -> None:
+    """Give a feature reported by its generic name the name the tree shows.
+
+    Args:
+        feature: The new feature, named "Fillet" when SolidWorks gave no
+            feature object back.
+        before: ``list_features`` before it was made.
+        after: ``list_features`` after.
+    """
+    if feature.name != feature.type or not (before.is_success and after.is_success):
+        return
+    old = {str(f.get("name")) for f in before.data or []}
+    new = [
+        str(f.get("name")) for f in after.data or [] if str(f.get("name")) not in old
+    ]
+    if len(new) == 1:
+        feature.name = new[0]
+
+
+async def _volume_keeping_selection(adapter: Any) -> float | None:
+    """The part's volume in mm³ without a rebuild, so the selection survives.
+
+    Returns:
+        float | None: The volume, or None when it can't be read.
+    """
+    summary = await adapter.get_model_geometry_summary()
+    data = summary.data if summary.is_success else None
+    volume = data.get("volume_mm3") if isinstance(data, dict) else None
+    return float(volume) if isinstance(volume, int | float) else None
 
 
 #: Two volumes a cut removed count as the same within this fraction.

@@ -3466,13 +3466,20 @@ def _fillet_feature() -> AdapterResult:
     )
 
 
+def _summary(volume: float | None) -> AdapterResult:
+    return AdapterResult(
+        status=AdapterResultStatus.SUCCESS, data={"volume_mm3": volume}
+    )
+
+
 class TestAddFilletVolumeCheck:
-    """The async layer compares volume before and after, like mirror_feature."""
+    """The async layer compares volume before and after, like mirror_feature,
+    with a read that doesn't rebuild, so a selected set of edges survives."""
 
     @pytest.mark.asyncio
     async def test_unchanged_volume_is_an_error(self, monkeypatch) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(return_value=_volume(4800.0))
+        adapter.get_model_geometry_summary = AsyncMock(return_value=_summary(4800.0))
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
 
         result = await adapter.add_fillet(1.0, ["face:0,0,0"])
@@ -3483,8 +3490,8 @@ class TestAddFilletVolumeCheck:
     @pytest.mark.asyncio
     async def test_changed_volume_is_reported(self, monkeypatch) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(
-            side_effect=[_volume(4800.0), _volume(4797.4)]
+        adapter.get_model_geometry_summary = AsyncMock(
+            side_effect=[_summary(4800.0), _summary(4797.4)]
         )
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
 
@@ -3500,8 +3507,8 @@ class TestAddFilletVolumeCheck:
         self, monkeypatch, volumes
     ) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(
-            side_effect=[_volume(v) for v in volumes]
+        adapter.get_model_geometry_summary = AsyncMock(
+            side_effect=[_summary(v) for v in volumes]
         )
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
 
@@ -3513,12 +3520,30 @@ class TestAddFilletVolumeCheck:
     @pytest.mark.asyncio
     async def test_a_failed_fillet_is_returned_unchanged(self, monkeypatch) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(return_value=_volume(4800.0))
+        adapter.get_model_geometry_summary = AsyncMock(return_value=_summary(4800.0))
         failed = AdapterResult(status=AdapterResultStatus.ERROR, error="nope")
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: failed)
 
         assert await adapter.add_fillet(1.0, ["0,0,0"]) is failed
-        adapter.get_mass_properties.assert_awaited_once()
+        adapter.get_model_geometry_summary.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_volume_read_never_rebuilds(self, monkeypatch) -> None:
+        """A rebuild would clear the edges select_edges picked."""
+        adapter = _build_adapter(monkeypatch)
+        adapter.get_mass_properties = AsyncMock()
+        adapter.get_model_geometry_summary = AsyncMock(
+            side_effect=[
+                _summary(4800.0),
+                AdapterResult(status=AdapterResultStatus.ERROR, error="no part"),
+            ]
+        )
+        monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
+
+        result = await adapter.add_fillet(1.0, [])
+
+        assert result.is_success
+        adapter.get_mass_properties.assert_not_awaited()
 
 
 @pytest.mark.asyncio

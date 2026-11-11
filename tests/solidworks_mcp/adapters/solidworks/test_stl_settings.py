@@ -57,22 +57,22 @@ def test_a_deviation_and_angle_make_the_resolution_custom() -> None:
         {"deviation_mm": 0.01, "angle_deg": 5, "units": "mm", "binary": False}
     )
 
+    # The tolerances first: SolidWorks takes custom only once they're written.
     assert [(kind, pref) for kind, pref, _v, _l in changes] == [
-        ("integer", stl.STL_QUALITY),
         ("double", stl.STL_DEVIATION),
         ("double", stl.STL_ANGLE_TOLERANCE),
+        ("integer", stl.STL_QUALITY),
         ("integer", stl.STL_UNITS),
         ("toggle", stl.STL_BINARY),
     ]
     values = [value for _k, _p, value, _l in changes]
-    assert values[0] == 3
-    assert values[1] == pytest.approx(1e-5)
-    assert values[2] == pytest.approx(math.radians(5))
-    assert values[3:] == [0, False]
+    assert values[0] == pytest.approx(1e-5)
+    assert values[1] == pytest.approx(math.radians(5))
+    assert values[2:] == [3, 0, False]
     assert [label for *_rest, label in changes] == [
-        "resolution custom",
         "deviation 0.01 mm",
         "angle 5 deg",
+        "resolution custom",
         "units mm",
         "ASCII",
     ]
@@ -93,6 +93,7 @@ def test_only_what_is_given_is_changed() -> None:
         ({"resolution": "fine", "angle_deg": 3}, "angle_deg need resolution 'custom'"),
         ({"resolution": "silky"}, "Unknown STL resolution 'silky'"),
         ({"units": "furlong"}, "Unknown STL units 'furlong'"),
+        ({"resolution": "custom"}, "Resolution 'custom' needs deviation_mm"),
     ],
 )
 def test_impossible_settings_are_refused(
@@ -121,11 +122,12 @@ def test_the_users_values_are_read_set_and_put_back() -> None:
     app = _App()
     changes = stl.preference_changes({"deviation_mm": 0.01, "units": "mm"})
 
-    previous = stl.apply_changes(app, changes)
+    applied = stl.apply_changes(app, changes)
 
+    assert applied.labels == ["deviation 0.01 mm", "resolution custom", "units mm"]
     assert app.values[("integer", stl.STL_QUALITY)] == 3
     assert app.values[("integer", stl.STL_UNITS)] == 0
-    assert stl.restore(app, previous) == []
+    assert stl.restore(app, applied.previous) == []
     assert app.values[("integer", stl.STL_QUALITY)] == 2
     assert app.values[("double", stl.STL_DEVIATION)] == 0.0005
     assert app.values[("integer", stl.STL_UNITS)] == 3
@@ -143,6 +145,47 @@ def test_a_setting_solidworks_refuses_puts_the_others_back() -> None:
         "exported; your STL options are as they were."
     )
     assert app.values[("integer", stl.STL_QUALITY)] == 2
+
+
+def test_custom_resolution_is_not_checked_and_comes_back_last() -> None:
+    """SolidWorks reports custom only while the tolerances are off its presets."""
+    app = _App(refuse={stl.STL_QUALITY})
+    changes = stl.preference_changes({"angle_deg": 5})
+
+    applied = stl.apply_changes(app, changes)
+    app.writes.clear()
+    stl.restore(app, applied.previous)
+
+    assert [pref for pref, _value in app.writes] == [
+        stl.STL_ANGLE_TOLERANCE,
+        stl.STL_QUALITY,
+    ]
+
+
+class _Clamping(_App):
+    """SolidWorks keeps the deviation at or above a limit for the part."""
+
+    def _set(self, kind: str, pref: int, value: Any) -> bool:
+        if pref == stl.STL_DEVIATION:
+            value = max(value, 1.2e-5)
+        if pref == stl.STL_ANGLE_TOLERANCE:
+            value = max(value, math.radians(5))
+        return super()._set(kind, pref, value)
+
+
+def test_a_tolerance_solidworks_moves_is_reported_as_used() -> None:
+    app = _Clamping()
+    changes = stl.preference_changes({"deviation_mm": 0.005, "angle_deg": 2})
+
+    applied = stl.apply_changes(app, changes)
+
+    assert applied.labels == [
+        "deviation 0.005 mm (SolidWorks used 0.012 mm)",
+        "angle 2 deg (SolidWorks used 5 deg)",
+        "resolution custom",
+    ]
+    # Rounding is not a move: 0.005 mm read back as 0.005004 mm.
+    assert stl.same_value("double", 5e-6, 5.004e-6)
 
 
 def test_a_setting_that_cannot_be_put_back_is_counted() -> None:

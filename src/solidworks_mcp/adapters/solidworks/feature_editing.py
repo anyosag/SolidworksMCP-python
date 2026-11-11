@@ -43,6 +43,10 @@ ROLLBACK_TO_END = 1
 ROLLBACK_BEFORE = 3
 ROLLBACK_AFTER = 4
 
+#: Other ``GetTypeName2`` names of those types: SolidWorks 2026 names a
+#: cut-extrude "ICE" (first live run, 2026-11-11), not "Cut".
+TYPE_ALIASES: dict[str, str] = {"ICE": "Cut"}
+
 #: ``IFeature.GetTypeName2`` -> which parameters ``edit_feature`` changes.
 EDITABLE: dict[str, frozenset[str]] = {
     "Extrusion": frozenset({"depth", "end_condition", "reverse_direction"}),
@@ -180,7 +184,8 @@ def edit_feature(
     """
     model = adapter.currentModel
     feature = _feature(adapter, name)
-    kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
+    raw_kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
+    kind = TYPE_ALIASES.get(raw_kind, raw_kind)
     problem = check_changes(kind, changes, name)
     if problem:
         raise ValueError(problem)

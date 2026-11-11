@@ -7,6 +7,8 @@ import sys
 import time
 from typing import Any, cast
 
+from loguru import logger
+
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
 from . import limits
@@ -347,9 +349,13 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
                 selection_error = selection_error_candidate
 
         if not selected:
-            detail = f" ({selection_error})" if selection_error else ""
+            # The last select's error is the SW 2022 form's "Type mismatch"
+            # on SW 2026, not anything about the plane; in the message its
+            # HRESULT made the error com_type_mismatch, not not_found.
+            if selection_error:
+                logger.debug("Selecting plane {!r} failed: {}", plane, selection_error)
             raise Exception(
-                f"Plane '{plane}' not found in the part{detail}. Use Front, Top "
+                f"Plane '{plane}' not found in the part. Use Front, Top "
                 "or Right, or a plane made by create_reference_plane "
                 "(list_features names them)"
             )

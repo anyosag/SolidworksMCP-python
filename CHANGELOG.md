@@ -103,7 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `units` and `binary`. SolidWorks keeps these as the user's STL options;
   they are set for the export, read back, and put back afterwards, and the
   reply's `export.mesh` says what was applied and whether the user's options
-  were restored. Left out, the user's options are used as before.
+  were restored. Left out, the user's options are used as before. SolidWorks
+  derives the resolution from the tolerances (custom is ignored until one is
+  written, measured on 2026), so custom needs `deviation_mm` or `angle_deg`.
 - **`export_image` takes `hide` and `zoom_box_mm`.** `hide` hides planes,
   sketches, axes, origins, points or coordinate systems for that picture
   only and shows them again afterwards, even when the picture fails.
@@ -156,6 +158,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`add_fillet` on the current selection fillets it.** With `edge_names`
+  empty (after `select_edges`, `select_face_edges` or a pick in SolidWorks),
+  it built nothing: the volume check before the fillet read mass
+  properties, which rebuilds the part, and a rebuild clears the selection.
+  The volume is now read without a rebuild. Found by the first live run of
+  this branch's tests.
+- **`add_fillet` names the fillet it made.** On SolidWorks 2025 and later
+  `FeatureFillet3` returns a number, not the feature, so the reply said
+  "Fillet" and `edit_feature` then found no such feature; the name now comes
+  from the feature tree ("Fillet1").
+- **`create_sketch` on a missing plane is `not_found`.** SolidWorks' "Type
+  mismatch" from a last selection attempt was copied into the message, and
+  its HRESULT made the error `com_type_mismatch`.
 - **`set_dimension` writes angles and counts in their own units.** It took
   every value as millimetres, so a circular pattern's instance count of 2
   was written as 0.002 and its 180-degree spacing as 0.18 rad, and the

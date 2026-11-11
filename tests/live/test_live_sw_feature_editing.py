@@ -125,8 +125,11 @@ async def test_a_fillet_radius_and_a_through_hole(scratch) -> None:
     through = await tools["edit_feature"]({"name": cut, "end_condition": "ThroughAll"})
     holed = await _volume(adapter)
 
-    # A convex fillet removes (1 - pi/4) r^2 per mm of edge; the top rim is 140 mm.
-    extra = (1 - math.pi / 4) * (2**2 - 1**2) * 140
+    # A convex fillet removes (1 - pi/4) r^2 per mm of edge; the top rim is
+    # 140 mm. At each of the 4 corners two of those cuts overlap, by
+    # (2 - pi/2 - 1/3) r^3 (measured 87.43 mm³ against 87.45 from this).
+    corner = 2 - math.pi / 2 - 1 / 3
+    extra = (1 - math.pi / 4) * (2**2 - 1**2) * 140 - 4 * corner * (2**3 - 1**3)
     deeper = math.pi * 3**2 * 6  # the hole goes from 4 to 10 mm deep
     evidence(
         "fillet 1 -> 2 mm, then the hole through",
@@ -161,10 +164,12 @@ async def test_a_feature_goes_in_at_the_rollback_bar(scratch) -> None:
     assert rolled["status"] == "success", rolled
     assert rolled["data"]["rolled_back"]
     assert forward["data"]["rolled_back"] == []
+    # list_features lists the newest feature first; put it in tree order.
+    tree = order if order.index("Origin") < order.index(boss) else order[::-1]
     assert (
-        order.index(boss)
-        < order.index(cut)
-        < order.index(next(n for n in order if n.startswith("Fillet")))
+        tree.index(boss)
+        < tree.index(cut)
+        < tree.index(next(n for n in tree if n.startswith("Fillet")))
     )
 
 

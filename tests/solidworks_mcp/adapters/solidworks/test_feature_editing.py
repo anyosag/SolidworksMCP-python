@@ -227,9 +227,11 @@ def test_a_cut_takes_depth_end_condition_and_direction() -> None:
 # ---- edit_feature ------------------------------------------------------------
 
 
-def test_a_cuts_depth_and_direction_change_and_read_back() -> None:
+@pytest.mark.parametrize("type_name", ["Cut", "ICE"])
+def test_a_cuts_depth_and_direction_change_and_read_back(type_name: str) -> None:
+    """SolidWorks 2026 names a cut-extrude's type "ICE" (first live run)."""
     data = _ExtrudeData()
-    model = _Model([_Feature("Cut-Extrude1", "Cut", data)])
+    model = _Model([_Feature("Cut-Extrude1", type_name, data)])
 
     reply = fe.edit_feature(
         _Adapter(model),

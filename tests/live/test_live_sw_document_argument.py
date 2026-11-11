@@ -38,7 +38,7 @@ async def _tools(adapter: Any) -> dict[str, Any]:
 
 
 async def _part(tools: dict[str, Any]) -> str:
-    created = await tools["create_part"]({})
+    created = await tools["create_part"]({"name": "document-argument scratch"})
     assert created["status"] == "success", created
     info = await tools["get_model_info"]()
     return str(info["model_info"]["title"])

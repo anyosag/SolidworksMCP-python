@@ -40,7 +40,7 @@ async def test_mesh_settings_go_with_the_export(mock_config: Any) -> None:
 
     assert result["status"] == "success", result
     assert result["export"]["mesh"] == {
-        "applied": ["resolution custom", "deviation 0.01 mm", "angle 5 deg"],
+        "applied": ["deviation 0.01 mm", "angle 5 deg", "resolution custom"],
         "restored": True,
     }
     assert "warning" not in result
@@ -78,6 +78,7 @@ async def test_without_settings_the_users_options_are_used(mock_config: Any) -> 
     ("arguments", "fragment"),
     [
         ({"resolution": "coarse", "deviation_mm": 0.1}, "need resolution 'custom'"),
+        ({"resolution": "custom"}, "needs deviation_mm or angle_deg"),
         ({"angle_deg": 0}, "greater than 0"),
         ({"units": "furlong"}, "Input should be"),
     ],

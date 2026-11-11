@@ -89,6 +89,7 @@ async def test_a_finer_mesh_for_one_file_leaves_the_users_options(
         }
     )
     after = _preferences(adapter.swApp)
+    written = {p.name: p.exists() for p in (coarse, fine)}
 
     evidence(
         "coarse vs a 0.005 mm / 2 degree mesh of a 40 mm disc",
@@ -97,10 +98,12 @@ async def test_a_finer_mesh_for_one_file_leaves_the_users_options(
             "user_options_after": after,
             "coarse": rough,
             "fine": smooth,
-            "triangles": {"coarse": _triangles(coarse), "fine": _triangles(fine)},
+            "written": written,
         },
     )
     assert rough["status"] == smooth["status"] == "success", (rough, smooth)
+    assert written == {"coarse.stl": True, "fine.stl": True}
+    evidence("facets", {"coarse": _triangles(coarse), "fine": _triangles(fine)})
     assert smooth["export"]["mesh"]["restored"] is True
     assert _triangles(fine) > 2 * _triangles(coarse)
     assert after == before

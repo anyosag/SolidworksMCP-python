@@ -9,16 +9,26 @@ the SolidWorks 2026 ``swconst`` help ("System Options > Export > STL"):
   fine 2, custom 3;
 * deviation and angle tolerance: ``swSTLDeviation`` and
   ``swSTLAngleTolerance`` (doubles 2 and 3), used with custom resolution.
-  The help gives no unit; they are written in SolidWorks' system units,
-  metres and radians, like the rest of the API;
+  The help gives no unit; SolidWorks 2026 stores metres and radians (a
+  user's 30 degrees read back as 0.5236);
 * units: ``swExportStlUnits`` (integer 211), ``swLengthUnit_e`` mm 0, cm 1,
   m 2, in 3, ft 4;
 * binary or ASCII: ``swSTLBinaryFormat`` (toggle 69).
+
+Measured on SolidWorks 2026 (2026-11-11, COM pitfall #40): SolidWorks derives
+the resolution from the tolerances. ``swSTLQuality`` = custom is ignored (it
+reads back as before) until a tolerance has been written with a value off the
+coarse and fine presets, and then it sticks. So tolerances are written first,
+custom resolution needs one of them, its read-back is not checked, and on
+restore the tolerances go back before the resolution. SolidWorks also keeps
+the deviation within limits that depend on the part, so a tolerance it moves
+is reported as used, not refused.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass, field
 from typing import Any
 
 #: The kinds of preference, and the ISldWorks get/set methods for each.
@@ -65,19 +75,15 @@ def preference_changes(settings: dict[str, Any]) -> list[Change]:
         raise ValueError(
             f"{' and '.join(tolerances)} need resolution 'custom', not {resolution!r}."
         )
+    if resolution == "custom" and not tolerances:
+        raise ValueError(
+            "Resolution 'custom' needs deviation_mm or angle_deg: SolidWorks "
+            "takes custom only with its own tolerances."
+        )
     if tolerances:
         resolution = "custom"
-    if resolution is not None:
-        if resolution not in RESOLUTIONS:
-            raise ValueError(f"Unknown STL resolution {resolution!r}.")
-        changes.append(
-            (
-                "integer",
-                STL_QUALITY,
-                RESOLUTIONS[resolution],
-                f"resolution {resolution}",
-            )
-        )
+    if resolution is not None and resolution not in RESOLUTIONS:
+        raise ValueError(f"Unknown STL resolution {resolution!r}.")
     if settings.get("deviation_mm") is not None:
         mm = float(settings["deviation_mm"])
         changes.append(("double", STL_DEVIATION, mm / 1000.0, f"deviation {mm:g} mm"))
@@ -86,6 +92,10 @@ def preference_changes(settings: dict[str, Any]) -> list[Change]:
         changes.append(
             ("double", STL_ANGLE_TOLERANCE, math.radians(deg), f"angle {deg:g} deg")
         )
+    if resolution is not None:
+        # After the tolerances: custom only sticks once they are written.
+        quality = RESOLUTIONS[resolution]
+        changes.append(("integer", STL_QUALITY, quality, f"resolution {resolution}"))
     if settings.get("units") is not None:
         units = str(settings["units"])
         if units not in UNITS:
@@ -97,61 +107,107 @@ def preference_changes(settings: dict[str, Any]) -> list[Change]:
     return changes
 
 
-def same_value(kind: str, wanted: Any, read: Any) -> bool:
-    """Whether a preference read back holds the value written."""
+def same_value(kind: str, wanted: Any, read: Any, pref: int = 0) -> bool:
+    """Whether a preference read back holds the value written.
+
+    Custom resolution is not checked: SolidWorks reports custom only while
+    the tolerances are off its presets, and uses the tolerances written
+    either way.
+    """
+    if pref == STL_QUALITY and wanted == RESOLUTIONS["custom"]:
+        return True
     if read is None:
         return False
     if kind == "double":
-        return math.isclose(float(read), float(wanted), rel_tol=1e-6, abs_tol=1e-12)
+        # SolidWorks rounds tolerances (0.005 mm reads back 0.005004 mm).
+        return math.isclose(float(read), float(wanted), rel_tol=1e-2, abs_tol=1e-12)
     if kind == "toggle":
         return bool(read) is bool(wanted)
     return int(read) == int(wanted)
 
 
-def apply_changes(app: Any, changes: list[Change]) -> list[tuple[str, int, Any]]:
+@dataclass
+class Applied:
+    """What :func:`apply_changes` set.
+
+    Attributes:
+        previous: ``(kind, id, previous)`` for every preference set, for
+            :func:`restore`.
+        labels: One line per setting, as SolidWorks took it.
+    """
+
+    previous: list[tuple[str, int, Any]] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+
+
+def _shown(pref: int, raw: Any) -> str:
+    """A tolerance in the tools' units: mm for the deviation, else degrees."""
+    if pref == STL_DEVIATION:
+        return f"{float(raw) * 1000.0:.4g} mm"
+    return f"{math.degrees(float(raw)):.4g} deg"
+
+
+def apply_changes(app: Any, changes: list[Change]) -> Applied:
     """Set each preference, reading the user's value first and checking each.
+
+    A tolerance SolidWorks moves (it keeps the deviation within limits that
+    depend on the part: 0.005 mm was refused on a 40 mm disc) is not an
+    error: the export uses what SolidWorks holds, and the label says what
+    that was.
 
     Args:
         app: ``ISldWorks`` (its get/set methods flagged).
         changes: From :func:`preference_changes`.
 
     Returns:
-        list[tuple[str, int, Any]]: ``(kind, id, previous)`` for every
-        preference set, for :func:`restore`.
+        Applied: The user's values, and a label per setting.
 
     Raises:
-        RuntimeError: When SolidWorks doesn't take a value; the ones set
-            before it are put back first.
+        RuntimeError: When SolidWorks doesn't take a resolution, units or
+            format; the ones set before it are put back first.
     """
-    previous: list[tuple[str, int, Any]] = []
+    applied = Applied()
+    previous = applied.previous
     for kind, pref, value, label in changes:
         getter, setter = PREFERENCE_METHODS[kind]
         old = getattr(app, getter)(pref)
         getattr(app, setter)(pref, value)
         previous.append((kind, pref, old))
-        if not same_value(kind, value, getattr(app, getter)(pref)):
-            failed = restore(app, previous)
-            raise RuntimeError(
-                f"SolidWorks did not take the STL setting {label}, so nothing "
-                "was exported"
-                + (
-                    f"; {len(failed)} setting(s) could not be put back"
-                    if failed
-                    else "; your STL options are as they were"
-                )
-                + "."
+        read = getattr(app, getter)(pref)
+        if same_value(kind, value, read, pref):
+            applied.labels.append(label)
+            continue
+        if kind == "double" and read is not None:
+            applied.labels.append(f"{label} (SolidWorks used {_shown(pref, read)})")
+            continue
+        failed = restore(app, previous)
+        raise RuntimeError(
+            f"SolidWorks did not take the STL setting {label}, so nothing "
+            "was exported"
+            + (
+                f"; {len(failed)} setting(s) could not be put back"
+                if failed
+                else "; your STL options are as they were"
             )
-    return previous
+            + "."
+        )
+    return applied
 
 
 def restore(app: Any, previous: list[tuple[str, int, Any]]) -> list[int]:
-    """Put back the user's values, last set first.
+    """Put back the user's values: the resolution after the tolerances.
+
+    SolidWorks derives the resolution from the tolerances, so the user's
+    tolerances go back first and their resolution last.
 
     Returns:
         list[int]: The preference ids that could not be put back.
     """
     failed = []
-    for kind, pref, old in reversed(previous):
+    order = [p for p in reversed(previous) if p[1] != STL_QUALITY] + [
+        p for p in previous if p[1] == STL_QUALITY
+    ]
+    for kind, pref, old in order:
         _getter, setter = PREFERENCE_METHODS[kind]
         try:
             getattr(app, setter)(pref, old)
