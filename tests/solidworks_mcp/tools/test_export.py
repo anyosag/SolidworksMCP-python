@@ -750,3 +750,60 @@ async def test_a_file_export_without_format_type_uses_the_tools_own(
     assert result["status"] == "success"
     assert mock_adapter.export_step.call_args.args[0]["format_type"] == "step"
     assert ExportFileInput(file_path="C:/out/part.step").format_type is None
+
+
+# ---- export_image: "current" keeps the view ------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("given", "view"),
+    [
+        ({}, "isometric"),
+        ({"orientation": "current"}, "current"),  # the alias is applied
+        ({"orientation": "top", "view_orientation": "front"}, "front"),
+    ],
+)
+def test_export_image_orientation_alias(given, view) -> None:
+    assert ExportImageInput(file_path="a.png", **given).view_orientation == view
+
+
+def test_export_image_zoom_to_fit_is_an_optional_bool() -> None:
+    assert ExportImageInput(file_path="a.png").zoom_to_fit is None
+    assert ExportImageInput(file_path="a.png", zoom_to_fit=True).zoom_to_fit is True
+    with pytest.raises(ValueError, match="zoom_to_fit"):
+        ExportImageInput(file_path="a.png", zoom_to_fit="sometimes")
+
+
+@pytest.mark.asyncio
+async def test_export_image_passes_current_and_the_zoom_to_the_adapter(
+    mcp_server, mock_adapter, mock_config
+) -> None:
+    await register_export_tools(mcp_server, mock_adapter, mock_config)
+    mock_adapter.export_image = AsyncMock(
+        return_value=Mock(
+            is_success=True, data={"zoomed_to_fit": False}, execution_time=0.1
+        )
+    )
+    tool = await _tool(mcp_server, "export_image")
+
+    kept = await tool({"file_path": "C:/out/close-up.png", "orientation": "current"})
+    await tool({"file_path": "C:/out/fit.png", "zoom_to_fit": True})
+
+    assert kept["data"] == {"zoomed_to_fit": False}
+    first, second = (c.args[0] for c in mock_adapter.export_image.call_args_list)
+    assert (first["view_orientation"], first["zoom_to_fit"]) == ("current", None)
+    assert (second["view_orientation"], second["zoom_to_fit"]) == ("isometric", True)
+
+
+@pytest.mark.asyncio
+async def test_export_image_describes_what_current_does(
+    mcp_server, mock_adapter, mock_config
+) -> None:
+    await register_export_tools(mcp_server, mock_adapter, mock_config)
+    tool = next(t for t in await mcp_server.list_tools() if t.name == "export_image")
+
+    text = " ".join((tool.description or "").split())
+    assert "`current` keeps the view exactly as it is, zoom included" in text
+    fields = ExportImageInput.model_json_schema()["properties"]
+    assert "current to keep the view" in fields["view_orientation"]["description"]
+    assert fields["zoom_to_fit"]["anyOf"] == [{"type": "boolean"}, {"type": "null"}]

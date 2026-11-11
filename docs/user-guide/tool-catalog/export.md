@@ -19,15 +19,13 @@ Export the active document to STEP, like File > Save As with the STEP type.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path for the exported file |
-| `format_type` | `str` | ✅ | `` | Export format (step, iges, stl, pdf, dwg, jpg, png) |
-| `options` | `Dict[str, Any]?` | — | `None` | Format-specific export options |
+| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 
 **Sample call:**
 
 ```json
 {
-  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt",
-  "format_type": "step"
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
 ```
 
@@ -44,15 +42,13 @@ Export the active document to IGES, like File > Save As with the IGES type.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path for the exported file |
-| `format_type` | `str` | ✅ | `` | Export format (step, iges, stl, pdf, dwg, jpg, png) |
-| `options` | `Dict[str, Any]?` | — | `None` | Format-specific export options |
+| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 
 **Sample call:**
 
 ```json
 {
-  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt",
-  "format_type": "step"
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
 ```
 
@@ -69,15 +65,13 @@ Export the active document to STL, like File > Save As with the STL type.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path for the exported file |
-| `format_type` | `str` | ✅ | `` | Export format (step, iges, stl, pdf, dwg, jpg, png) |
-| `options` | `Dict[str, Any]?` | — | `None` | Format-specific export options |
+| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 
 **Sample call:**
 
 ```json
 {
-  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt",
-  "format_type": "step"
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
 ```
 
@@ -94,15 +88,13 @@ Export the active document to PDF, like File > Save As with the PDF type.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path for the exported file |
-| `format_type` | `str` | ✅ | `` | Export format (step, iges, stl, pdf, dwg, jpg, png) |
-| `options` | `Dict[str, Any]?` | — | `None` | Format-specific export options |
+| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 
 **Sample call:**
 
 ```json
 {
-  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt",
-  "format_type": "step"
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
 ```
 
@@ -119,15 +111,13 @@ Export the active document to DWG, like File > Save As with the DWG type.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path for the exported file |
-| `format_type` | `str` | ✅ | `` | Export format (step, iges, stl, pdf, dwg, jpg, png) |
-| `options` | `Dict[str, Any]?` | — | `None` | Format-specific export options |
+| `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
 
 **Sample call:**
 
 ```json
 {
-  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt",
-  "format_type": "step"
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
 ```
 
@@ -135,7 +125,7 @@ Export the active document to DWG, like File > Save As with the DWG type.
 
 ### `export_image`
 
-Save a picture of the active model in a standard view, as PNG or JPG, at a chosen size.
+Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG.
 
 **Prerequisite:** Active document
 
@@ -152,8 +142,9 @@ Save a picture of the active model in a standard view, as PNG or JPG, at a chose
 | `width` | `int` | — | `1920` | Image width in pixels |
 | `height` | `int` | — | `1080` | Image height in pixels |
 | `resolution` | `str?` | — | `None` | Resolution alias |
-| `view_orientation` | `str` | — | `isometric` | View orientation (front, top, right, isometric, current) |
-| `orientation` | `str?` | — | `None` | Alternative orientation field |
+| `view_orientation` | `str` | — | `isometric` | View to turn the model to (front, back, left, right, top, bottom, isometric, dimetric, trimetric), or current to keep the view on screen exactly as it is, zoom included |
+| `orientation` | `str?` | — | `None` | Alias of view_orientation |
+| `zoom_to_fit` | `bool?` | — | `None` | Zoom so the whole model fills the picture. Left out: yes for a named view, no for current, so a close-up stays a close-up |
 
 **Sample call:**
 

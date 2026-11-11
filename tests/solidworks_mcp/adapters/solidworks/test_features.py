@@ -375,7 +375,7 @@ def test_create_cut_extrude_raises_when_no_feature_and_no_errors() -> None:
     assert "Sketch1" in (result.error or "")
     error = result.error or ""
     assert "built no feature" in error
-    assert "tried: the requested direction; direction flipped" in error
+    assert "tried: along the sketch normal; against the sketch normal" in error
 
 
 # ---------------------------------------------------------------------------
@@ -1039,11 +1039,12 @@ def test_through_all_both_falls_back_to_the_single_ended_enum() -> None:
 
 
 def test_blind_cut_from_a_face_sketch_flips_direction() -> None:
-    """The requested direction points out of the part and builds nothing, so
-    the single-ended cut is retried the other way (#193)."""
+    """Along the sketch normal points out of the part and builds nothing, so
+    the single-ended cut is retried the other way (#193). ``Dir=True`` is
+    along the normal for FeatureCut4."""
     feature = SimpleNamespace(Name="Cut-Extrude1")
     adapter, log = _cut_adapter_recording(
-        cut4=lambda args: feature if args[2] else None,
+        cut4=lambda args: None if args[2] else feature,
         cut3=lambda _args: None,
     )
 
@@ -1054,9 +1055,9 @@ def test_blind_cut_from_a_face_sketch_flips_direction() -> None:
     cut_args = [entry[1] for entry in log if entry[0] != "select"]
     # (Sd, Dir, T1, T2, D2) for FeatureCut4, FeatureCut3, then flipped FeatureCut4.
     assert [(a[0], a[2], a[3], a[4], a[6]) for a in cut_args] == [
-        (True, False, 1, 1, 0.0),
-        (True, False, 1, 1, 0.0),
         (True, True, 1, 1, 0.0),
+        (True, True, 1, 1, 0.0),
+        (True, False, 1, 1, 0.0),
     ]
     assert [entry[0] for entry in log].count("select") == 3
 

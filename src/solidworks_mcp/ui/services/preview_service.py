@@ -201,6 +201,9 @@ async def refresh_preview(
             "width": 1280,
             "height": 720,
             "view_orientation": orientation,
+            # The preview frames the whole model, even from the current view
+            # (which export_image otherwise keeps as it is, zoom included).
+            "zoom_to_fit": True,
         }
         png_ok = False
         png_error: str = ""

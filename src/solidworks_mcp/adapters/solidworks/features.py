@@ -48,7 +48,16 @@ class SolidWorksFeaturesMixin:
     async def create_cut_extrude(
         self, params: ExtrusionParameters
     ) -> AdapterResult[SolidWorksFeature]:
-        return _create_cut_extrude_impl(self, params)
+        """Cut with a sketch; an unset direction cuts the side with more material.
+
+        Args:
+            params: The cut; see :func:`_create_cut_extrude_impl`.
+
+        Returns:
+            AdapterResult[SolidWorksFeature]: See
+            :func:`_create_cut_extrude_choosing_side`.
+        """
+        return await _create_cut_extrude_choosing_side(self, params)
 
     async def add_fillet(
         self, radius: float, edge_names: list[str]
@@ -1400,8 +1409,80 @@ def _resolve_profile_sketch(
     return target_sketch
 
 
+def _requested_cut_direction(params: Any) -> bool | None:
+    """The ``reverse_direction`` a cut was given, or ``None`` when left unset.
+
+    ``ExtrusionParameters`` defaults the field to False, so whether the caller
+    set it comes from pydantic's ``model_fields_set``. Any other object counts
+    as setting it when it has the attribute.
+
+    Args:
+        params: The cut's parameters.
+
+    Returns:
+        bool | None: The direction asked for, or ``None`` to let the cut choose.
+    """
+    fields_set = getattr(params, "model_fields_set", None)
+    if isinstance(fields_set, set) and "reverse_direction" not in fields_set:
+        return None
+    value = getattr(params, "reverse_direction", None)
+    return None if value is None else bool(value)
+
+
+def _cut_end_condition(params: Any) -> tuple[bool, bool]:
+    """Whether a cut goes through all one way, and whether it goes both ways.
+
+    Args:
+        params: The cut's parameters (``end_condition``, ``both_directions``).
+
+    Returns:
+        tuple[bool, bool]: ``(through_one, through_both)``; both False for a
+        blind cut.
+    """
+    end_condition = str(getattr(params, "end_condition", None) or "Blind")
+    key = end_condition.strip().lower()
+    through_one = key in {"throughall", "through all", "through_all"}
+    through_both = key in {
+        "throughallboth",
+        "through all both",
+        "through_all_both",
+    } or (through_one and bool(getattr(params, "both_directions", False)))
+    return through_one, through_both
+
+
+#: ``reverse_direction`` (``FeatureCut4``'s ``Dir``) that cuts along the sketch
+#: normal, the side ``create_extrusion`` grows into.
+_ALONG_NORMAL = True
+
+
+def _cut_dir(reverse: bool) -> bool:
+    """``FeatureCut4``'s ``Dir`` argument for a cut's ``reverse_direction``.
+
+    The flag goes through as it is, so recorded sessions and exported scripts
+    cut as they always did. ``Dir=False`` is SolidWorks' own default for a
+    cut, and it goes against the sketch normal (from a face, into the part);
+    ``Dir=True`` goes along it. ``FeatureExtrusion3`` is the other way round:
+    ``Dir=False`` grows a boss along the normal. So the same
+    ``reverse_direction`` sends a boss and a cut to opposite sides, and a cut
+    left without one starts along the normal (:data:`_ALONG_NORMAL`), where a
+    boss from the same plane went.
+
+    Args:
+        reverse: The ``reverse_direction`` to cut with.
+
+    Returns:
+        bool: The ``Dir`` to pass.
+    """
+    return reverse
+
+
 def _create_cut_extrude_impl(
-    adapter: Any, params: ExtrusionParameters
+    adapter: Any,
+    params: ExtrusionParameters,
+    *,
+    reverse: bool | None = None,
+    sketch_name: str | None = None,
+    name: str | None = None,
 ) -> AdapterResult[SolidWorksFeature]:
     """Create a cut-extrude feature from an explicit or unambiguously-tracked sketch.
 
@@ -1447,10 +1528,14 @@ def _create_cut_extrude_impl(
         params: Extrusion parameter bag reused for cut parameters:
             - ``depth`` (float): Cut depth in mm.
             - ``draft_angle`` (float): Draft angle in degrees.
-            - ``reverse_direction`` (bool): Flip the cut direction. A
-              one-direction cut whose requested direction finds no material
-              is retried the other way; ``parameters.direction_flipped``
-              says so.
+            - ``reverse_direction`` (bool): ``Dir`` as given (see
+              :func:`_cut_dir`): True cuts along the sketch normal, False
+              against it. Left unset (not in ``model_fields_set``), a
+              one-direction cut starts along the normal. Either way, if
+              that side builds nothing it is cut once the other way, and
+              ``parameters.direction_flipped`` says so. Comparing the two
+              sides when both cut is
+              :func:`_create_cut_extrude_choosing_side`'s job.
             - ``end_condition`` (str): ``"Blind"`` (default),
               ``"ThroughAll"`` / ``"through_all"``, or ``"ThroughAllBoth"`` /
               ``"through_all_both"`` (through all in both directions, cut as a
@@ -1461,10 +1546,18 @@ def _create_cut_extrude_impl(
             - ``auto_select`` (bool): Auto-select bodies in scope.
             - ``sketch_name`` (str | None): Sketch to cut from. See sketch
               resolution above.
+        reverse: Cut exactly this way, whatever ``params`` says, and never
+            the other way.
+        sketch_name: The sketch to cut from, in place of
+            ``params.sketch_name``.
+        name: Rename the new cut to this when SolidWorks named it otherwise,
+            so a cut rebuilt after trying the other side keeps its first name.
 
     Returns:
         AdapterResult[SolidWorksFeature]: On success, ``data`` is a
-        ``SolidWorksFeature`` whose ``type`` is ``"Cut-Extrude"``.  On
+        ``SolidWorksFeature`` whose ``type`` is ``"Cut-Extrude"``; its
+        ``parameters`` say which way it cut (``reverse_direction``),
+        ``direction_flipped`` and ``direction_choice``.  On
         failure, ``status`` is ``ERROR`` and ``error`` explains exactly
         which stage failed: sketch-not-found (with the list of sketches that
         do exist), sketch-selection-failed (the resolved name plus why
@@ -1502,15 +1595,14 @@ def _create_cut_extrude_impl(
         Raises:
             Exception: When all COM cut variants return ``None``.
         """
+        # None: the caller left the direction to the cut.
+        requested = reverse if reverse is not None else _requested_cut_direction(params)
         normalized = SimpleNamespace(
             depth=float(getattr(params, "depth", 0.0)),
             draft_angle=float(getattr(params, "draft_angle", 0.0)),
-            reverse_direction=bool(getattr(params, "reverse_direction", False)),
-            end_condition=str(getattr(params, "end_condition", "Blind")),
-            both_directions=bool(getattr(params, "both_directions", False)),
             feature_scope=bool(getattr(params, "feature_scope", False)),
             auto_select=bool(getattr(params, "auto_select", True)),
-            sketch_name=getattr(params, "sketch_name", None) or None,
+            sketch_name=sketch_name or getattr(params, "sketch_name", None) or None,
         )
         feature_manager = adapter.currentModel.FeatureManager
 
@@ -1518,16 +1610,10 @@ def _create_cut_extrude_impl(
             adapter, normalized.sketch_name, purpose="cut from"
         )
 
-        end_condition = (normalized.end_condition or "Blind").strip().lower()
         blind = adapter.constants["swEndCondBlind"]
         through_all = adapter.constants["swEndCondThroughAll"]
         depth_m = normalized.depth / 1000.0
-        through_one = end_condition in {"throughall", "through all", "through_all"}
-        through_both = end_condition in {
-            "throughallboth",
-            "through all both",
-            "through_all_both",
-        } or (through_one and normalized.both_directions)
+        through_one, through_both = _cut_end_condition(params)
 
         t0 = adapter.constants.get("swStartSketchPlane", 0)
         feature = None
@@ -1545,45 +1631,50 @@ def _create_cut_extrude_impl(
             except (ValueError, IndexError):
                 sw_major = 0
 
-        # (label, Sd, T1, T2, Dir) forms to try, in order. Sd is True for a
-        # single-ended cut, False to also cut Direction 2 with T2. Dir
-        # reverses Direction 1.
-        reverse = normalized.reverse_direction
+        # (label, Sd, T1, T2, reverse_direction) forms to try, in order. Sd is
+        # True for a single-ended cut, False to also cut Direction 2 with T2.
+        # ``wanted`` is the side asked for: the caller's, else along the normal.
+        if through_both or requested is not None:
+            wanted = bool(requested)
+        else:
+            wanted = _ALONG_NORMAL
         if through_both:
             # Through All in both directions is a double-ended cut with
             # Through All on each side. A single-ended cut with
             # T1=swEndCondThroughAllBoth (9) is accepted by the COM call but
             # SolidWorks 2026 returns no feature for it (seen live on a closed
-            # Front Plane sketch), so that form is only a fallback.
+            # Front Plane sketch), so that form is only a fallback. Both sides
+            # are cut, so the direction changes nothing; Dir is passed as
+            # given, as it was when this was measured.
             forms = [
                 (
                     " [Sd=False, T1=T2=ThroughAll]",
                     False,
                     through_all,
                     through_all,
-                    reverse,
+                    wanted,
                 ),
                 (
                     " [Sd=True, T1=ThroughAllBoth]",
                     True,
                     adapter.constants["swEndCondThroughAllBoth"],
                     blind,
-                    reverse,
+                    wanted,
                 ),
             ]
         else:
             # One direction (Blind or Through All) is single-ended: Sd means
-            # "single direction" (#193). Direction 1 follows the sketch
-            # normal, so from a sketch on a face, or on the plane of one, the
-            # requested direction can point out of the part and the cut finds
-            # no material. Only then is the opposite direction tried, which is
-            # what the SolidWorks UI does (seen live on SW 2026: a Top Plane
-            # sketch under a block cut nothing until Dir was flipped).
+            # "single direction" (#193). The side asked for is cut first; left
+            # unset, that is along the sketch normal, where create_extrusion
+            # grows. Only when it finds no material is the other side tried,
+            # which is what the SolidWorks UI does: from a face, or from the
+            # plane of one, a side can point out of the part. A side forced
+            # with ``reverse`` is never flipped. When both sides cut,
+            # _create_cut_extrude_choosing_side measures which removes more.
             t1 = through_all if through_one else blind
-            forms = [
-                ("", True, t1, blind, reverse),
-                (" [direction flipped]", True, t1, blind, not reverse),
-            ]
+            forms = [("", True, t1, blind, wanted)]
+            if reverse is None:
+                forms.append((" [direction flipped]", True, t1, blind, not wanted))
 
         def _cut_args(sd: bool, t1: int, t2: int, dir_: bool) -> list[Any]:
             """Build the 26 arguments ``FeatureCut3`` and ``FeatureCut4`` share.
@@ -1639,10 +1730,10 @@ def _create_cut_extrude_impl(
         # 2. FeatureCut3 (SW 2010+, and any install lacking FeatureCut4).
         optimize_geometry = sw_major == 33
         first_call = True
-        direction_flipped = False
-        for label, sd, t1, t2, dir_ in forms:
-            direction_flipped = dir_ != reverse
-            args = _cut_args(sd, t1, t2, dir_)
+        used_reverse = wanted
+        for label, sd, t1, t2, form_reverse in forms:
+            used_reverse = form_reverse
+            args = _cut_args(sd, t1, t2, _cut_dir(form_reverse))
             calls = (
                 (
                     "FeatureCut4",
@@ -1685,34 +1776,61 @@ def _create_cut_extrude_impl(
                     f"'{target_sketch}' (SolidWorks major version {sw_major}). "
                     + " | ".join(fallback_errors)
                 )
-            # Name what was tried so the caller doesn't retry the same thing:
-            # a one-direction cut has already been tried both ways.
+            # Name what was tried so the caller doesn't retry the same thing.
             tried = "; ".join(
-                label.strip(" []") or "the requested direction"
-                for label, *_rest in forms
+                label.strip(" []")
+                if through_both
+                else ("along" if form_reverse else "against") + " the sketch normal"
+                for label, _sd, _t1, _t2, form_reverse in forms
             )
             raise Exception(
                 f"SolidWorks built no feature from sketch '{target_sketch}' "
                 f"(tried: {tried}; SolidWorks major version {sw_major}). The "
-                "profile removed no material in any of them. Check that the "
+                "profile removed no material. Check that the "
                 "sketch is a closed profile, that it overlaps the solid body "
                 f"within the {normalized.depth:g} mm depth (or use "
                 "end_condition 'ThroughAll'), and that no other feature has "
                 "already used the sketch."
             )
 
+        feature_name = feature.Name
+        if name and feature_name != name:
+            # SolidWorks numbers a cut rebuilt after the other side was tried
+            # past the deleted trial; it keeps the name the first cut had.
+            _, rename_error = adapter._attempt_with_error(
+                lambda: setattr(feature, "Name", name)
+            )
+            if rename_error is None:
+                feature_name = adapter._attempt(lambda: feature.Name, default=name)
+
+        flipped = used_reverse != wanted
+        if through_both:
+            choice = "both_directions"
+        elif requested is not None:
+            choice = "flipped" if flipped else "requested"
+        elif flipped:
+            choice = "only_side_with_material"
+        else:
+            # Along the normal built; whether the other side removes more is
+            # measured by _create_cut_extrude_choosing_side.
+            choice = "not_compared"
         return SolidWorksFeature(
-            name=feature.Name,
+            name=feature_name,
             type="Cut-Extrude",
             id=adapter._get_feature_id(feature),
             parameters={
                 "depth": normalized.depth,
                 "draft_angle": normalized.draft_angle,
-                "reverse_direction": normalized.reverse_direction,
+                # The reverse_direction that cuts the side it cut: True along
+                # the sketch normal (where create_extrusion grows), False
+                # against it.
+                "reverse_direction": used_reverse,
                 "sketch_name": target_sketch,
-                # True when the requested direction found no material and the
-                # cut went the other way (#193).
-                "direction_flipped": direction_flipped,
+                # True when the side cut is not the side asked for: the
+                # caller's, or along the sketch normal when none was (#193).
+                "direction_flipped": flipped,
+                # How the side was picked; see _create_cut_extrude_choosing_side.
+                "direction_choice": choice,
             },
             properties={"created": datetime.now().isoformat()},
         )
@@ -1721,6 +1839,183 @@ def _create_cut_extrude_impl(
         AdapterResult[SolidWorksFeature],
         adapter._handle_com_operation("create_cut_extrude", _cut_operation),
     )
+
+
+#: Two volumes a cut removed count as the same within this fraction.
+_SAME_REMOVAL = 1e-6
+
+
+def _removes_more(removed: float, other: float) -> bool:
+    """Whether a cut that removed ``removed`` mm³ took more than ``other`` mm³.
+
+    Args:
+        removed: Volume one side's cut removed, in mm³.
+        other: Volume the other side's cut removed, in mm³.
+
+    Returns:
+        bool: True when ``removed`` is larger beyond :data:`_SAME_REMOVAL`.
+    """
+    return removed - other > _SAME_REMOVAL * max(abs(removed), abs(other), 1.0)
+
+
+async def _part_volume(adapter: Any) -> float | None:
+    """The active part's volume in mm³, or ``None`` when it can't be read.
+
+    Args:
+        adapter: A connected adapter.
+
+    Returns:
+        float | None: The volume ``get_mass_properties`` reads.
+    """
+    result = await adapter.get_mass_properties()
+    volume = getattr(result.data, "volume", None) if result.is_success else None
+    return float(volume) if isinstance(volume, (int, float)) else None
+
+
+def _with_choice(
+    result: AdapterResult[SolidWorksFeature],
+    choice: str,
+    removed: dict[str, float] | None = None,
+    note: str | None = None,
+) -> AdapterResult[SolidWorksFeature]:
+    """Record how a cut whose direction was left unset got its side.
+
+    Args:
+        result: The successful cut that stays in the part.
+        choice: Its ``direction_choice``.
+        removed: What each side removed in mm³ (``along_normal``,
+            ``against_normal``), when both were measured.
+        note: Why the sides were not compared, when they weren't.
+
+    Returns:
+        AdapterResult[SolidWorksFeature]: ``result``, its parameters updated.
+        ``direction_flipped`` is True when it cut against the sketch normal.
+    """
+    feature = cast(SolidWorksFeature, result.data)
+    parameters = dict(feature.parameters or {})
+    # The side wanted was along the normal, whatever the trial forced.
+    along = parameters.get("reverse_direction") == _ALONG_NORMAL
+    parameters["direction_flipped"] = not along
+    parameters["direction_choice"] = choice
+    if removed is not None:
+        parameters["volume_removed_mm3"] = removed
+    if note is not None:
+        parameters["direction_note"] = note
+    feature.parameters = parameters
+    return result
+
+
+async def _create_cut_extrude_choosing_side(
+    adapter: Any, params: ExtrusionParameters
+) -> AdapterResult[SolidWorksFeature]:
+    """Cut, and for a one-way cut left without a direction, pick the side.
+
+    A ``reverse_direction`` the caller set is cut as it always was (that
+    side, and the other only when it builds nothing), and a cut through all
+    both ways has no side to pick: both go straight to
+    :func:`_create_cut_extrude_impl`. Otherwise the cut goes along the sketch
+    normal first, the side ``create_extrusion`` grows into. If that builds
+    nothing, only the other side has material and the impl has cut it
+    (``only_side_with_material``). If it builds, the part's volume says what
+    it removed; it is deleted, the other side is cut and measured, and the
+    side that removed more stays (``more_material``), the first one rebuilt
+    under its first name when it wins. Equal amounts keep the sketch normal
+    side (``equal_material``).
+
+    Keeping the first side that built anything took a sliver: a cut sketched
+    on the offset plane a boss had just grown from went away from the boss,
+    where a little material was, and removed 1.13 mm³ instead of 9.05 mm³.
+
+    When the volume can't be read, or a trial cut can't be deleted, the first
+    side that built stays as it is (``not_compared``, with a
+    ``direction_note``).
+
+    Args:
+        adapter: A connected adapter.
+        params: The cut; see :func:`_create_cut_extrude_impl`.
+
+    Returns:
+        AdapterResult[SolidWorksFeature]: The cut that stays. Its parameters
+        add ``direction_choice`` and, when both sides were measured,
+        ``volume_removed_mm3``. ``ERROR`` when no side could be cut, or when
+        the first side could not be cut again after the other was tried.
+    """
+    _through_one, through_both = _cut_end_condition(params)
+    if (
+        not adapter.currentModel
+        or through_both
+        or _requested_cut_direction(params) is not None
+    ):
+        return _create_cut_extrude_impl(adapter, params)
+
+    before = await _part_volume(adapter)
+    first = _create_cut_extrude_impl(adapter, params)
+    if not first.is_success or first.data is None:
+        return first
+    applied = first.data.parameters or {}
+    if applied.get("direction_flipped"):
+        return first
+    after = await _part_volume(adapter) if before is not None else None
+    if before is None or after is None:
+        return _with_choice(
+            first, "not_compared", note="the part's volume could not be read"
+        )
+
+    along = before - after
+    sketch = applied.get("sketch_name")
+    name = first.data.name
+    deleted = _delete_feature_impl(adapter, name)
+    if not deleted.is_success:
+        return _with_choice(
+            first,
+            "not_compared",
+            note=f"the cut could not be deleted to try the other side: {deleted.error}",
+        )
+
+    other = _create_cut_extrude_impl(
+        adapter, params, reverse=not _ALONG_NORMAL, sketch_name=sketch, name=name
+    )
+    # The other side building nothing means it has no material.
+    removed: dict[str, float] | None = {"along_normal": along, "against_normal": 0.0}
+    choice = "only_side_with_material"
+    note: str | None = None
+    if other.is_success and other.data is not None:
+        after_other = await _part_volume(adapter)
+        if after_other is None:
+            removed = None
+            choice, note = "not_compared", "the part's volume could not be read"
+        else:
+            against = before - after_other
+            removed = {"along_normal": along, "against_normal": against}
+            if _removes_more(against, along):
+                return _with_choice(other, "more_material", removed)
+            choice = (
+                "more_material" if _removes_more(along, against) else "equal_material"
+            )
+        undone = _delete_feature_impl(adapter, other.data.name)
+        if not undone.is_success:
+            return _with_choice(
+                other,
+                "not_compared",
+                removed,
+                note=f"the cut against the sketch normal could not be deleted "
+                f"to cut along it again: {undone.error}",
+            )
+
+    again = _create_cut_extrude_impl(
+        adapter, params, reverse=_ALONG_NORMAL, sketch_name=sketch, name=name
+    )
+    if not again.is_success:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(
+                f"The cut along the sketch normal removed {along:.4g} mm3, but "
+                "after the other side was tried it could not be cut again, so "
+                f"the part has no cut from '{sketch}': {again.error}"
+            ),
+            execution_time=again.execution_time,
+        )
+    return _with_choice(again, choice, removed, note)
 
 
 def _parse_edge_spec(
@@ -1772,6 +2067,21 @@ def _parse_edge_spec(
 #: so a point that is not on any edge fails instead of grabbing a neighbour.
 _PICK_TOLERANCE_M = 5e-4
 
+#: Every cached bounding box is grown by this much on each side, so an edge
+#: or face lying a little outside the box read for it (a tolerant edge, a
+#: rounded face box) is never ruled out. It only costs a few more measurements.
+_BOX_PAD_M = 1e-4
+
+#: How many picks a picker must expect before it reads a bounding box for
+#: every entity. Without boxes each pick measures every entity, one
+#: ``GetClosestPointOn`` round trip each; a line edge's box takes about twenty
+#: (its curve, two vertices and their points, plus pywin32's type lookups on
+#: each new dispatch), a face's two. Below these counts, measuring is cheaper.
+_INDEX_MIN_PICKS = {"GetEdges": 20, "GetFaces": 2}
+
+#: ``((xmin, ymin, zmin), (xmax, ymax, zmax))`` in metres.
+_Box = tuple[tuple[float, ...], tuple[float, ...]]
+
 
 class _BodyEntityPicker:
     """Find the body edge or face nearest a point, by true closest distance.
@@ -1785,15 +2095,42 @@ class _BodyEntityPicker:
     depend on the view, vertices or midpoints.
 
     The entity lists are read once per picker, so one fillet over many edges
-    costs one body walk, not one per edge.
+    costs one body walk, not one per edge. A picker told to expect many picks
+    (``picks``, at least :data:`_INDEX_MIN_PICKS`) also reads a bounding box
+    for every entity, once, and then measures only the entities whose box is
+    no further from the point than the best distance measured so far. A box
+    is never closer than what it holds, so the answer is the one measuring
+    every entity gives - the nearest, the first in body order on a tie - and
+    N picks over E edges cost one pass over the edges plus a few
+    measurements per pick, instead of N x E round trips.
 
     Args:
         adapter: A connected adapter with a valid ``currentModel``.
+        picks: How many picks the caller will make, per getter
+            (``"GetEdges"`` / ``"GetFaces"``). Defaults to one of each.
     """
 
-    def __init__(self, adapter: Any) -> None:
+    def __init__(self, adapter: Any, picks: dict[str, int] | None = None) -> None:
         self._adapter = adapter
+        self._picks = dict(picks or {})
         self._cache: dict[str, list[Any]] = {}
+        self._boxes: dict[str, list[_Box | None]] = {}
+        # id -> (object, names flagged on it). Holding the object stops its
+        # id from passing to another dispatch while the picker lives.
+        self._flagged: dict[int, tuple[Any, set[str]]] = {}
+        self._select_data: dict[int, Any] = {}
+        self._rebuilt = False
+
+    def rebuild(self) -> None:
+        """Run ``ForceRebuild3(True)``, once per picker (pitfall #13).
+
+        A rebuild makes recent features' edges resolvable, and clears the
+        selection (pitfall #23), so it must come before anything is selected.
+        """
+        if not self._rebuilt:
+            self._rebuilt = True
+            model = self._adapter.currentModel
+            self._adapter._attempt(lambda: model.ForceRebuild3(True), default=None)
 
     def entities(self, getter: str) -> list[Any]:
         """Return every solid body's ``GetEdges()`` or ``GetFaces()``."""
@@ -1817,34 +2154,172 @@ class _BodyEntityPicker:
     def nearest(
         self, getter: str, point: tuple[float, float, float]
     ) -> tuple[Any, float] | None:
-        """Return ``(entity, distance_m)`` for the closest entity, or ``None``."""
+        """Return ``(entity, distance_m)`` for the closest entity, or ``None``.
+
+        Entities are measured nearest box first (in body order when there
+        are no boxes), and the search stops at the first box further away
+        than the best distance measured: nothing in it can be closer.
+        """
+        entities = self.entities(getter)
+        bounds = self._lower_bounds(getter, point)
         best: tuple[Any, float] | None = None
-        for entity in self.entities(getter):
-            _flag(self._adapter, entity, "GetClosestPointOn")
-            closest = _attempt(
-                self._adapter, lambda e=entity: list(e.GetClosestPointOn(*point))
-            )
-            if not closest or len(closest) < 3:
+        best_index = 0
+        for index in sorted(range(len(entities)), key=bounds.__getitem__):
+            if best is not None and bounds[index] > best[1]:
+                break
+            distance = self._distance(entities[index], point)
+            if distance is None:
                 continue
-            distance = math.dist([float(c) for c in closest[:3]], point)
-            if best is None or distance < best[1]:
-                best = (entity, distance)
+            # A tie goes to the first entity in body order, as it does when
+            # every entity is measured in order.
+            if best is None or (distance, index) < (best[1], best_index):
+                best, best_index = (entities[index], distance), index
         return best
 
     def select(self, entity: Any, append: bool, mark: int = 0) -> bool:
         """Select ``entity`` with ``IEntity.Select4`` under ``mark``."""
-        model = self._adapter.currentModel
-        sel_mgr = _attempt(self._adapter, lambda: model.SelectionManager)
-        _flag(self._adapter, sel_mgr, "CreateSelectData")
-        select_data = _attempt(self._adapter, lambda: sel_mgr.CreateSelectData())
+        select_data = self._selection_data(mark)
         if select_data is None:
             return False
-        if mark:
-            _attempt(self._adapter, lambda: setattr(select_data, "Mark", mark))
-        _flag(self._adapter, entity, "Select4")
+        self._flag_once(entity, "Select4")
         return bool(
             _attempt(self._adapter, lambda: entity.Select4(append, select_data), False)
         )
+
+    def _lower_bounds(
+        self, getter: str, point: tuple[float, float, float]
+    ) -> list[float]:
+        """Each entity's box distance from ``point``; 0 where it has no box."""
+        entities = self.entities(getter)
+        if self._picks.get(getter, 1) < _INDEX_MIN_PICKS[getter]:
+            return [0.0] * len(entities)
+        if getter not in self._boxes:
+            read = _face_box if getter == "GetFaces" else _edge_box
+            self._boxes[getter] = [read(self._adapter, e) for e in entities]
+        return [_box_distance(box, point) for box in self._boxes[getter]]
+
+    def _distance(self, entity: Any, point: tuple[float, float, float]) -> float | None:
+        """Distance from ``point`` to the closest point on ``entity``, or None."""
+        self._flag_once(entity, "GetClosestPointOn")
+        closest = _attempt(
+            self._adapter, lambda: list(entity.GetClosestPointOn(*point))
+        )
+        if not closest or len(closest) < 3:
+            return None
+        return math.dist([float(c) for c in closest[:3]], point)
+
+    def _flag_once(self, obj: Any, name: str) -> None:
+        """Flag ``name`` on ``obj`` unless this picker already has.
+
+        Each flag is a ``GetIDsOfNames`` round trip, and it stays on the
+        dispatch, so one per entity is enough however many picks measure it.
+        """
+        held, names = self._flagged.setdefault(id(obj), (obj, set()))
+        if name not in names:
+            names.add(name)
+            _flag(self._adapter, held, name)
+
+    def _selection_data(self, mark: int) -> Any:
+        """One ``SelectData`` per mark, reused for every entity (pitfall #24)."""
+        if mark not in self._select_data:
+            model = self._adapter.currentModel
+            sel_mgr = _attempt(self._adapter, lambda: model.SelectionManager)
+            _flag(self._adapter, sel_mgr, "CreateSelectData")
+            select_data = _attempt(self._adapter, lambda: sel_mgr.CreateSelectData())
+            if select_data is None:
+                return None
+            if mark:
+                _attempt(self._adapter, lambda: setattr(select_data, "Mark", mark))
+            self._select_data[mark] = select_data
+        return self._select_data[mark]
+
+
+def _padded(lo: list[float], hi: list[float]) -> _Box:
+    """The box from ``lo`` to ``hi``, grown by :data:`_BOX_PAD_M` each side."""
+    return (
+        tuple(c - _BOX_PAD_M for c in lo),
+        tuple(c + _BOX_PAD_M for c in hi),
+    )
+
+
+def _box_distance(box: _Box | None, point: tuple[float, float, float]) -> float:
+    """Distance from ``point`` to ``box``: 0 inside it, or with no box."""
+    if box is None:
+        return 0.0
+    lo, hi = box
+    gaps = (max(a - p, 0.0, p - b) for a, b, p in zip(lo, hi, point, strict=True))
+    return math.sqrt(sum(gap * gap for gap in gaps))
+
+
+def _edge_box(adapter: Any, edge: Any) -> _Box | None:
+    """A box holding ``edge``, or ``None`` when no bound is known.
+
+    A line lies between its two vertices, an arc (or a full circle, which
+    has no vertices) inside its whole circle. Any other curve, or geometry
+    that cannot be read, gets no box and is always measured. These are the
+    reads ``face_selection.describe_edge`` makes (pitfall #24).
+    """
+    _flag(adapter, edge, "GetCurve")
+    curve = _attempt(adapter, lambda: edge.GetCurve())
+    if curve is None:
+        return None
+    _flag(adapter, curve, "IsLine", "IsCircle")
+    if _attempt(adapter, lambda: curve.IsLine(), False):
+        return _line_box(adapter, edge)
+    if _attempt(adapter, lambda: curve.IsCircle(), False):
+        return _circle_box(_attempt(adapter, lambda: list(curve.CircleParams)))
+    return None
+
+
+def _line_box(adapter: Any, edge: Any) -> _Box | None:
+    """The box spanned by a straight edge's start and end vertex."""
+    _flag(adapter, edge, "GetStartVertex", "GetEndVertex")
+    ends: list[list[float]] = []
+    for getter in ("GetStartVertex", "GetEndVertex"):
+        vertex = _attempt(adapter, lambda g=getter: getattr(edge, g)())
+        _flag(adapter, vertex, "GetPoint")
+        point = _attempt(adapter, lambda v=vertex: list(v.GetPoint()))
+        if not point or len(point) < 3:
+            return None
+        ends.append([float(c) for c in point[:3]])
+    start, end = ends
+    return _padded(
+        [min(a, b) for a, b in zip(start, end, strict=True)],
+        [max(a, b) for a, b in zip(start, end, strict=True)],
+    )
+
+
+def _circle_box(params: list[Any] | None) -> _Box | None:
+    """The box of a whole circle, from ``ICurve.CircleParams``.
+
+    ``params`` is ``[cx, cy, cz, ax, ay, az, radius]`` in metres. Along each
+    axis the circle reaches ``radius * sqrt(1 - n_i**2)`` from its centre,
+    ``n`` being its unit axis; a zero axis gives the radius every way.
+    """
+    if not params or len(params) < 7:
+        return None
+    center = [float(c) for c in params[0:3]]
+    axis = [float(c) for c in params[3:6]]
+    radius = abs(float(params[6]))
+    length = math.hypot(*axis) or 1.0
+    half = [radius * math.sqrt(max(0.0, 1.0 - (a / length) ** 2)) for a in axis]
+    return _padded(
+        [c - h for c, h in zip(center, half, strict=True)],
+        [c + h for c, h in zip(center, half, strict=True)],
+    )
+
+
+def _face_box(adapter: Any, face: Any) -> _Box | None:
+    """The box ``IFace2.GetBox`` gives for ``face`` (two opposite corners)."""
+    _flag(adapter, face, "GetBox")
+    box = _attempt(adapter, lambda: list(face.GetBox()))
+    if not box or len(box) < 6:
+        return None
+    corners = [float(c) for c in box[:6]]
+    return _padded(
+        [min(corners[i], corners[i + 3]) for i in range(3)],
+        [max(corners[i], corners[i + 3]) for i in range(3)],
+    )
 
 
 def _select_by_view_pick(
@@ -1903,11 +2378,12 @@ def _select_edge_by_coord(
 ) -> bool:
     """Select the edge (or face) nearest to (x, y, z) in metres.
 
-    Calls ``ForceRebuild3`` on the first entity in the selection set so that
-    recent features are fully tessellated and selectable, then resolves the
-    point with :class:`_BodyEntityPicker` - the entity whose closest point is
-    nearest, independent of the view. Only when no body edge/face can be read
-    at all does it fall back to the view-dependent ``SelectByID2`` pick.
+    Rebuilds (once per picker) before the first entity in the selection set
+    so that recent features are fully tessellated and selectable, then
+    resolves the point with :class:`_BodyEntityPicker` - the entity whose
+    closest point is nearest, independent of the view. Only when no body
+    edge/face can be read at all does it fall back to the view-dependent
+    ``SelectByID2`` pick.
 
     ``entity_type`` is normally ``"EDGE"``, but pass ``"FACE"`` to select a
     whole face instead. Any other type (``"VERTEX"`` from
@@ -1924,7 +2400,8 @@ def _select_edge_by_coord(
         mark: Selection mark.
         entity_type: ``"EDGE"``, ``"FACE"``, or another ``SelectByID2``
             type such as ``"VERTEX"``.
-        picker: Reuse a picker (and its body walk) across several picks.
+        picker: Reuse a picker (its body walk, boxes and rebuild) across
+            several picks.
 
     Returns:
         bool: True if an entity was selected; False otherwise.
@@ -1934,19 +2411,18 @@ def _select_edge_by_coord(
             ``_PICK_TOLERANCE_M`` from the point - picking it anyway would
             silently act on the wrong edge.
     """
-    model = adapter.currentModel
+    picker = picker or _BodyEntityPicker(adapter)
 
     # Rebuild to tessellate geometry from recent features before the first
     # entity in the selection set (when append=False this is the first one).
     if not append:
-        adapter._attempt(lambda: model.ForceRebuild3(True), default=None)
+        picker.rebuild()
 
     # Only edges and faces are walked on the body; anything else (a vertex)
     # keeps the SelectByID2 pick, which honours the requested type.
     if entity_type not in ("EDGE", "FACE"):
         return _select_by_view_pick(adapter, x, y, z, append, mark, entity_type)
 
-    picker = picker or _BodyEntityPicker(adapter)
     getter = "GetFaces" if entity_type == "FACE" else "GetEdges"
     nearest = picker.nearest(getter, (x, y, z))
     if nearest is None:
@@ -1985,7 +2461,7 @@ def _select_face_edges_by_coord(
         LookupError: When no face lies within ``_PICK_TOLERANCE_M``.
     """
     if not append:
-        adapter._attempt(lambda: adapter.currentModel.ForceRebuild3(True), default=None)
+        picker.rebuild()
     nearest = picker.nearest("GetFaces", (x, y, z))
     if nearest is None:
         return False
@@ -2005,15 +2481,81 @@ def _select_face_edges_by_coord(
     return True
 
 
+def _select_edge_specs(adapter: Any, edge_names: list[str], face_edges: bool) -> None:
+    """Clear the selection, then select every spec of ``edge_names`` in order.
+
+    Names go through ``SelectByID2``. Coordinate specs share one
+    :class:`_BodyEntityPicker`, told how many picks are coming, so the body
+    is walked (and, for many picks, each entity's box read) once per call
+    rather than once per point, and the model is rebuilt once, before
+    anything is selected. Every spec after the first appends.
+
+    Args:
+        adapter: A connected adapter with a valid ``currentModel``.
+        edge_names: Specs as :func:`_parse_edge_spec` reads them.
+        face_edges: Select the edges bounding a ``face:x,y,z`` face (for a
+            fillet: ``FeatureFillet3`` builds nothing from a face) instead of
+            the face itself (for a chamfer).
+
+    Raises:
+        LookupError: For the first spec, in order, that selects nothing, or
+            whose point is further than ``_PICK_TOLERANCE_M`` from every
+            edge or face.
+    """
+    model = adapter.currentModel
+    adapter._attempt(lambda: model.ClearSelection2(True), default=None)
+
+    specs = [_parse_edge_spec(edge_name) for edge_name in edge_names]
+    picks: dict[str, int] = {}
+    for sel_name, _x, _y, _z, entity_type in specs:
+        if sel_name == "":
+            getter = "GetFaces" if entity_type == "FACE" else "GetEdges"
+            picks[getter] = picks.get(getter, 0) + 1
+    picker = _BodyEntityPicker(adapter, picks)
+    if picks:
+        picker.rebuild()
+
+    for idx, (edge_name, spec) in enumerate(zip(edge_names, specs, strict=True)):
+        sel_name, x, y, z, entity_type = spec
+        append = idx > 0  # first edge starts fresh, subsequent ones append
+        if sel_name == "" and entity_type == "FACE" and face_edges:
+            selected = _select_face_edges_by_coord(
+                adapter, x, y, z, append=append, picker=picker
+            )
+        elif sel_name == "":
+            # Coordinate-based: the body edge (or face) nearest the point.
+            selected = _select_edge_by_coord(
+                adapter,
+                x,
+                y,
+                z,
+                append=append,
+                mark=0,
+                entity_type=entity_type,
+                picker=picker,
+            )
+        else:
+            selected = adapter._attempt(
+                lambda sn=sel_name, _x=x, _y=y, _z=z, _ap=append, _et=entity_type: (
+                    model.Extension.SelectByID2(
+                        sn, _et, _x, _y, _z, _ap, 0, _null_callout(), 0
+                    )
+                ),
+                default=False,
+            )
+        if not selected:
+            raise LookupError(f"Failed to select edge: {edge_name}")
+
+
 def _add_fillet_impl(
     adapter: Any, radius: float, edge_names: list[str]
 ) -> AdapterResult[SolidWorksFeature]:
     """Create a constant-radius fillet on one or more named edges.
 
-    Each edge in ``edge_names`` is selected by name using
-    ``Extension.SelectByID2`` with entity type ``"EDGE"``.  After all edges
-    are in the selection set, ``FeatureFillet3`` is called to build the
-    feature.
+    Every spec in ``edge_names`` is selected by :func:`_select_edge_specs`
+    (names through ``Extension.SelectByID2``, points by the nearest body
+    edge or face).  After all edges are in the selection set,
+    ``FeatureFillet3`` is called to build the feature.
 
     Args:
         adapter: A fully connected ``PyWin32Adapter`` with a non-``None``
@@ -2078,42 +2620,9 @@ def _add_fillet_impl(
         features_before = _feature_count(adapter)
 
         if edge_names:
-            adapter._attempt(
-                lambda: adapter.currentModel.ClearSelection2(True), default=None
-            )
-
-            picker = _BodyEntityPicker(adapter)
-            for idx, edge_name in enumerate(edge_names):
-                sel_name, ex, ey, ez, entity_type = _parse_edge_spec(edge_name)
-                append = idx > 0  # first edge starts fresh, subsequent ones append
-                if sel_name == "" and entity_type == "FACE":
-                    # A selected face makes FeatureFillet3 build nothing, so
-                    # select the edges bounding it instead.
-                    selected = _select_face_edges_by_coord(
-                        adapter, ex, ey, ez, append=append, picker=picker
-                    )
-                elif sel_name == "":
-                    # Coordinate-based: traverse body edges and pick the closest one.
-                    selected = _select_edge_by_coord(
-                        adapter,
-                        ex,
-                        ey,
-                        ez,
-                        append=append,
-                        entity_type=entity_type,
-                        picker=picker,
-                    )
-                else:
-                    selected = adapter._attempt(
-                        lambda sn=sel_name, _x=ex, _y=ey, _z=ez, _ap=append, _et=entity_type: (
-                            adapter.currentModel.Extension.SelectByID2(
-                                sn, _et, _x, _y, _z, _ap, 0, _null_callout(), 0
-                            )
-                        ),
-                        default=False,
-                    )
-                if not selected:
-                    raise LookupError(f"Failed to select edge: {edge_name}")
+            # A selected face makes FeatureFillet3 build nothing, so a face
+            # spec selects the edges bounding it instead.
+            _select_edge_specs(adapter, edge_names, face_edges=True)
 
         # SW 2025+ (major >= 33): IModelDoc2.FeatureFillet3 (9 params).
         # Returns a non-zero int on success — NOT an IFeature — so we look up
@@ -2213,8 +2722,9 @@ def _add_chamfer_impl(
 ) -> AdapterResult[SolidWorksFeature]:
     """Create an angle-distance chamfer on one or more named edges.
 
-    Each edge in ``edge_names`` is selected by name using
-    ``Extension.SelectByID2`` with entity type ``"EDGE"``.  After all edges
+    Every spec in ``edge_names`` is selected by :func:`_select_edge_specs`
+    (names through ``Extension.SelectByID2``, points by the nearest body
+    edge or face).  After all edges
     are in the selection set, ``IFeatureManager::InsertFeatureChamfer`` is
     called with ``swChamferAngleDistance`` (type ``1``; equal distance is
     16). At 45 degrees the two legs are equal, which is what this call has
@@ -2273,34 +2783,8 @@ def _add_chamfer_impl(
         # An empty edge_names means "use whatever is already selected" --
         # see the matching comment in _add_fillet_impl / com-api-pitfalls.md #22.
         if edge_names:
-            adapter._attempt(
-                lambda: adapter.currentModel.ClearSelection2(True), default=None
-            )
-
-            for idx, edge_name in enumerate(edge_names):
-                sel_name, cx, cy, cz, entity_type = _parse_edge_spec(edge_name)
-                append = idx > 0
-                if sel_name == "":
-                    selected = _select_edge_by_coord(
-                        adapter,
-                        cx,
-                        cy,
-                        cz,
-                        append=append,
-                        mark=0,
-                        entity_type=entity_type,
-                    )
-                else:
-                    selected = adapter._attempt(
-                        lambda sn=sel_name, _x=cx, _y=cy, _z=cz, _ap=append, _et=entity_type: (
-                            adapter.currentModel.Extension.SelectByID2(
-                                sn, _et, _x, _y, _z, _ap, 0, _null_callout(), 0
-                            )
-                        ),
-                        default=False,
-                    )
-                if not selected:
-                    raise LookupError(f"Failed to select edge: {edge_name}")
+            # A chamfer takes a face as it is: it chamfers the face's edges.
+            _select_edge_specs(adapter, edge_names, face_edges=False)
 
         fm = adapter.currentModel.FeatureManager
         _flag_feature_methods(fm, "IFeatureManager")
