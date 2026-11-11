@@ -121,6 +121,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`set_dimension` writes angles and counts in their own units.** It took
+  every value as millimetres, so a circular pattern's instance count of 2
+  was written as 0.002 and its 180-degree spacing as 0.18 rad, and the
+  pattern failed to rebuild. The unit now follows what the dimension
+  measures (`IDimension.GetType`): millimetres for a length, degrees for an
+  angle, a whole number for a count. The value is read back after the
+  rebuild, and one SolidWorks keeps (a driven dimension, or one set by an
+  equation) is an error instead of a success. `get_dimension`,
+  `set_dimension` and `list_model_dimensions` report `units` and `kind`.
 - **`create_sketch` on a plane the part doesn't have** sketched on the Top
   Plane and reported success. It is now a `not_found` error, and the reply's
   `plane` is the plane actually used.

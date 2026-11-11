@@ -206,7 +206,7 @@ Read one dimension of the active model by its full name, e.g. "D1@Sketch1".
 
 ### `set_dimension`
 
-Change one length dimension of the active model, in mm, and rebuild.
+Change one dimension of the active model and rebuild.
 
 **Prerequisite:** Active document with named dimensions
 
@@ -216,8 +216,8 @@ Change one length dimension of the active model, in mm, and rebuild.
 |-----------|------|----------|---------|-------------|
 | `name` | `str?` | — | `None` | Dimension name (e.g., 'D1@Sketch1', 'D1@Boss-Extrude1') |
 | `dimension_name` | `str?` | — | `None` | Dimension name alias |
-| `value` | `float` | ✅ | `` | New dimension value in millimeters |
-| `units` | `str?` | — | `None` | Units alias |
+| `value` | `float` | ✅ | `` | New value in the dimension's own unit: millimetres for a length, degrees for an angle, a whole number for a count (a pattern's instances). list_model_dimensions gives each one's `units`. |
+| `units` | `str?` | — | `None` | Not used; kept for old callers |
 
 **Sample call:**
 

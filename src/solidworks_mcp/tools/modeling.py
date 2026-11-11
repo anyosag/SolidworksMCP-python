@@ -27,6 +27,12 @@ from .tool_boundary import (
 # Input schemas using Python 3.14 built-in types
 
 
+def _with_units(value: Any, units: str) -> str:
+    """``12 mm``, ``180 deg`` or ``2 (count)`` for a reply message."""
+    shown = f"{value:g}" if isinstance(value, int | float) else str(value)
+    return f"{shown} (count)" if units == "count" else f"{shown} {units}"
+
+
 def _result_value(data: Any, *keys: str, default: Any = None) -> Any:
     """Build internal result value.
 
@@ -437,8 +443,16 @@ class SetDimensionInput(CompatInput):
         description="Dimension name (e.g., 'D1@Sketch1', 'D1@Boss-Extrude1')",
     )
     dimension_name: str | None = Field(default=None, description="Dimension name alias")
-    value: float = Field(description="New dimension value in millimeters")
-    units: str | None = Field(default=None, description="Units alias")
+    value: float = Field(
+        description=(
+            "New value in the dimension's own unit: millimetres for a length, "
+            "degrees for an angle, a whole number for a count (a pattern's "
+            "instances). list_model_dimensions gives each one's `units`."
+        )
+    )
+    units: str | None = Field(
+        default=None, description="Not used; kept for old callers"
+    )
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the set dimension input.
@@ -1759,8 +1773,9 @@ async def register_modeling_tools(
         """Read one dimension of the active model by its full name, e.g. "D1@Sketch1".
 
         Find names with `list_model_dimensions`. Needs: an open part or assembly.
-        Read-only. Returns: `dimension` with `name`, `value` and `units` (mm for a
-        length).
+        Read-only. Returns: `dimension` with `name`, `value`, `units` and `kind`:
+        mm for a length, degrees (`deg`) for an angle, a whole number for a count
+        such as a pattern's instances.
 
         Args:
             input_data: The dimension. Give `name` (or `dimension_name`), e.g.
@@ -1778,27 +1793,33 @@ async def register_modeling_tools(
         dimension_units = _result_value(value, "units", default="mm")
         return {
             "status": "success",
-            "message": f"Dimension {input_data.name} = {dimension_value} {dimension_units}",
+            "message": (
+                f"Dimension {input_data.name} = "
+                f"{_with_units(dimension_value, dimension_units)}"
+            ),
             "dimension": {
                 "name": input_data.name,
                 "value": dimension_value,
                 "units": dimension_units,
+                "kind": _result_value(value, "kind", default="length"),
             },
             "execution_time": result.execution_time,
         }
 
     @mcp.tool()
     async def set_dimension(input_data: SetDimensionInput) -> dict[str, Any]:
-        """Change one length dimension of the active model, in mm, and rebuild.
+        """Change one dimension of the active model and rebuild.
 
         Use it to resize an existing model; find the full name with
         `list_model_dimensions` and check the result with `rebuild_model` or
-        `verify_model`. The value is always millimetres. Needs: an open part or
-        assembly. Changes: the dimension and the geometry it drives. Returns:
-        `dimension_update` with `name`, `old_value` and `new_value`.
+        `verify_model`. The value is in the dimension's own unit: millimetres for
+        a length, degrees for an angle, a whole number for a count (a pattern's
+        instances). Needs: an open part or assembly. Changes: the dimension and
+        the geometry it drives. Returns: `dimension_update` with `name`,
+        `old_value`, `new_value` (read back), `units` and `kind`.
 
         Args:
-            input_data: The change. `value` (mm) is required, with `name` (or
+            input_data: The change. `value` is required, with `name` (or
                 `dimension_name`) such as "D1@Sketch1"; `units` is not used.
 
         Returns:
@@ -1809,16 +1830,19 @@ async def register_modeling_tools(
 
         require_success(result, context="Failed to set dimension")
         payload = result.data
+        units = _result_value(payload, "units", default="mm")
+        new_value = _result_value(payload, "new_value", default=input_data.value)
         return {
             "status": "success",
-            "message": f"Set dimension {input_data.name} = {input_data.value} mm",
+            "message": (
+                f"Set dimension {input_data.name} = {_with_units(new_value, units)}"
+            ),
             "dimension_update": {
                 "name": input_data.name,
                 "old_value": _result_value(payload, "old_value"),
-                "new_value": _result_value(
-                    payload, "new_value", default=input_data.value
-                ),
-                "units": input_data.units or "mm",
+                "new_value": new_value,
+                "units": units,
+                "kind": _result_value(payload, "kind", default="length"),
             },
             "execution_time": result.execution_time,
         }

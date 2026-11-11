@@ -218,7 +218,8 @@ async def register_engineering_data_tools(
         `full_name` (e.g. "D1@Sketch1") is the name `get_dimension` and `set_dimension`
         take. Needs: an open part or assembly. Read-only. Returns: `data`, one entry per
         dimension with `full_name`, `feature`, `value` (document units), `system_value`
-        (metres or radians) and `read_only`.
+        (metres or radians), `kind` (length, angle or count), `units` (what
+        `set_dimension` takes: mm, deg or count) and `read_only`.
 
         Args:
             input_data: Nothing is required: give `feature_name` to list one

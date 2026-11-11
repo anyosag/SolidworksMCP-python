@@ -1879,19 +1879,21 @@ class SolidWorksAdapter(ABC):
 
     # Dimension Operations
     @abstractmethod
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
         """Get the value of a dimension.
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         pass
 
     @abstractmethod
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
         """Set the value of a dimension.
 
         Args:
@@ -1899,7 +1901,8 @@ class SolidWorksAdapter(ABC):
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``, ``units``
+            and ``kind``.
         """
         pass
 

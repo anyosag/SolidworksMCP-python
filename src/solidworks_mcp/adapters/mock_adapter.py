@@ -2983,14 +2983,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             metadata={"exported_format": format_type, "file_path": file_path},
         )
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
-        """Mock getting a dimension value.
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock getting a dimension value (every mock dimension is a length).
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         await asyncio.sleep(0.05)  # Very fast operation
         self._operation_count += 1
@@ -2998,7 +2998,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if name in self._dimensions:
             return AdapterResult(
                 status=AdapterResultStatus.SUCCESS,
-                data=self._dimensions[name],
+                data={"value": self._dimensions[name], "units": "mm", "kind": "length"},
                 execution_time=0.05,
             )
         else:
@@ -3006,23 +3006,34 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR, error=f"Dimension '{name}' not found"
             )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
-        """Mock setting a dimension value.
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock setting a dimension value (every mock dimension is a length).
 
         Args:
             name (str): The name value.
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``,
+            ``units`` and ``kind``.
         """
         await asyncio.sleep(0.1)  # Fast operation
         self._operation_count += 1
 
+        old_value = self._dimensions.get(name)
         self._dimensions[name] = value
 
         return AdapterResult(
-            status=AdapterResultStatus.SUCCESS, data=None, execution_time=0.1
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "old_value": old_value,
+                "new_value": value,
+                "units": "mm",
+                "kind": "length",
+            },
+            execution_time=0.1,
         )
 
     async def set_units(self, unit_system: str) -> AdapterResult[dict[str, Any]]:

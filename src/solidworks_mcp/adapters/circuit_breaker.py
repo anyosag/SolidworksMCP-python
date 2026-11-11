@@ -1470,14 +1470,14 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
 
     # Dimension operations
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
         """Get dimension through circuit breaker.
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         return await self._execute_with_circuit_breaker(
             "get_dimension",
@@ -1485,7 +1485,9 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"name": name},
         )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
         """Set dimension through circuit breaker.
 
         Args:
@@ -1493,7 +1495,8 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``, ``units``
+            and ``kind``.
         """
         return await self._execute_with_circuit_breaker(
             "set_dimension",

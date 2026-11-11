@@ -15,9 +15,10 @@ Points in mm, for contrast: `select_face_edges` `point`,
 the sketch tools. `get_selected_entities` reports in mm (`center_mm`,
 `length_mm`).
 
-`set_dimension` takes millimetres and is for lengths; don't use it on an
-angle dimension. `set_units` changes what the document shows, not what the
-tools take.
+`set_dimension` takes each dimension in its own unit: millimetres for a
+length, degrees for an angle, a whole number for a count (a pattern's
+instances). `list_model_dimensions` gives each one's `units`. `set_units`
+changes what the document shows, not what the tools take.
 
 Mass is in kg, volume in mm³. `calculate_mass_properties` returns moments
 of inertia in kg·mm², about the centre of mass.

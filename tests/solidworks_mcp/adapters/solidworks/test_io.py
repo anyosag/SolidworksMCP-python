@@ -2007,7 +2007,9 @@ class TestPyWin32AdapterBranches:
         assert (await adapter.save_file()).is_success
         assert (await adapter.save_file("C:/tmp/new.sldprt")).is_success
         assert (await adapter.export_file("C:/tmp/out.step", "step")).is_success
-        assert (await adapter.get_dimension("D1@Sketch1")).data == pytest.approx(15.0)
+        assert (await adapter.get_dimension("D1@Sketch1")).data["value"] == (
+            pytest.approx(15.0)
+        )
         assert (await adapter.set_dimension("D1@Sketch1", 20.0)).is_success
         assert (await adapter.rebuild_model()).is_success
 

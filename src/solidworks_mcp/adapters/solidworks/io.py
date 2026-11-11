@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import re
 import shutil
@@ -98,6 +99,34 @@ _MATE_ALIGNMENTS: dict[str, int] = {
 
 
 #: ``swDwgTemplates_e`` / ``swDwgPaperSizes_e`` values (read from swconst.tlb).
+#: ``IDimension.GetType()`` (swDimensionParamType_e, read from swconst.tlb):
+#: what a dimension measures, the unit the tools use for it, and the factor
+#: from that unit to ``SystemValue`` (metres, radians, or the count itself).
+#: An unknown type is treated as a length, as every dimension was before.
+DIMENSION_KINDS: dict[int, tuple[str, str, float]] = {
+    0: ("length", "mm", 0.001),
+    1: ("angle", "deg", math.pi / 180.0),
+    2: ("count", "count", 1.0),
+}
+
+
+def dimension_kind(adapter: Any, dimension: Any) -> tuple[str, str, float]:
+    """``(kind, unit, factor)`` for an ``IDimension``, from its ``GetType()``."""
+    dimension = _sw_type_info.flagged(dimension, "IDimension")
+    code = adapter._attempt(lambda: dimension.GetType(), default=None)
+    try:
+        return DIMENSION_KINDS[int(code)]
+    except (TypeError, ValueError, KeyError):
+        return DIMENSION_KINDS[0]
+
+
+def from_system_value(system_value: float, kind: str, factor: float) -> float:
+    """A ``SystemValue`` in the tools' unit: mm, degrees, or a whole count."""
+    if kind == "count":
+        return float(round(system_value))
+    return round(float(system_value) / factor, 9)
+
+
 _SW_DWG_TEMPLATE_NONE = 13
 _SW_DWG_PAPER_A_SIZE = 0
 _SW_DWG_PAPERS_USER_DEFINED = 12
@@ -1796,14 +1825,15 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("create_drawing", _create),
         )
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
-        """Read a named model dimension in millimetres.
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a named model dimension: mm for a length, degrees for an angle.
 
         Args:
             name: Fully-qualified dimension name.
 
         Returns:
-            AdapterResult[float]: Dimension value in millimetres.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` (``mm``, ``deg``
+            or ``count``) and ``kind`` (``length``, ``angle`` or ``count``).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1811,12 +1841,13 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
 
-        def _get() -> float:
+        def _get() -> dict[str, Any]:
             """Get the dimension value."""
             dimension = adapter.currentModel.Parameter(name)
             if not dimension:
                 raise Exception(f"Dimension '{name}' not found")
-            # SystemValue is reliable on SW 2025 (in meters, convert to mm)
+            kind, unit, factor = dimension_kind(adapter, dimension)
+            # SystemValue is reliable on SW 2025 (metres or radians).
             value = adapter._attempt(lambda: dimension.SystemValue, default=None)
             if value is None:
                 # Fall back to GetValue3 for older SW versions
@@ -1825,22 +1856,34 @@ class SolidWorksIOMixin:
                 )
             if value is None:
                 raise Exception(f"Failed to read dimension '{name}'")
-            return float(value) * 1000
+            return {
+                "value": from_system_value(float(value), kind, factor),
+                "units": unit,
+                "kind": kind,
+            }
 
         return cast(
-            AdapterResult[float],
+            AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("get_dimension", _get),
         )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
-        """Set a named model dimension in millimetres and rebuild.
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set a named model dimension and rebuild.
+
+        The unit follows what the dimension measures (``IDimension.GetType``):
+        millimetres for a length, degrees for an angle, and a whole number for
+        a count such as a pattern's instances. Before, every value was taken as
+        millimetres, so a count of 2 became 0.002 and 180 degrees 0.18 rad.
 
         Args:
             name: Fully-qualified dimension name.
-            value: New value in millimetres.
+            value: The new value, in the dimension's unit.
 
         Returns:
-            AdapterResult[None]: Result of the set operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value`` (read
+            back after the rebuild), ``units`` and ``kind``.
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1848,17 +1891,28 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
 
-        def _set() -> None:
+        def _set() -> dict[str, Any]:
             """Set the dimension value."""
             dimension = adapter.currentModel.Parameter(name)
             if not dimension:
                 raise Exception(f"Dimension '{name}' not found")
+            kind, unit, factor = dimension_kind(adapter, dimension)
+            if kind == "count" and value != round(value):
+                raise ValueError(
+                    f"Dimension '{name}' is a count (such as a pattern's "
+                    f"instances); give a whole number, not {value:g}."
+                )
 
+            def _read() -> float | None:
+                raw = adapter._attempt(lambda: dimension.SystemValue, default=None)
+                return None if raw is None else float(raw)
+
+            before = _read()
             # SetValue3 has gen_py parameter mapping issues on SW 2025.
-            # SystemValue (in meters) is reliable.
-            value_m = value / 1000.0
+            # SystemValue (metres, radians or the count) is reliable.
+            target = float(round(value)) if kind == "count" else value * factor
             adapter._attempt(
-                lambda: setattr(dimension, "SystemValue", value_m),
+                lambda: setattr(dimension, "SystemValue", target),
                 default=None,
             )
 
@@ -1872,9 +1926,29 @@ class SolidWorksIOMixin:
                 )
             if rebuilt is None:
                 raise Exception("Failed to set dimension")
+            after = _read()
+            if after is not None and not math.isclose(
+                after, target, rel_tol=1e-9, abs_tol=1e-12
+            ):
+                kept = from_system_value(after, kind, factor)
+                raise Exception(
+                    f"SolidWorks kept dimension '{name}' at {kept:g} {unit}, not "
+                    f"{value:g}: it may be a driven (reference) dimension, or "
+                    "set by an equation or a design table."
+                )
+            return {
+                "old_value": (
+                    None if before is None else from_system_value(before, kind, factor)
+                ),
+                "new_value": from_system_value(
+                    target if after is None else after, kind, factor
+                ),
+                "units": unit,
+                "kind": kind,
+            }
 
         return cast(
-            AdapterResult[None],
+            AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("set_dimension", _set),
         )
 

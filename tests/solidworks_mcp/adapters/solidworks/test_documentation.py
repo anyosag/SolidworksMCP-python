@@ -258,6 +258,8 @@ async def test_list_model_dimensions_walks_every_feature() -> None:
             "feature": "Sketch1",
             "value": 40.0,
             "system_value": 0.04,
+            "kind": "length",
+            "units": "mm",
             "read_only": False,
         },
         {
@@ -265,8 +267,37 @@ async def test_list_model_dimensions_walks_every_feature() -> None:
             "feature": "Boss-Extrude1",
             "value": 10.0,
             "system_value": 0.01,
+            "kind": "length",
+            "units": "mm",
             "read_only": False,
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_list_model_dimensions_says_which_unit_set_dimension_takes() -> None:
+    angle = SimpleNamespace(
+        FullName="D2@CirPattern1@Part1.Part",
+        Value=60.0,
+        SystemValue=1.0471975511965976,
+        ReadOnly=False,
+        GetType=lambda: 1,
+    )
+    count = SimpleNamespace(
+        FullName="D1@CirPattern1@Part1.Part",
+        Value=6.0,
+        SystemValue=6.0,
+        ReadOnly=False,
+        GetType=lambda: 2,
+    )
+    pattern = _Feature("CirPattern1", [count, angle])
+    model = SimpleNamespace(GetType=lambda: 1, FirstFeature=lambda: pattern)
+
+    result = await _Harness(model).list_model_dimensions()
+
+    assert [(d["full_name"], d["kind"], d["units"]) for d in result.data] == [
+        ("D1@CirPattern1", "count", "count"),
+        ("D2@CirPattern1", "angle", "deg"),
     ]
 
 

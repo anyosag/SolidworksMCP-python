@@ -1021,7 +1021,7 @@
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Change one length dimension of the active model, in mm, and rebuild."
+    "summary": "Change one dimension of the active model and rebuild."
    },
    {
     "name": "set_material",

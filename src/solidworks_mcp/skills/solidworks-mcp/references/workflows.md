@@ -101,7 +101,8 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
    - an extrude's or cut's depth, end condition or direction, a revolve's
      angle, a fillet's radius: `edit_feature` with `name` and the change;
    - any other dimension: `set_dimension` with the full name (e.g.
-     "D1@Boss-Extrude1") and the new value in mm;
+     "D1@Boss-Extrude1") and the new value in its `units` (mm, degrees, or
+     a count);
    - a profile: `edit_sketch`, `delete_sketch_entities` with the ids it
      lists, the `add_*` tools for the new shape, then `exit_sketch`;
    - a new feature mid-tree: `set_rollback` with `after` the feature it

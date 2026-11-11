@@ -1365,20 +1365,22 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
 
     # Dimension operations
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
         """Get dimension using pool.
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         return await self._execute_with_pool(
             "get_dimension", lambda adapter: adapter.get_dimension(name)
         )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
         """Set dimension using pool.
 
         Args:
@@ -1386,7 +1388,8 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``, ``units``
+            and ``kind``.
         """
         return await self._execute_with_pool(
             "set_dimension", lambda adapter: adapter.set_dimension(name, value)

@@ -27,6 +27,7 @@ from .io import (
     _resolve_drawing_view,
     _sw_type_info,
     _view_names,
+    dimension_kind,
 )
 
 if TYPE_CHECKING:
@@ -395,8 +396,9 @@ class SolidWorksDocumentationMixin:
 
         Returns:
             AdapterResult[list[dict[str, Any]]]: ``full_name``, ``feature``,
-            ``value`` (document units), ``system_value`` (metres / radians)
-            and ``read_only`` per dimension.
+            ``value`` (document units), ``system_value`` (metres / radians),
+            ``kind`` (length, angle or count), ``units`` (what
+            ``set_dimension`` takes for it) and ``read_only`` per dimension.
         """
         guard = self._require_doc_type({1, 2}, "list_model_dimensions")
         if guard is not None:
@@ -423,6 +425,7 @@ class SolidWorksDocumentationMixin:
                         )
                         if dim is not None:
                             dim = _sw_type_info.flagged(dim, "IDimension")
+                            kind, unit, _factor = dimension_kind(self, dim)
                             dims.append(
                                 {
                                     "full_name": _strip_document_suffix(
@@ -437,6 +440,8 @@ class SolidWorksDocumentationMixin:
                                     "system_value": self._attempt(
                                         lambda d=dim: d.SystemValue, default=None
                                     ),
+                                    "kind": kind,
+                                    "units": unit,
                                     "read_only": bool(
                                         self._attempt(
                                             lambda d=dim: d.ReadOnly, default=False
