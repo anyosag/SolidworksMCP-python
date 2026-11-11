@@ -14,6 +14,7 @@ from typing import Any, cast
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
+from . import saving
 from .face_selection import mate_entity_label
 
 try:
@@ -421,6 +422,55 @@ def _byref_int() -> Any:
     return variant_ctor(
         int(getattr(pythoncom, "VT_BYREF", 0)) | int(getattr(pythoncom, "VT_I4", 0)), 0
     )
+
+
+#: swRebuildOnActivationOptions_e.swDontRebuildActiveDoc (SW 2026 swconst.tlb).
+_DONT_REBUILD_ACTIVE_DOC = 1
+
+
+def activate_doc(adapter: Any, app: Any, title: str) -> Any:
+    """``ISldWorks.ActivateDoc3(title)``, then rebuild, with no SolidWorks window.
+
+    ``ActivateDoc3(Name, UseUserPreferences, Option, Errors)``: with
+    ``UseUserPreferences`` false, ``Option`` (``swRebuildOnActivationOptions_e``)
+    says what to do when an assembly's parts changed since it was last
+    active. Live probes on SW 2026 SP4.1 (2026-11-10, keep-solidworks-minimized
+    design D4d), activating such an assembly:
+
+    - ``0`` (``swUserDecision``), which every call here used to pass: "Models
+      contained within the assembly have changed. Would you like to rebuild
+      the assembly now?", a box that took the foreground and held the call
+      until it dismissed itself 5 s later.
+    - ``2`` (``swRebuildActiveDoc``): no box, but a "Loading..." progress
+      dialog that took the foreground for about half a second.
+    - ``1`` (``swDontRebuildActiveDoc``) and then a rebuild of the document:
+      no window at all, and the assembly is rebuilt.
+
+    So it activates with ``1`` and then rebuilds what changed
+    (``EditRebuild3``), unless ``NeedsRebuild2`` says the document is up to
+    date. The user's own preference (``swRebuildOnActivation``) is neither
+    read nor changed.
+
+    Args:
+        adapter: The connected adapter.
+        app: The ``SldWorks.Application`` dispatch.
+        title: The document's title-bar name.
+
+    Returns:
+        Any: What ``ActivateDoc3`` returned, or ``None`` when it failed.
+    """
+    activated = adapter._attempt(
+        lambda: app.ActivateDoc3(title, False, _DONT_REBUILD_ACTIVE_DOC, _byref_int()),
+        default=None,
+    )
+    if activated is not None:
+        # swModelRebuildStatus_e: 0 = fully rebuilt.
+        status = adapter._attempt(lambda: activated.Extension.NeedsRebuild2)
+        if status != 0:
+            adapter._attempt(
+                lambda: adapter._get_attr_or_call(activated, "EditRebuild3")
+            )
+    return activated
 
 
 def _byref_variant() -> Any:
@@ -1217,6 +1267,13 @@ def _assembly_mate_count(adapter: Any, model: Any) -> int | None:
     return 0
 
 
+def _confirmation_or(result: AdapterResult[Any]) -> AdapterResult[Any]:
+    """Turn a save that needs the user's confirmation into its error result."""
+    if result.is_success and isinstance(result.data, saving.NeedsConfirmation):
+        return saving.confirmation_result(result.data.files, result.execution_time)
+    return result
+
+
 class SolidWorksIOMixin:
     """Expose model open/save/create/configuration methods through a mixin."""
 
@@ -1224,22 +1281,6 @@ class SolidWorksIOMixin:
     def _adapter(obj: Any) -> Any:
         """Return the runtime adapter object for dynamic attribute access."""
         return cast(Any, obj)
-
-    @staticmethod
-    def _is_success(value: Any) -> bool:
-        """Interpret SolidWorks save API return values consistently.
-
-        Args:
-            value: Return value from ``Save*`` COM calls.
-
-        Returns:
-            bool: ``True`` when return value indicates success.
-        """
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value == 0
-        return bool(value)
 
     def _resolve_template_path(
         self, preferred_indices: list[int], extension: str
@@ -1419,9 +1460,7 @@ class SolidWorksIOMixin:
             # later tool call (exports especially) target the wrong document
             # (issue #91). ActivateDoc3 takes the titlebar name, not the path.
             if title:
-                activated = adapter._attempt(
-                    lambda: app.ActivateDoc3(title, False, 0, _byref_int())
-                )
+                activated = activate_doc(adapter, app, title)
                 if activated is not None:
                     adapter._attempt(
                         lambda: _sw_type_info.flag_doc(activated, int(doc_type)),
@@ -1455,14 +1494,22 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("open_model", _open),
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close the current SolidWorks model and optionally save first.
 
         Args:
-            save: When ``True``, calls ``Save`` before closing.
+            save: When ``True``, saves silently first (see
+                :func:`saving.save_document`); a failed save leaves the
+                document open.
+            overwrite_modified_references: Let that save overwrite the user's
+                modified files the assembly uses.
 
         Returns:
-            AdapterResult[None]: Result of the close operation.
+            AdapterResult[Any]: Result of the close operation; a
+            ``confirmation_required`` error when saving would overwrite the
+            user's files (the document stays open).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1489,15 +1536,17 @@ class SolidWorksIOMixin:
             Read them through ``_get_attr_or_call`` which works either way.
             """
             if save:
-                adapter._get_attr_or_call(model, "Save")
+                outcome = saving.save_document(
+                    adapter, model, None, overwrite_modified_references
+                )
+                if isinstance(outcome, saving.NeedsConfirmation):
+                    return outcome
             title = adapter._get_attr_or_call(model, "GetTitle")
             app.CloseDoc(title)
             adapter.currentModel = None
+            return None
 
-        return cast(
-            AdapterResult[None],
-            adapter._handle_com_operation("close_model", _close),
-        )
+        return _confirmation_or(adapter._handle_com_operation("close_model", _close))
 
     async def create_part(
         self,
@@ -1871,101 +1920,43 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("set_units", _apply),
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save the active model to its current path or to a new file path.
 
+        Saves without a SolidWorks dialog; an assembly's modified parts are
+        saved with it, except the user's own files, which need
+        ``overwrite_modified_references`` (see :mod:`.saving`).
+
         Args:
-            file_path: Optional target path for Save As.
+            file_path: Optional target path for Save As. The document's own
+                path (in any spelling) is a plain save: Save-As over itself
+                once closed the document and wrote an empty part.
+            overwrite_modified_references: Let an assembly save overwrite the
+                user's modified files it uses.
 
         Returns:
-            AdapterResult[None]: Result of the save operation.
+            AdapterResult[Any]: ``file_path``, ``saved_references`` and
+            ``warnings``; a ``confirmation_required`` error when the user's
+            files would be overwritten (nothing is written).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
+        model = adapter.currentModel
 
-        def _save() -> None:
-            """Save the model."""
-            if file_path:
-                resolved_path = os.path.abspath(file_path)
-                directory = os.path.dirname(resolved_path)
-                if directory:
-                    os.makedirs(directory, exist_ok=True)
-
-                current_path = adapter._attempt(
-                    lambda: adapter._get_attr_or_call(
-                        adapter.currentModel, "GetPathName"
-                    ),
-                    default="",
-                )
-                same_file = bool(current_path) and os.path.normcase(
-                    os.path.abspath(str(current_path))
-                ) == os.path.normcase(resolved_path)
-
-                if same_file:
-                    # Saving a document over its own path is a plain Save.
-                    # It used to fall through to the Save-As branch below, which
-                    # closed the document and deleted the file before calling
-                    # SaveAs3 on the now-closed doc. That wrote an empty part and
-                    # lost the geometry.
-                    save_result = adapter._attempt(
-                        lambda: adapter.currentModel.Save3(1, None, None)
-                    )
-                    if save_result is None:
-                        save_fn = getattr(adapter.currentModel, "Save", None)
-                        if callable(save_fn):
-                            save_fn()
-                    if not os.path.exists(resolved_path):
-                        raise Exception(f"File not written after save: {resolved_path}")
-                    return
-
-                # A *different* document may be holding the target path open.
-                # Close that one by name only - never the document being saved.
-                if adapter.swApp:
-                    adapter._attempt(
-                        lambda: adapter.swApp.CloseDoc(os.path.basename(resolved_path))
-                    )
-
-                # Deliberately no os.remove here: SaveAs3 overwrites, and
-                # deleting first meant a failed save destroyed the old file too.
-                save_as3_result = adapter.currentModel.SaveAs3(resolved_path, 0, 0)
-                if not self._is_success(save_as3_result):
-                    save_as = getattr(adapter.currentModel, "SaveAs", None)
-                    if callable(save_as):
-                        fallback_result = save_as(resolved_path)
-                        if not self._is_success(fallback_result):
-                            raise Exception(f"Failed to save as: {resolved_path}")
-                    else:
-                        raise Exception(f"Failed to save as: {resolved_path}")
-
-                if not os.path.exists(resolved_path):
-                    raise Exception(f"File not written after save: {resolved_path}")
-                return
-
-            save_result = adapter._attempt(
-                lambda: adapter.currentModel.Save3(1, None, None)
+        return _confirmation_or(
+            adapter._handle_com_operation(
+                "save_file",
+                lambda: saving.save_document(
+                    adapter, model, file_path, overwrite_modified_references
+                ),
             )
-            if save_result is None:
-                save_fn = getattr(adapter.currentModel, "Save", None)
-                if callable(save_fn):
-                    save_result = save_fn()
-                else:
-                    raise Exception("Failed to save file")
-
-            if self._is_success(save_result):
-                return
-
-            path_attr = getattr(adapter.currentModel, "GetPathName", "")
-            model_path = path_attr() if callable(path_attr) else path_attr
-            if model_path and os.path.exists(model_path):
-                return
-            raise Exception("Failed to save file")
-
-        return cast(
-            AdapterResult[None],
-            adapter._handle_com_operation("save_file", _save),
         )
 
     async def rebuild_model(
@@ -2225,10 +2216,7 @@ class SolidWorksIOMixin:
                     "activate it"
                 )
 
-            activated = adapter._attempt(
-                lambda: app.ActivateDoc3(match_title, False, 0, _byref_int()),
-                default=None,
-            )
+            activated = activate_doc(adapter, app, match_title)
             model = activated or adapter._attempt(
                 lambda: getattr(app, "ActiveDoc", None), default=None
             )
@@ -2720,10 +2708,7 @@ class SolidWorksIOMixin:
                 default=None,
             )
             if title:
-                adapter._attempt(
-                    lambda: app.ActivateDoc3(title, False, 0, _byref_int()),
-                    default=None,
-                )
+                activate_doc(adapter, app, title)
 
             component = adapter._attempt(
                 lambda: assembly.AddComponent4(
@@ -3203,10 +3188,7 @@ class SolidWorksIOMixin:
                 default=None,
             )
             if drawing_title:
-                adapter._attempt(
-                    lambda: app.ActivateDoc3(drawing_title, False, 0, _byref_int()),
-                    default=None,
-                )
+                activate_doc(adapter, app, drawing_title)
 
             view = adapter._attempt(
                 lambda: drawing.CreateDrawViewFromModelView3(

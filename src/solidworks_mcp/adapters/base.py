@@ -409,22 +409,39 @@ class SolidWorksAdapter(ABC):
         pass
 
     @abstractmethod
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close the current model.
 
         Args:
-            save (bool): The save value. Defaults to False.
+            save (bool): Save it first, without a dialog. Defaults to False.
+            overwrite_modified_references (bool): Let that save overwrite the
+                user's modified files an assembly uses; without it such a
+                save fails with a ``confirmation_required`` error listing
+                them in ``data.files``. Defaults to False.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         pass
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[Any]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save the active model to the existing path or the provided path.
+
+        Saves never show a SolidWorks dialog. An assembly's modified parts are
+        saved with it when they are new or this session wrote them; the user's
+        own modified files need ``overwrite_modified_references``, and without
+        it the save writes nothing and returns a ``confirmation_required``
+        error listing them in ``data.files``.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See above. Defaults to False.
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
@@ -1265,6 +1282,22 @@ class SolidWorksAdapter(ABC):
             AdapterResult[dict[str, list[str]]]: ``reset``, the operations that were paused.
         """
         return AdapterResult(status=AdapterResultStatus.SUCCESS, data={"reset": []})
+
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore the SolidWorks window.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards
+            (``minimized``, ``normal``, ``maximized``, ``hidden`` or
+            ``unknown``).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_window_state is not available with this adapter",
+        )
 
     async def get_model_geometry_summary(self) -> AdapterResult[dict[str, Any]]:
         """Summarise the active part or assembly without changing it.

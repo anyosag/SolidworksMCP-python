@@ -1329,28 +1329,33 @@ class TestAddMateErrorBranches:
         assert "SolidWorks rejected the coincident mate" in (result.error or "")
 
 
-class TestSaveFileLegacyFallback:
-    """Cover ``save_file``'s legacy ``Save()`` fallback and unwritten-file raise."""
+class TestSaveFileNeverUsesLegacySave:
+    """``save_file`` never falls back to the legacy ``Save()``.
+
+    ``Save()`` isn't silent: on an assembly with modified parts it showed the
+    "Save Modified Documents" dialog and blocked the COM thread
+    (keep-solidworks-minimized, probe run 2).
+    """
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_save_and_errors_when_file_not_written(
+    async def test_a_failed_save3_is_an_error_not_a_legacy_save(
         self, monkeypatch, tmp_path
     ) -> None:
         adapter = _build_adapter(monkeypatch)
-        # A path that does not exist, so the final os.path.exists check fails
-        # regardless of what the mocked Save3/Save calls "do".
         target = str(tmp_path / "does_not_exist.sldprt")
 
         model = MagicMock()
         model.GetPathName.return_value = target
-        model.Save3.return_value = None  # forces the legacy Save() fallback
+        model.GetType.return_value = 1
+        model.Save3.return_value = None
         adapter.currentModel = model
 
         result = await adapter.save_file(target)
 
         assert result.is_error
-        assert "File not written after save" in (result.error or "")
-        model.Save.assert_called_once()
+        assert "Failed to save file" in (result.error or "")
+        model.Save.assert_not_called()
+        assert model.Save3.call_args.args[0] == 1  # swSaveAsOptions_Silent
 
 
 class TestViewNamesHelper:
@@ -1968,6 +1973,7 @@ class TestPyWin32AdapterBranches:
             Parameter=Mock(return_value=None),
             ForceRebuild3=Mock(return_value=False),
             GetTitle=Mock(return_value="Model1"),
+            GetPathName=Mock(return_value="C:/tmp/model1.sldprt"),
         )
         adapter.currentModel = model
         adapter.swApp = SimpleNamespace(CloseDoc=Mock())
@@ -2141,44 +2147,46 @@ class TestPyWin32AdapterBranches:
         assert adapter.currentSketchManager is None
 
     @pytest.mark.asyncio
-    async def test_save_file_fallback_and_noop_paths(self, monkeypatch, tmp_path):
-        """Cover save_file fallback branches: SaveAs fallback, Save3 fallback, and clean-file no-op."""
+    async def test_save_file_failure_paths(self, monkeypatch, tmp_path):
+        """Save As errors name SolidWorks' flags; no legacy SaveAs/Save fallback."""
         adapter = self._build_adapter(monkeypatch)
 
         target = tmp_path / "out.sldprt"
 
-        # SaveAs3 fails, SaveAs fallback also fails -> explicit error branch.
+        # SaveAs3 returns swGenericSaveError: an error naming it, no SaveAs.
         adapter.swApp = SimpleNamespace(
             CloseDoc=Mock(side_effect=RuntimeError("locked"))
         )
         adapter.currentModel = SimpleNamespace(
             SaveAs3=Mock(return_value=1),
-            SaveAs=Mock(return_value=1),
-        )
-        monkeypatch.setattr(
-            "solidworks_mcp.adapters.pywin32_adapter.os.remove",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("locked")),
+            SaveAs=Mock(return_value=0),
         )
         failed_save_as = await adapter.save_file(str(target))
         assert failed_save_as.is_error
         assert "Failed to save as" in (failed_save_as.error or "")
+        assert "swGenericSaveError" in (failed_save_as.error or "")
+        adapter.currentModel.SaveAs.assert_not_called()
+        # Silent | no Copy: the saved document takes the new name.
+        assert adapter.currentModel.SaveAs3.call_args.args[2] == 1
 
-        # SaveAs3 reports numeric success but file is still missing -> file-not-written error.
+        # SaveAs3 reports success but no file appeared.
         adapter.currentModel = SimpleNamespace(SaveAs3=Mock(return_value=0))
         missing_output = await adapter.save_file(str(target))
         assert missing_output.is_error
-        assert "File not written after save" in (missing_output.error or "")
+        assert "Failed to save as" in (missing_output.error or "")
 
-        # Save3 raises; fallback Save returns non-success, but existing path means no-op success.
+        # Save3 raises: an error, never the legacy Save().
         existing = tmp_path / "existing.sldprt"
         existing.write_text("x", encoding="utf-8")
         adapter.currentModel = SimpleNamespace(
             Save3=Mock(side_effect=RuntimeError("Save3 unavailable")),
-            Save=Mock(return_value=1),
+            Save=Mock(return_value=0),
             GetPathName=Mock(return_value=str(existing)),
         )
-        no_op = await adapter.save_file()
-        assert no_op.is_success
+        failed = await adapter.save_file()
+        assert failed.is_error
+        assert "Save3 unavailable" in (failed.error or "")
+        adapter.currentModel.Save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_feature_and_configuration_edge_paths(self, monkeypatch):
@@ -2383,7 +2391,7 @@ class TestPyWin32AdapterBranches:
 
     @pytest.mark.asyncio
     async def test_save_guard_non_numeric_success_and_rebuild_failure(
-        self, monkeypatch
+        self, monkeypatch, tmp_path
     ):
         """Cover save guard path, non-numeric Save3 success, and rebuild operation failure branch."""
         adapter = self._build_adapter(monkeypatch)
@@ -2391,11 +2399,14 @@ class TestPyWin32AdapterBranches:
         no_model_save = await adapter.save_file()
         assert no_model_save.is_error
 
+        existing = tmp_path / "part.sldprt"
+        existing.write_text("x", encoding="utf-8")
         adapter.currentModel = SimpleNamespace(
             Save3=Mock(return_value=object()),
             ForceRebuild3=Mock(return_value=False),
+            GetPathName=Mock(return_value=str(existing)),
         )
-        # non-numeric truthy value follows bool(value) branch in _is_success
+        # A non-numeric truthy return counts as saved.
         save_success = await adapter.save_file()
         assert save_success.is_success
 
@@ -2474,7 +2485,9 @@ class TestPyWin32AdapterBranches:
         test_file.touch()
         target_doc = SimpleNamespace(SaveAs3=Mock())
         adapter._save_screenshot_with_saveas3(target_doc, str(test_file))
-        target_doc.SaveAs3.assert_called_once_with(str(test_file), 0, 2)
+        target_doc.SaveAs3.assert_called_once_with(
+            str(test_file), 0, 3
+        )  # swSaveAsOptions_Silent | Copy
 
     @pytest.mark.asyncio
     async def test_save_screenshot_with_saveas3_file_not_created(
@@ -2572,19 +2585,43 @@ class TestPyWin32AdapterBranches:
         assert adapter.currentModel is None
 
     @pytest.mark.asyncio
-    async def test_close_model_save_reads_save_property_style(
-        self, monkeypatch
-    ) -> None:
-        """save=True path also reaches Save through _get_attr_or_call (issue #91)."""
+    async def test_close_model_save_saves_silently(self, monkeypatch, tmp_path) -> None:
+        """save=True saves with Save3(Silent), never the dialog-prone Save()."""
         adapter = self._build_adapter(monkeypatch)
-        saved = Mock()
+        existing = tmp_path / "Part1.sldprt"
+        existing.write_text("x", encoding="utf-8")
+        legacy_save = Mock()
+        save3 = Mock(return_value=True)
         adapter.swApp = SimpleNamespace(CloseDoc=Mock())
-        adapter.currentModel = SimpleNamespace(GetTitle="Part1", Save=saved)
+        adapter.currentModel = SimpleNamespace(
+            GetTitle="Part1",  # property-style, as on an unflagged dispatch
+            GetPathName=str(existing),
+            Save=legacy_save,
+            Save3=save3,
+        )
 
         result = await adapter.close_model(save=True)
 
         assert result.is_success
-        saved.assert_called_once()
+        assert save3.call_args.args[0] == 1  # swSaveAsOptions_Silent
+        legacy_save.assert_not_called()
+        adapter.swApp.CloseDoc.assert_called_once_with("Part1")
+
+    @pytest.mark.asyncio
+    async def test_close_model_keeps_a_document_it_could_not_save(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        adapter = self._build_adapter(monkeypatch)
+        adapter.swApp = SimpleNamespace(CloseDoc=Mock())
+        model = SimpleNamespace(GetTitle="Part1", GetPathName="", Save3=Mock())
+        adapter.currentModel = model
+
+        result = await adapter.close_model(save=True)
+
+        assert result.is_error
+        assert "never been saved" in (result.error or "")
+        adapter.swApp.CloseDoc.assert_not_called()
+        assert adapter.currentModel is model
 
     @pytest.mark.asyncio
     async def test_open_model_activates_opened_document(self, monkeypatch) -> None:
@@ -2675,6 +2712,8 @@ class TestPyWin32AdapterBranches:
         assert result.data["dimensions"] == "640x480"
         assert result.data["requested_dimensions"] == "640x480"
         assert result.data["view"] == "front"
+        assert result.data["window_state"] == "unknown"  # no window handle
+        adapter.swApp.Frame.SetFocus.assert_called_once()
         assert output_file.read_bytes().startswith(b"\x89PNG")
         assert not (tmp_path / "shot.sizing.bmp").exists()
         target_doc.SaveBMP.assert_called_once_with(
@@ -2917,7 +2956,9 @@ class TestPyWin32AdapterBranches:
         target_doc = SimpleNamespace(SaveAs3=Mock(side_effect=_saveas3))
 
         adapter._save_stl_with_fallback(target_doc, str(out_file))
-        target_doc.SaveAs3.assert_called_once_with(str(out_file), 0, 2)
+        target_doc.SaveAs3.assert_called_once_with(
+            str(out_file), 0, 3
+        )  # swSaveAsOptions_Silent | Copy
 
     def test_save_stl_with_fallback_swallows_saveas3_error_if_file_exists(
         self, monkeypatch, tmp_path
@@ -2929,7 +2970,9 @@ class TestPyWin32AdapterBranches:
         target_doc = SimpleNamespace(SaveAs3=Mock(side_effect=RuntimeError("COM fail")))
 
         adapter._save_stl_with_fallback(target_doc, str(out_file))
-        target_doc.SaveAs3.assert_called_once_with(str(out_file), 0, 2)
+        target_doc.SaveAs3.assert_called_once_with(
+            str(out_file), 0, 3
+        )  # swSaveAsOptions_Silent | Copy
 
     @pytest.mark.asyncio
     async def test_export_file_returns_error_without_active_model(
@@ -2959,10 +3002,10 @@ class TestPyWin32AdapterBranches:
         assert set_result.error == "No active model"
 
     @pytest.mark.asyncio
-    async def test_save_file_raises_when_save3_none_and_save_missing(
+    async def test_save_file_refuses_a_never_saved_document_without_a_path(
         self, monkeypatch
     ) -> None:
-        """save_file should error when Save3 returns None and no Save fallback exists."""
+        """Saving an untitled document in place would open Save As; refuse instead."""
         adapter = self._build_adapter(monkeypatch)
         adapter.currentModel = SimpleNamespace(
             Save3=Mock(return_value=None),
@@ -2972,7 +3015,8 @@ class TestPyWin32AdapterBranches:
         result = await adapter.save_file()
 
         assert result.is_error
-        assert "Failed to save file" in (result.error or "")
+        assert "never been saved; give a file_path" in (result.error or "")
+        adapter.currentModel.Save3.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_model_info_and_list_features_return_error_without_model(

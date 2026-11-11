@@ -10,6 +10,7 @@ from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.circuit_breaker import CircuitBreakerAdapter, CircuitState
 from solidworks_mcp.tools.server_admin import (
     ResetCircuitBreakerInput,
+    SetSolidWorksWindowInput,
     register_server_admin_tools,
 )
 
@@ -29,8 +30,62 @@ def _breaker_with_open(*operations: str) -> CircuitBreakerAdapter:
 
 
 @pytest.mark.asyncio
-async def test_registers_one_tool(mcp_server, mock_adapter) -> None:
-    assert await register_server_admin_tools(mcp_server, mock_adapter, {}) == 1
+async def test_registers_two_tools(mcp_server, mock_adapter) -> None:
+    assert await register_server_admin_tools(mcp_server, mock_adapter, {}) == 2
+
+
+async def _window_tool(mcp_server: Any, adapter: Any) -> Any:
+    await register_server_admin_tools(mcp_server, adapter, {})
+    return next(
+        t.fn for t in await mcp_server.list_tools() if t.name == "set_solidworks_window"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "expected"), [("minimize", "minimized"), ("restore", "normal")]
+)
+async def test_set_solidworks_window(
+    mcp_server, mock_adapter, state: str, expected: str
+) -> None:
+    tool = await _window_tool(mcp_server, mock_adapter)
+
+    result = await tool(SetSolidWorksWindowInput(state=state))
+
+    assert result == {
+        "status": "success",
+        "message": f"SolidWorks window is {expected}",
+        "data": {"window_state": expected},
+    }
+
+
+@pytest.mark.asyncio
+async def test_set_solidworks_window_rejects_other_states(
+    mcp_server, mock_adapter
+) -> None:
+    tool = await _window_tool(mcp_server, mock_adapter)
+
+    result = await tool({"state": "maximize"})
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "invalid_input"
+
+
+@pytest.mark.asyncio
+async def test_set_solidworks_window_without_a_window(mcp_server) -> None:
+    class _NoWindow:
+        async def set_window_state(self, state: str) -> AdapterResult[Any]:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="The SolidWorks window is not available (not connected)",
+            )
+
+    tool = await _window_tool(mcp_server, _NoWindow())
+
+    result = await tool(SetSolidWorksWindowInput(state="minimize"))
+
+    assert result["status"] == "error"
+    assert "Failed to change the SolidWorks window" in result["message"]
 
 
 @pytest.mark.asyncio

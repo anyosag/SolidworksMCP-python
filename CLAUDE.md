@@ -153,14 +153,25 @@ updated 2026-04-24.
 - **Fix:** delete `%TEMP%\gen_py\`, restart the MCP server. Rebuilds on first
   call.
 
-### 3. `No active model` AND `OpenDoc6` errors together — stale COM handle
+### 3. `solidworks_reconnected`, or every call failing after SolidWorks restarted — stale COM handle
 
-- **Cause:** MCP server process grabbed a COM pointer at startup; user has
-  since quit and reopened SolidWorks. Pointer is dangling.
-- **Check:** compare MCP server start time (Claude `main.log` →
-  `Launching MCP Server: solidworks`) to current `SLDWORKS.exe` start time.
-- **Fix:** restart Claude Desktop (respawns MCP server, which grabs a fresh
-  SW handle). Restarting SolidWorks alone will NOT fix this.
+- **Cause:** MCP server process grabbed a COM pointer at connect; user has
+  since quit and reopened SolidWorks (or it crashed). Pointer is dangling:
+  calls on it fail with `RPC_S_SERVER_UNAVAILABLE`.
+- **Expected:** the server reconnects by itself. Before each call,
+  `_handle_com_operation` checks, through Win32 only, that the frame window
+  of the SolidWorks it connected to still exists and belongs to the same
+  process; without a window handle, a failed call reads `RevisionNumber`
+  and looks for an RPC error. If SolidWorks has exited, the server binds to
+  the running SolidWorks with `GetActiveObject` (never `Dispatch`, which
+  would start one). That call returns `solidworks_reconnected` without
+  running, and the next call works. Documents from before are gone. With no
+  SolidWorks running, calls return `solidworks_unavailable` until the user
+  starts it.
+- **If it still fails:** compare MCP server start time (Claude `main.log` →
+  `Launching MCP Server: solidworks`) to current `SLDWORKS.exe` start time,
+  and restart Claude Desktop (respawns MCP server, which grabs a fresh SW
+  handle).
 
 ### 4. `Circuit breaker is open for <tool>`
 
@@ -251,6 +262,64 @@ updated 2026-04-24.
 - **Fix:** Call `model.ForceRebuild3(True)` once before the first `SelectByID2` in a
   feature operation.
 
+### 14. SolidWorks pops up while minimized, or takes the keyboard focus
+
+- **Expected:** once SolidWorks is minimized (by the user, or by
+  `set_solidworks_window`), the server keeps it minimized and gives the focus
+  back to the user's window. `MinimizeKeeper` (`adapters/solidworks/window.py`)
+  watches from its own thread: a restore during a call, or within 2 s of one,
+  is undone at once; a restore while idle is the user's and is left alone.
+  `create_part`, `create_assembly` and activating an assembly restore it
+  during the call. To stop SolidWorks taking the foreground even for an
+  instant (window managers such as a "Stage Manager" switch on
+  `EVENT_SYSTEM_FOREGROUND`), each operation that starts minimized puts
+  `WS_EX_NOACTIVATE` on SolidWorks' frame until it ends, and connect and
+  disconnect clear any left behind (`SOLIDWORKS_MCP_BLOCK_ACTIVATION=0` turns
+  that off; `LockSetForegroundWindow` was tried and doesn't stop it). While
+  SolidWorks shows a modal dialog the keeper leaves it up, so the dialog
+  watchdog can see and cancel it. Dialogs are separate windows and can still
+  take the foreground, so don't let a call open one: activate documents
+  through `io.activate_doc`, which activates with `swDontRebuildActiveDoc`
+  and then calls `EditRebuild3` (for a changed assembly, `ActivateDoc3`
+  option `0` shows a rebuild prompt and option `2` a "Loading..." dialog).
+- **If SolidWorks won't come up when clicked:** a server that died mid-call
+  may have left `WS_EX_NOACTIVATE` on the frame. Restart the server (connect
+  clears it) or call `set_solidworks_window restore`.
+- **Check:** `SOLIDWORKS_MCP_KEEP_MINIMIZED` isn't `0`; the server connected
+  to the SolidWorks you minimized (it binds to the window of the instance it
+  connected to, through `IFrame.GetHWnd`, so with two SolidWorks running it can
+  be the other one).
+- **Agents:** `set_solidworks_window` minimizes or restores it.
+
+### 15. A tool returns `solidworks_dialog` or `confirmation_required`
+
+- **`solidworks_dialog`:** SolidWorks opened a modal dialog during the call.
+  The watchdog (`adapters/solidworks/dialogs.py`) cancelled it after
+  `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5; `0` turns it off); its
+  text is in `data.dialog`. It only presses Cancel or closes the dialog, never
+  Save or Don't Save. A dialog it can't cancel brings SolidWorks up for the user
+  to answer. Find what opened the dialog and make that call silent.
+- **`confirmation_required`:** saving an assembly would overwrite the user's
+  own modified part files (`data.files`); nothing was written. Call again with
+  `overwrite_modified_references: true` once the user agrees. Saves are always
+  silent (`adapters/solidworks/saving.py`; pitfalls #36 and #37).
+
+### 16. A tool returns `active_document_changed`
+
+- **Cause:** the user, or another program driving the same SolidWorks
+  (another MCP client, a live test from another session), activated a
+  different document since this session's last call. Some tools act on
+  SolidWorks' active document, so the call would have changed theirs.
+  `_handle_com_operation` remembers the active document as each call ends
+  and refuses the next one if it changed while the session has a document
+  of its own. Nothing was run.
+- **Fix:** call `activate_document` with the document to work on (the
+  message names both). Opening, creating, activating, closing and listing
+  documents (`_DOCUMENT_CHOOSING_OPERATIONS`) always run.
+- **Two clients on one SolidWorks** take turns: each switch makes the other
+  one's next call fail this way, which is safe but slow. Give each client its
+  own SolidWorks where you can.
+
 > **Full COM pitfall catalogue for LLM agents:** `docs/agents/com-api-pitfalls.md`
 
 ### Decision order when starting a debug session
@@ -258,7 +327,8 @@ updated 2026-04-24.
 1. Read recent `%APPDATA%\Claude\logs\main.log` entries for
    `Launching MCP Server: solidworks` and note the timestamp.
 2. Compare to current `SLDWORKS.exe` process start (Task Manager). If SW is
-   newer than the server → **#3**, restart Claude Desktop first.
+   newer than the server → **#3**: the next call should reconnect; if calls
+   keep failing, restart Claude Desktop.
 3. If SW is older or same, try a trivial call (`get_model_info`). If it
    returns a circuit-breaker error, wait 60s and retry → **#4**.
 4. If real error text surfaces, map to #1/#2/#5/#6 via the error signature

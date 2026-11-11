@@ -32,6 +32,7 @@ from .base import (
 from .solidworks.drawing_standard import gtol_problem
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
+from .solidworks.saving import confirmation_result
 from .solidworks.sketch import RELATION_NAME_MAP
 
 #: Orientations the mock accepts for a drawing view. Kept in step with
@@ -238,6 +239,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # self-consistent without a real geometry engine.
         self._pattern_volume: float = 48431.5
         self._operation_count = 0
+        # Simulated SolidWorks window (set_window_state, export_image) and the
+        # user's modified files an assembly save would overwrite (tests set
+        # these to exercise the confirmation flow).
+        self._window_state = "normal"
+        self._modified_user_files: list[str] = []
 
         # Configurable simulation delays (in seconds)
         self._delays = {
@@ -413,19 +419,66 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["model_operation"],
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Mock minimize/restore: changes the simulated window state.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        states = {"minimize": "minimized", "restore": "normal"}
+        if state not in states:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Unknown window state {state!r}; use minimize or restore",
+            )
+        self._window_state = states[state]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"window_state": self._window_state},
+        )
+
+    def _needs_confirmation(
+        self, overwrite_modified_references: bool
+    ) -> AdapterResult[Any] | None:
+        """Mirror the real adapter: an assembly save that would overwrite the
+        user's modified files (``_modified_user_files``) needs confirming."""
+        if (
+            self._modified_user_files
+            and not overwrite_modified_references
+            and self._current_model is not None
+            and self._current_model.type == "Assembly"
+        ):
+            return confirmation_result(list(self._modified_user_files))
+        return None
+
+    def _saved_references(self) -> list[str]:
+        """The user's files a confirmed save wrote; they are saved now."""
+        saved = list(self._modified_user_files)
+        self._modified_user_files = []
+        return saved
+
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Mock closing the current model.
 
         Args:
             save (bool): The save value. Defaults to False.
+            overwrite_modified_references (bool): See
+                ``SolidWorksAdapter.close_model``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         if not self._current_model:
             return AdapterResult(
                 status=AdapterResultStatus.WARNING, error="No active model to close"
             )
+        if save and (needs := self._needs_confirmation(overwrite_modified_references)):
+            return needs
 
         await asyncio.sleep(self._delays["model_operation"] / 2)
         self._operation_count += 1
@@ -433,6 +486,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if save:
             # Simulate save operation
             await asyncio.sleep(self._delays["model_operation"])
+            self._saved_references()
 
         self._current_model = None
 
@@ -1490,12 +1544,16 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def save_file(
-        self, file_path: str | None = None
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
-        """Legacy compatibility save operation for tests.
+        """Mock save, with the real adapter's overwrite confirmation.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See
+                ``SolidWorksAdapter.save_file``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -1505,12 +1563,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error="No active model",
             )
+        if needs := self._needs_confirmation(overwrite_modified_references):
+            return needs
         await asyncio.sleep(0.02)
         self._operation_count += 1
         resolved_path = file_path or self._current_model.path
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"file_path": resolved_path, "saved": True},
+            data={
+                "file_path": resolved_path,
+                "saved": True,
+                "saved_references": self._saved_references(),
+                "warnings": [],
+            },
             execution_time=0.02,
         )
 
@@ -2221,6 +2286,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     async def export_image(self, payload: dict) -> AdapterResult[dict]:
         """Mock export of a PNG/JPG viewport screenshot.
 
+        Reports the zoom like the real adapter: ``zoom_to_fit`` left out (or
+        ``None``) zooms for every orientation but ``current``, which keeps the
+        view as it is.
+
         Args:
             payload (dict): The payload value.
 
@@ -2237,7 +2306,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         file_path = payload.get("file_path", "")
         width = int(payload.get("width", 1280))
         height = int(payload.get("height", 720))
-        orientation = str(payload.get("view_orientation", "current"))
+        orientation = str(payload.get("view_orientation", "current")).lower()
+        zoom = payload.get("zoom_to_fit")
+        zoom_to_fit = orientation != "current" if zoom is None else bool(zoom)
 
         await asyncio.sleep(0.3)
         self._operation_count += 1
@@ -2263,6 +2334,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "format": "PNG",
                 "dimensions": f"{width}x{height}",
                 "view": orientation,
+                "zoomed_to_fit": zoom_to_fit,
+                "window_state": self._window_state,
             },
             execution_time=0.3,
             metadata={"mock": True, "orientation": orientation},

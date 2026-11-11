@@ -212,6 +212,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "undo": _STABLE,
     # server_admin
     "reset_circuit_breaker": _STABLE,
+    "set_solidworks_window": _STABLE,
     # sketching
     "add_arc": _STABLE,
     "add_centerline": _STABLE,

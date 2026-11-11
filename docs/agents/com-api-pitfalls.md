@@ -695,7 +695,9 @@ before capturing, using its title (not path):
 
 ```python
 title = target_doc.GetTitle()
-swApp.ActivateDoc3(title, False, 0, byref_long_out_param)
+# Option 1 = swDontRebuildActiveDoc, then EditRebuild3: no SolidWorks window
+# (0 shows a rebuild prompt, 2 a "Loading..." dialog; see #38). io.activate_doc does this.
+swApp.ActivateDoc3(title, False, 1, byref_long_out_param)
 swApp.Frame.SetFocus()
 # ... then capture (SaveBMP; SaveBitmapWithVariableSize does not exist, see #34)
 ```
@@ -1001,12 +1003,15 @@ error.
 
 - `Sd` (1st argument) is "single direction". `True` cuts Direction 1 only. `False`
   also cuts Direction 2 with `T2`/`D2`; with `D2=0` that second side has zero depth.
-- Direction 1 follows the sketch plane's normal; `Dir` (3rd argument) reverses it.
+- `Dir` (3rd argument) `False` is SolidWorks' cut default and goes *against* the sketch
+  normal (from a face, into the part); `Dir=True` goes along it. `FeatureExtrusion3` is
+  the other way round: `Dir=False` grows a boss *along* the normal. So the same `Dir`
+  sends a boss and a cut to opposite sides of their sketch plane.
 
 | Ø5.5 × 6 mm hole, Top Plane sketch under a block extruded up from Top | Result |
 |---|---|
 | `Sd=False`, `D2=0` (what the adapter sent on SW 2025+ since 69d3dbd) | no feature |
-| `Sd=True`, `Dir=False` | no feature: the normal points away from the block |
+| `Sd=True`, `Dir=False` | no feature: `Dir=False` cuts against the normal, away from the block |
 | `Sd=True`, `Dir=True` | cuts exactly 142.55 mm³ |
 | `Sd=True`, then `Sd=False` on the same sketch | no feature (a failed call does not spoil the retry; `Sd=False` just never works here) |
 
@@ -1018,14 +1023,159 @@ block), `Sd=True` cuts in either direction and `Sd=False` with `D2=0` returns no
 second side happened to go into the block. Fixing that fallback's arguments (#192)
 removed the accident and exposed the real problem.
 
-**Fix:** a one-way cut is single-ended (`Sd=True`) with the requested `Dir`; if that
-builds nothing, retry once with `Dir` reversed, reselecting the sketch first. The
-result's `parameters.direction_flipped` (and the tool reply's
-`cut_extrude.direction_flipped`) says when that happened. When neither direction
-builds anything, the error says what was tried and is classified `feature_not_built`.
-The SW version picks only `OptimizeGeometry`, never `Sd`.
+**Fix:** a one-way cut is single-ended (`Sd=True`). A `reverse_direction` the caller
+sets is passed to `Dir` unchanged (true: along the normal). If that builds nothing,
+retry once with `Dir` reversed, reselecting the sketch first. The result's
+`parameters.direction_flipped` (and the tool reply's `cut_extrude.direction_flipped`)
+says when that happened. When neither direction builds anything, the error says what
+was tried and is classified `feature_not_built`. The SW version picks only
+`OptimizeGeometry`, never `Sd`.
 
-`_create_cut_extrude_impl` in `adapters/solidworks/features.py`; issue #193.
+**Flipping only when nothing builds is not enough** when the caller leaves the direction
+to the server. From an offset plane with a little material on the far side, the cut
+builds there and takes a sliver: 1.13 mm³ instead of the 9.05 mm³ meant (DishRack
+session, 2026-11-10). So with `reverse_direction` unset, the adapter:
+
+1. cuts along the normal (the side `create_extrusion` grows into) and measures;
+2. deletes that cut, cuts against the normal and measures again;
+3. keeps the side that removed more. A tie keeps the along-normal side, rebuilt under
+   its first name.
+
+The result's `parameters.direction_choice` and `volume_removed_mm3` say what was
+compared.
+
+`_create_cut_extrude_impl` and `_create_cut_extrude_choosing_side` in
+`adapters/solidworks/features.py`; issue #193.
+
+---
+
+## 36. `swSaveAsOptions_Silent` is 1, not 2; and `Save3(1, None, None)` falls back to a dialog
+
+**Values** (`swconst.tlb`, SW 2026): `Silent` = 1, `Copy` = 2, `SaveReferenced` = 4. The
+export calls passed `2` as "Silent", so every export ran as Copy without Silent and could
+show a dialog. They now pass `Silent | Copy` (3, `_EXPORT_OPTIONS` in `pywin32_adapter.py`).
+
+**Save in place:** `Save3(Options, Errors, Warnings)` has two by-ref `long`
+out-parameters. Passing `None` for them fails under late binding, and the code then fell
+back to the legacy `IModelDoc2.Save()`, which isn't silent. Pass `_byref_int()` VARIANTs
+and read `.value` afterwards; the bits are `swFileSaveError_e` / `swFileSaveWarning_e`
+(`flag_names` in `adapters/solidworks/saving.py` names them).
+
+**Save As:** `IModelDoc2.SaveAs3(Name, Version, Options)` returns `0` on success, else the
+`swFileSaveError_e` flags.
+
+**Assemblies:** see #37.
+
+---
+
+## 37. Saving an assembly with modified parts shows "Save Modified Documents"
+
+**Symptom:** after a part of an open assembly changes, saving the assembly in place (the
+old `save_file` fallback to `Save()`) or `close_model(save=True)` (`Save`) opens a modal
+"SOLIDWORKS Design" dialog asking whether to save the modified documents. The COM call
+blocks until someone answers, and nothing is written. Saving the assembly *as a new name*
+(`SaveAs3(path, 0, 0)`) didn't ask. Measured on SW 2026 SP4.1,
+`tests/scripts/probe_minimized.py --saves`.
+
+**Fix:** `Save3(Silent | SaveReferenced, errors, warnings)` writes the assembly and its
+modified parts without a dialog. Because that overwrites part files, `save_document`
+first walks `IAssemblyDoc.GetComponents(False)` → `IComponent2.GetModelDoc2` →
+`GetSaveFlag` / `GetPathName` / `IsVirtual`. A modified file that existed before this
+session, and that the session didn't create or first save, needs the caller's
+`overwrite_modified_references`. Without it the save writes nothing and returns
+`confirmation_required` with the files. `CloseDoc` on a modified document closes it
+without asking.
+
+---
+
+## 38. A minimized SolidWorks: what restores it, who gets the focus, and `SaveBMP`
+
+Measured on SW 2026 SP4.1 (`tests/scripts/probe_minimized.py`):
+
+- **What restores it:** `NewDocument` (`create_part`, `create_assembly`) and activating an
+  assembly whose parts changed. It's restored inside the call and stays restored.
+- **Focus:** SolidWorks also takes the foreground and keeps it after it is minimized
+  again. `ShowWindow(SW_MINIMIZE)` didn't always pass the focus on. Hand it back with
+  `AttachThreadInput` (to the foreground thread) and `SetForegroundWindow`. Right after
+  `NewDocument` SolidWorks may be too busy for that to work, so retry a few times, 0.1 s
+  apart.
+- **What leaves it minimized:** `ISldWorks.Visible = True`, sketches, features, saves,
+  `CloseDoc`.
+- **`SaveBMP` renders the model while minimized.** The graphics area keeps its last size
+  (`IModelView.FrameWidth` / `FrameHeight`), so `export_image` needs no restore.
+  `Frame.SetFocus()` would take the user's focus, so it is skipped while minimized.
+- **No off-screen restore:** `SetWindowPlacement` moves a rectangle that is wholly off
+  screen back onto a monitor, so the window can't be restored off-screen.
+- **The rebuild prompt comes from `ActivateDoc3`'s own argument.** In
+  `ActivateDoc3(Name, UseUserPreferences, Option, Errors)`, `Option` is a
+  `swRebuildOnActivationOptions_e`, used when `UseUserPreferences` is false. Measured on
+  a scratch assembly after changing its part:
+
+  | `Option` | What SolidWorks showed | `IModelDocExtension.NeedsRebuild2` after |
+  |---|---|---|
+  | `0` `swUserDecision` | the rebuild box, at 0.2 s; it took the foreground | 0, once the box dismissed itself |
+  | `2` `swRebuildActiveDoc` | a "Loading..." `#32770` dialog, which took the foreground for about 0.5 s | 0 |
+  | `1` `swDontRebuildActiveDoc` | nothing | 1 |
+  | `1`, then `EditRebuild3` or `ForceRebuild3(False)` | nothing | 0 |
+
+  Changing the user preference `swRebuildOnActivation` (230) instead does nothing, even
+  when held for 5 s, and neither does `ForceRebuild3` on the assembly before activating
+  it. Call `io.activate_doc` (option `1`, then `EditRebuild3` unless `NeedsRebuild2` is
+  0). `EditRebuild3` resolves as a property under late binding, so read it through
+  `_get_attr_or_call`.
+- **Self-closing message boxes:** activating an assembly whose part changed with option
+  `0` shows "Models contained within the assembly have changed. Would you like to rebuild
+  the assembly now?" (Yes, No), titled "... (Automatically dismissing in 5 seconds)". The countdown
+  appears in the title a moment after the box does, and counts down each second. Re-read
+  the title on every check, and leave the box alone until its countdown ends (the
+  watchdog gives it at most 30 s). Cancelling it first turns a successful activation into
+  an error. Its text is in a control `GetWindowText` can't read across processes; send
+  `WM_GETTEXT` (with `SendMessageTimeoutW`).
+
+- **Guarding only the adapter's own operations isn't enough.** In the live regression
+  suite a COM call made outside `_handle_com_operation` restored SolidWorks between
+  operations. From then on every operation started with a visible window and left it
+  up. `MinimizeKeeper` remembers that the user wants it minimized and watches from a
+  thread. A restore during a call, or within 2 s of any COM call, is undone; one while
+  idle is the user's.
+
+The window code is Win32-only (`adapters/solidworks/window.py`, `dialogs.py`), so it may
+run off the COM thread.
+
+---
+
+## 39. A SolidWorks that has exited leaves a dead `swApp`, and `Dispatch` would start a new one
+
+**Signature:** after SolidWorks is closed (or crashes) and started again, every call fails
+with `(-2147023174, 'The RPC server is unavailable.', None, None)`
+(`RPC_S_SERVER_UNAVAILABLE`). The proxy still points into the old process. The new
+SolidWorks is never used until something binds to it again.
+
+**What goes wrong when you just reconnect:**
+
+- `win32com.client.Dispatch("SldWorks.Application")` (and `dynamic.Dispatch` with the
+  ProgID) *starts* SolidWorks when none is running. A user who closed it sees it come
+  back. To bind to a running SolidWorks only, use `GetActiveObject`, which fails with
+  `MK_E_UNAVAILABLE` when there is none.
+- `currentModel`, `currentSketch` and the sketch entity handles are proxies into the old
+  process too. Running the call that found the restart on the new SolidWorks would act on
+  whatever is active there, maybe the user's own document.
+- Calls made through `_attempt` swallow the RPC error and return their default. A dead
+  SolidWorks can then look like an empty one (no documents, no features) rather than a
+  failure.
+
+**What the adapter does** (`PyWin32Adapter._solidworks_exited`, then
+`_ComSessionCoordinator.recover` and `reconnect`):
+
+- Before each outermost call it checks that the connected SolidWorks' frame window still
+  exists and belongs to the same process: `IsWindow` and `GetWindowThreadProcessId`,
+  Win32 with no COM. Without a frame handle, it reads `RevisionNumber` after a failed call
+  and looks for an RPC HRESULT.
+- If SolidWorks has exited, it calls `GetActiveObject`, flags `ISldWorks`, checks
+  `RevisionNumber` and sets the session up as `connect` does. It doesn't run the call,
+  drops the old document handles, and returns an error that classifies as
+  `solidworks_reconnected`.
+- If the process is the same (only the window changed), the call runs as usual.
 
 ---
 

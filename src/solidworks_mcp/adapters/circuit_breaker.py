@@ -382,6 +382,20 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS, data={"reset": self.reset(operation)}
         )
 
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore SolidWorks; not counted by the breaker.
+
+        It changes the window, not the model, so a failure says nothing about
+        whether SolidWorks operations should be paused.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        return await self.adapter.set_window_state(state)
+
     async def connect(self) -> None:
         """Connect through circuit breaker.
 
@@ -483,34 +497,48 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"file_path": file_path},
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close model through circuit breaker.
 
         Args:
             save (bool): The save value. Defaults to False.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.close_model``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "close_model",
-            lambda: self.adapter.close_model(save),
-            input_dict={"save": save},
+            lambda: self.adapter.close_model(save, overwrite_modified_references),
+            input_dict={
+                "save": save,
+                "overwrite_modified_references": overwrite_modified_references,
+            },
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save model through circuit breaker.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.save_file``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "save_file",
-            lambda: self.adapter.save_file(file_path),
-            input_dict={"file_path": file_path},
+            lambda: self.adapter.save_file(file_path, overwrite_modified_references),
+            input_dict={
+                "file_path": file_path,
+                "overwrite_modified_references": overwrite_modified_references,
+            },
         )
 
     async def execute_macro(

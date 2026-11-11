@@ -148,7 +148,9 @@ def require_success[TResult](
         context: Prefix naming what failed, e.g. ``"Failed to create part"``,
             giving ``"<context>: <adapter error>"``.
         with_data: Return the adapter's ``data`` with the error, for tools whose
-            failure data is the diagnosis (e.g. ``rebuild_model``).
+            failure data is the diagnosis (e.g. ``rebuild_model``). A dialog
+            SolidWorks showed (``data.dialog``) or files waiting for the
+            user's confirmation (``data.confirm_with``) are always returned.
 
     Raises:
         ToolOperationError: Carrying the adapter's message and timing.
@@ -158,9 +160,18 @@ def require_success[TResult](
         raise ToolOperationError(
             f"{context}: {message}" if context else message,
             result.execution_time,
-            result.data if with_data else None,
+            result.data if with_data or _always_returned(result.data) else None,
         )
     return result
+
+
+#: Error data every tool returns, whatever ``with_data`` says: the agent
+#: needs it to answer the error (``solidworks_dialog``, ``confirmation_required``).
+_ALWAYS_RETURNED_KEYS = frozenset({"dialog", "confirm_with"})
+
+
+def _always_returned(data: Any) -> bool:
+    return isinstance(data, dict) and not _ALWAYS_RETURNED_KEYS.isdisjoint(data)
 
 
 def error_payload(

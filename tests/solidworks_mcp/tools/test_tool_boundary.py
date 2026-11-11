@@ -497,6 +497,22 @@ async def test_failure_data_is_returned_when_requested() -> None:
     assert "data" not in await without_data()
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"dialog": {"title": "SOLIDWORKS", "texts": ["Save changes?"]}},
+        {"files": ["C:/a.SLDPRT"], "confirm_with": "overwrite_modified_references"},
+    ],
+)
+def test_dialog_and_confirmation_data_always_reach_the_caller(data: dict) -> None:
+    failed = AdapterResult(status=AdapterResultStatus.ERROR, error="x", data=data)
+
+    with pytest.raises(ToolOperationError) as info:
+        require_success(failed)
+
+    assert info.value.data == data
+
+
 # ---- plain dicts --------------------------------------------------------------
 
 

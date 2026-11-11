@@ -44,7 +44,13 @@ from typing import TYPE_CHECKING, Any, cast
 from ..base import AdapterResult, AdapterResultStatus
 from . import dimension_layout as _layout
 from .features import _null_callout
-from .io import _as_com, _resolve_drawing_view, _sw_type_info, _view_names
+from .io import (
+    _as_com,
+    _resolve_drawing_view,
+    _sw_type_info,
+    _view_names,
+    activate_doc,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -550,7 +556,9 @@ class SolidWorksDrawingStandardMixin:
         ) -> AdapterResult[Any]: ...
 
         async def save_file(
-            self, file_path: str | None = None
+            self,
+            file_path: str | None = None,
+            overwrite_modified_references: bool = False,
         ) -> AdapterResult[Any]: ...
 
         async def create_drawing(
@@ -1169,7 +1177,7 @@ class SolidWorksDrawingStandardMixin:
             return False
         title = self._attempt(lambda: doc.GetTitle(), default=None)
         if title:
-            self._attempt(lambda: app.ActivateDoc3(title, False, 0, 0), default=None)
+            activate_doc(self, app, title)
         self.currentModel = doc
         return True
 
