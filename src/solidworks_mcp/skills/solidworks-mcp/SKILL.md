@@ -49,6 +49,13 @@ circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
 and cut once, or repeat the cut with `pattern_circular` (`step_angle` for
 the degrees between instances) or `mirror_feature`.
 
+When you know the whole sequence, `execute_workflow` runs it in one call:
+`steps` is a list of `{"tool": ..., "arguments": ...}`, run in order and
+stopped at the first failure; `rollback_on_error` then deletes what the
+earlier steps added. To change a model that exists, edit in place
+(`edit_feature`, `edit_sketch`, `set_rollback`) rather than deleting and
+re-creating, which takes dependents with it.
+
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
 
@@ -106,7 +113,7 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
   description opens with "Beta: ..." or "Experimental: ...", and a successful
   result carries the same sentence as `warning`. Read it, and check the
   result (`verify_model`, `list_features`) before building on it.
-- 40 tools are planned: registered, but nothing implements them. Their
+- 39 tools are planned: registered, but nothing implements them. Their
   description says "Not available yet" and every call returns
   `not_supported`. Use the tool their description names instead.
 - Some tools ignore some of their inputs, and a few behave in ways you must

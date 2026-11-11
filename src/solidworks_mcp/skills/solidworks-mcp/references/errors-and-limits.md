@@ -35,7 +35,7 @@ it will again.
 
 ## Tools that can't run yet
 
-40 tools are registered but nothing implements them (support level
+39 tools are registered but nothing implements them (support level
 `planned`). Their description says "Not available yet"; every call returns
 `not_supported`. They are
 mostly batch, template, macro-recording and drawing-analysis tools, plus

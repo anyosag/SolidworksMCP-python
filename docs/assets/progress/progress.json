@@ -4,8 +4,8 @@
   "by_level": {
    "stable": 106,
    "beta": 0,
-   "experimental": 18,
-   "planned": 40
+   "experimental": 19,
+   "planned": 39
   },
   "list": [
    {
@@ -522,9 +522,9 @@
    {
     "name": "execute_workflow",
     "family": "automation",
-    "level": "planned",
-    "reason": "no adapter implements it yet.",
-    "summary": "Run a named sequence of tool steps, in order or in parallel, with an error policy."
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Run a list of tool steps in order in one call, stopping at the first that fails."
    },
    {
     "name": "exit_sketch",

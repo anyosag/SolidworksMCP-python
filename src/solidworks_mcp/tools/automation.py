@@ -7,15 +7,20 @@ for configuration-driven variants, execute_workflow for scripted pipelines,
 create_template for reusable standards, and optimize_performance for tuning.
 """
 
+import inspect
 from typing import Any
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
+from .support_levels import SUPPORT_LEVELS, SupportLevel
 from .tool_boundary import (
+    InvalidInputError,
+    ToolOperationError,
     UnsupportedOperationError,
+    normalize_input,
     require_capability,
     require_success,
     with_tool_boundary,
@@ -213,23 +218,68 @@ class DesignTableInput(CompatInput):
             self.auto_create_configurations = True
 
 
-class WorkflowInput(CompatInput):
-    """Input schema for workflow automation.
+#: The most steps one workflow runs.
+MAX_WORKFLOW_STEPS = 100
+
+#: Steps that change which names the feature tree holds, or where new
+#: features go. Rollback deletes what wasn't in the tree at the start, so
+#: after one of these it could delete a feature the user already had.
+_UNTRACKED_STEPS = frozenset(
+    {
+        "rename_feature",
+        "delete_feature",
+        "undo",
+        "set_rollback",
+        "open_model",
+        "close_model",
+    }
+)
+
+
+class WorkflowStep(BaseModel):
+    """One step of a workflow: a tool and its arguments.
 
     Attributes:
-        error_handling (str): The error handling value.
-        parallel_execution (bool): The parallel execution value.
-        steps (list[dict[str, Any]]): The steps value.
-        workflow_name (str): The workflow name value.
+        tool (str): The tool's name, e.g. ``create_sketch``.
+        arguments (dict[str, Any]): Its input, as the tool takes it.
     """
 
-    workflow_name: str = Field(description="Name of the workflow")
-    steps: list[dict[str, Any]] = Field(description="List of workflow steps")
-    parallel_execution: bool = Field(
-        default=False, description="Execute compatible steps in parallel"
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(description="The tool to call, e.g. 'create_sketch'")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The tool's input, as you would pass it to the tool itself",
     )
-    error_handling: str = Field(
-        default="stop", description="Error handling strategy (stop, skip, retry)"
+
+
+class WorkflowInput(CompatInput):
+    """Input schema for running tool steps in order.
+
+    Attributes:
+        workflow_name (str): A name for the run, used in its messages.
+        steps (list[WorkflowStep]): The steps, run one after another.
+        rollback_on_error (bool): Remove what the steps built when one fails.
+    """
+
+    workflow_name: str = Field(
+        default="workflow", description="A name for the run, used in its messages"
+    )
+    steps: list[WorkflowStep] = Field(
+        min_length=1,
+        max_length=MAX_WORKFLOW_STEPS,
+        description=(
+            "The steps, run one after another: each a {tool, arguments} pair, "
+            "e.g. {'tool': 'add_line', 'arguments': {'x1': 0, 'y1': 0, 'x2': 10, "
+            "'y2': 0}}"
+        ),
+    )
+    rollback_on_error: bool = Field(
+        default=False,
+        description=(
+            "When a step fails, delete the features and sketches the earlier "
+            "steps added to the document that was active at the start"
+        ),
     )
 
 
@@ -488,36 +538,149 @@ End Sub
             "execution_time": result.execution_time,
         }
 
+    async def _feature_names() -> list[str] | None:
+        """The active document's feature tree, or None when it can't be read."""
+        listed = await adapter.list_features(include_suppressed=True)
+        if not listed.is_success:
+            return None
+        return [str(f.get("name")) for f in listed.data or [] if f.get("name")]
+
+    async def _document() -> str | None:
+        """The active document's title or path, or None without one."""
+        info = await adapter.get_model_info()
+        if not info.is_success or not isinstance(info.data, dict):
+            return None
+        return str(info.data.get("title") or info.data.get("path") or "") or None
+
+    async def _roll_back(
+        checkpoint: list[str] | None, document: str | None
+    ) -> dict[str, Any]:
+        """Delete what the steps added since ``checkpoint``, newest first."""
+        if document is None:
+            return {
+                "done": False,
+                "reason": "no document was open at the start, so there is nothing to roll back to",
+            }
+        if checkpoint is None:
+            return {
+                "done": False,
+                "reason": "the feature tree couldn't be read at the start, so nothing was deleted",
+            }
+        if await _document() != document:
+            return {
+                "done": False,
+                "reason": (
+                    f"the active document is no longer {document!r}; the steps "
+                    "opened or created another, so nothing was deleted"
+                ),
+            }
+        await adapter.exit_sketch()  # a sketch left open would block deletes
+        deleted: list[str] = []
+        for _ in range(MAX_WORKFLOW_STEPS):
+            names = await _feature_names() or []
+            added = [n for n in names if n not in checkpoint]
+            if not added:
+                break
+            gone = await adapter.delete_feature(added[-1], True)
+            if not gone.is_success:
+                return {
+                    "done": False,
+                    "deleted": deleted,
+                    "left": added,
+                    "reason": f"SolidWorks would not delete {added[-1]}: {gone.error}",
+                }
+            removed = (gone.data or {}).get("removed_features") or [added[-1]]
+            deleted += [n for n in removed if n not in deleted]
+        return {"done": True, "deleted": deleted}
+
     @mcp.tool()
     async def execute_workflow(input_data: WorkflowInput) -> dict[str, Any]:
-        """Run a named sequence of tool steps, in order or in parallel, with an error policy.
+        """Run a list of tool steps in order in one call, stopping at the first that fails.
 
-        Not available yet: no adapter implements it, so every call returns an error with
-        `error_type: "not_supported"`. It is planned for a future release. Call the
-        tools one at a time instead. Changes: once available, whatever the steps change.
-        Returns: once available, each step's result under `data`.
+        Use it for a sequence you already know, e.g. sketch, draw, exit, extrude: give
+        `steps`, each a `tool` name and the `arguments` you would pass that tool. Steps
+        run one at a time (SolidWorks takes one call at a time). With
+        `rollback_on_error`, a failing step makes it delete the features and sketches
+        the earlier steps added, so the document is as it started (other changes, such
+        as dimensions or saved files, stay). Needs: whatever the steps need. Changes:
+        whatever the steps change. Returns: `steps` (each one's `tool`, `status`,
+        `message` and full `result`) and `completed`; on a failure, an error whose
+        `data` has the steps, `failed_step` and `rolled_back`.
 
         Args:
-            input_data: The workflow. `workflow_name` and `steps` (a list of step
-                mappings) are required; `parallel_execution` and `error_handling`
-                have defaults.
+            input_data: The workflow. `steps` (1 to 100) is required;
+                `workflow_name` and `rollback_on_error` (off) have defaults.
 
         Returns:
-            dict[str, Any]: The step results, or a `not_supported` error.
+            dict[str, Any]: Each step's result.
         """
-        require_capability(
-            adapter,
-            "execute_workflow",
-            "Active adapter does not support execute_workflow; "
-            f"workflow '{input_data.workflow_name}' was not run.",
+        input_data = normalize_input(input_data, WorkflowInput)
+        registry = {tool.name: tool for tool in await mcp.list_tools()}
+        for index, step in enumerate(input_data.steps):
+            support = SUPPORT_LEVELS.get(step.tool)
+            if step.tool == "execute_workflow":
+                raise InvalidInputError(
+                    f"steps.{index}: a workflow can't run execute_workflow"
+                )
+            if step.tool not in registry or support is None:
+                raise InvalidInputError(f"steps.{index}: no tool named {step.tool!r}")
+            if support.level is SupportLevel.PLANNED:
+                raise InvalidInputError(
+                    f"steps.{index}: {step.tool} is not available yet"
+                )
+            takes_input = bool(inspect.signature(registry[step.tool].fn).parameters)
+            if step.arguments and not takes_input:
+                raise InvalidInputError(
+                    f"steps.{index}: {step.tool} takes no arguments"
+                )
+            if input_data.rollback_on_error and step.tool in _UNTRACKED_STEPS:
+                raise InvalidInputError(
+                    f"steps.{index}: rollback_on_error can't be used with "
+                    f"{step.tool}, which changes the feature tree in a way a "
+                    "rollback can't follow; run it without rollback_on_error"
+                )
+
+        name = input_data.workflow_name
+        document = await _document() if input_data.rollback_on_error else None
+        checkpoint = (
+            await _feature_names()
+            if input_data.rollback_on_error and document
+            else None
         )
-        result = await adapter.execute_workflow(input_data.model_dump())
-        require_success(result, "Workflow execution failed")
+        done: list[dict[str, Any]] = []
+        for index, step in enumerate(input_data.steps):
+            fn = registry[step.tool].fn
+            takes_input = bool(inspect.signature(fn).parameters)
+            reply = await (fn(step.arguments) if takes_input else fn())
+            entry = {
+                "index": index,
+                "tool": step.tool,
+                "status": reply.get("status"),
+                "message": reply.get("message"),
+                "result": reply,
+            }
+            done.append(entry)
+            if reply.get("status") == "error":
+                data: dict[str, Any] = {
+                    "steps": done,
+                    "completed": index,
+                    "failed_step": index,
+                    "rolled_back": (
+                        await _roll_back(checkpoint, document)
+                        if input_data.rollback_on_error
+                        else None
+                    ),
+                }
+                raise ToolOperationError(
+                    f"Workflow '{name}' stopped at step {index + 1} of "
+                    f"{len(input_data.steps)} ({step.tool}): {reply.get('message')}",
+                    data=data,
+                )
         return {
             "status": "success",
-            "message": f"Workflow '{input_data.workflow_name}' completed",
-            "data": result.data,
-            "execution_time": result.execution_time,
+            "message": f"Workflow '{name}' ran all {len(done)} steps",
+            "steps": done,
+            "completed": len(done),
         }
 
     @mcp.tool()

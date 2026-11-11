@@ -21,7 +21,6 @@ from solidworks_mcp.tools.automation import (
     RecordMacroInput,
     TemplateInput,
     VBAGenerationInput,
-    WorkflowInput,
     register_automation_tools,
 )
 
@@ -242,59 +241,6 @@ class TestAutomationTools:
         mock_adapter.manage_design_table.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_execute_workflow_success(
-        self, mcp_server, mock_adapter, mock_config
-    ):
-        """Test successful workflow execution."""
-        await register_automation_tools(mcp_server, mock_adapter, mock_config)
-
-        mock_adapter.execute_workflow = AsyncMock(
-            return_value=Mock(
-                is_success=True,
-                data={
-                    "workflow_name": "Part Creation Workflow",
-                    "steps_completed": 8,
-                    "total_steps": 8,
-                    "execution_time": 12.5,
-                    "output_files": ["final_part.sldprt", "part_drawing.slddrw"],
-                    "workflow_status": "Completed successfully",
-                },
-                execution_time=12.5,
-            )
-        )
-
-        input_data = WorkflowInput(
-            workflow_name="Part Creation Workflow",
-            steps=[
-                {"action": "open_template", "template": "part_template.prtdot"},
-                {"action": "create_sketch", "plane": "Front"},
-                {"action": "sketch_rectangle", "width": 50, "height": 30},
-                {"action": "extrude", "depth": 25},
-                {"action": "create_drawing", "template": "drawing_template.drwdot"},
-                {"action": "add_views", "views": ["Front", "Right", "Top"]},
-                {"action": "add_dimensions", "auto_dimension": True},
-                {"action": "save_all"},
-            ],
-            parallel_execution=False,
-            error_handling="Stop on error",
-        )
-
-        tool_func = None
-        for tool in await mcp_server.list_tools():
-            if tool.name == "execute_workflow":
-                tool_func = tool.fn
-                break
-
-        assert tool_func is not None
-        result = await tool_func(input_data=input_data)
-
-        assert result["status"] == "success"
-        assert result["data"]["steps_completed"] == 8
-        assert result["data"]["total_steps"] == 8
-        assert "final_part.sldprt" in result["data"]["output_files"]
-        mock_adapter.execute_workflow.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_create_template_success(self, mcp_server, mock_adapter, mock_config):
         """Test successful template creation."""
         await register_automation_tools(mcp_server, mock_adapter, mock_config)
@@ -450,14 +396,6 @@ class TestAutomationTools:
         table = await by_name["manage_design_table"](
             input_data=DesignTableInput(operation="create")
         )
-        workflow = await by_name["execute_workflow"](
-            input_data=WorkflowInput(
-                workflow_name="WF",
-                steps=[{"name": "step-1"}],
-                parallel_execution=False,
-                error_handling="stop",
-            )
-        )
         template = await by_name["create_template"](
             input_data=TemplateInput(template_type="part", template_name="StdPart")
         )
@@ -475,8 +413,6 @@ class TestAutomationTools:
         assert "does not support batch_process_files" in batch["message"]
         assert table["status"] == "error"
         assert "does not support manage_design_table" in table["message"]
-        assert workflow["status"] == "error"
-        assert "does not support execute_workflow" in workflow["message"]
         assert template["status"] == "error"
         assert "does not support create_template" in template["message"]
         assert optimize["status"] == "error"
@@ -499,7 +435,6 @@ class TestAutomationTools:
         mock_adapter.manage_design_table = AsyncMock(
             side_effect=RuntimeError("table boom")
         )
-        mock_adapter.execute_workflow = AsyncMock(side_effect=RuntimeError("wf boom"))
         mock_adapter.create_template = AsyncMock(side_effect=RuntimeError("tpl boom"))
         mock_adapter.optimize_performance = AsyncMock(
             side_effect=RuntimeError("perf boom")
@@ -519,14 +454,6 @@ class TestAutomationTools:
         table = await by_name["manage_design_table"](
             input_data=DesignTableInput(operation="create")
         )
-        workflow = await by_name["execute_workflow"](
-            input_data=WorkflowInput(
-                workflow_name="WF",
-                steps=[{"name": "step-1"}],
-                parallel_execution=False,
-                error_handling="stop",
-            )
-        )
         template = await by_name["create_template"](
             input_data=TemplateInput(template_type="part", template_name="StdPart")
         )
@@ -542,8 +469,6 @@ class TestAutomationTools:
         assert batch["error_type"] == "internal"
         assert table["status"] == "error"
         assert table["error_type"] == "internal"
-        assert workflow["status"] == "error"
-        assert workflow["error_type"] == "internal"
         assert template["status"] == "error"
         assert template["error_type"] == "internal"
         assert optimize["status"] == "error"
@@ -562,9 +487,6 @@ class TestAutomationTools:
         mock_adapter.manage_design_table = AsyncMock(
             return_value=Mock(is_success=False, error="table failed")
         )
-        mock_adapter.execute_workflow = AsyncMock(
-            return_value=Mock(is_success=False, error="workflow failed")
-        )
         mock_adapter.create_template = AsyncMock(
             return_value=Mock(is_success=False, error="template failed")
         )
@@ -580,14 +502,6 @@ class TestAutomationTools:
         table = await by_name["manage_design_table"](
             input_data=DesignTableInput(operation="create")
         )
-        workflow = await by_name["execute_workflow"](
-            input_data=WorkflowInput(
-                workflow_name="WF",
-                steps=[{"name": "step-1"}],
-                parallel_execution=False,
-                error_handling="stop",
-            )
-        )
         template = await by_name["create_template"](
             input_data=TemplateInput(template_type="part", template_name="StdPart")
         )
@@ -597,9 +511,6 @@ class TestAutomationTools:
 
         assert batch["status"] == "error" and "batch failed" in batch["message"]
         assert table["status"] == "error" and "table failed" in table["message"]
-        assert (
-            workflow["status"] == "error" and "workflow failed" in workflow["message"]
-        )
         assert (
             template["status"] == "error" and "template failed" in template["message"]
         )

@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   degrees apart is `count: 3`, `step_angle: 60`), `angle` stays the total
   spread, and `reverse_direction` patterns the other way round the axis.
   The reply gives `step_angle` and `total_angle`.
+- **`execute_workflow` runs**, where it was a planned tool: a list of
+  `{tool, arguments}` steps, in order through the same tools and error
+  boundary, stopped at the first step that fails, with every step's result.
+  With `rollback_on_error`, a failure deletes the features and sketches the
+  earlier steps added to the document that was open at the start. A step
+  that renames or deletes features, undoes, or moves the rollback bar can't
+  be combined with a rollback. Experimental until its live test runs.
 - **Editing an existing model in place**, instead of deleting and
   re-creating a feature, which took its dependents (two fillets on the dish
   rack) with it. Experimental until their live tests run:
@@ -74,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the description promised, so 60-degree steps needed `angle: 300`. Give
   `angle` for the total or `step_angle` for the step; a call that still
   sends `equal_spacing` gets `invalid_input` saying so.
+- **BREAKING: `execute_workflow`'s `steps` are `{tool, arguments}` pairs**,
+  and it no longer takes `parallel_execution` (SolidWorks takes one call at
+  a time) or `error_handling` (it stops at the first failure). It never ran
+  before, so no working call changes.
 
 ### Fixed
 
