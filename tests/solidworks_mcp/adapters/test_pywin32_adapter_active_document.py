@@ -86,7 +86,7 @@ def test_a_call_after_someone_switched_documents_is_refused(
     assert "it is now 'DishRack_SideBar.SLDPRT'" in message
     assert "add_fillet was not run" in message
     assert "working on 'Part14'" in message
-    assert "activate_document with 'Part14'" in message
+    assert "Retry with document 'Part14'" in message
     assert ErrorClassifier().classify(message).error_type == "active_document_changed"
 
 

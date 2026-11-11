@@ -13,7 +13,10 @@ adapter's timing, else the tool's own wall time) - using :class:`ErrorClassifier
 :class:`ToolRegistrar` applies the boundary to every tool at registration, so no
 tool can forget it. It also adds each tool's support level (from
 ``support_levels.py``) to its tags and, for a beta or experimental tool, a
-``warning`` to its successful results.
+``warning`` to its successful results. Given the adapter, it gives every tool
+that acts on a document a ``document`` argument (``target_document.py``),
+makes that document the active one before the tool runs, and adds a warning
+when another MCP server is working on the same document.
 """
 
 from __future__ import annotations
@@ -24,11 +27,11 @@ import time
 import types
 import typing
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
 from fastmcp.utilities.docstring_parsing import parse_docstring
 from loguru import logger
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from ..adapters.base import AdapterResult
 from .error_classifier import (
@@ -41,6 +44,7 @@ from .error_classifier import (
 )
 from .input_compat import removed_inputs
 from .support_levels import SUPPORT_LEVELS, Support
+from .target_document import DOCUMENT_DESCRIPTION, takes_document
 from .tool_hints import TOOL_HINTS, ToolHints
 
 _INVALID_INPUT_HINT = (
@@ -223,10 +227,60 @@ def model_parameters(fn: Callable[..., Any]) -> dict[str, type[BaseModel]]:
     return models
 
 
+#: The ``document`` argument a document tool gets (see ``target_document``).
+_DOCUMENT_ANNOTATION = Annotated[str | None, Field(description=DOCUMENT_DESCRIPTION)]
+
+
+def _add_document_parameter(fn: Callable[..., Any], wrapper: Any) -> None:
+    """Give ``wrapper`` a keyword-only ``document`` after ``fn``'s parameters.
+
+    FastMCP builds the tool's input schema from ``inspect.signature`` and
+    ``typing.get_type_hints``, so both get the new parameter.
+    """
+    signature = inspect.signature(fn)
+    document = inspect.Parameter(
+        "document",
+        inspect.Parameter.KEYWORD_ONLY,
+        default=None,
+        annotation=_DOCUMENT_ANNOTATION,
+    )
+    wrapper.__signature__ = signature.replace(
+        parameters=[*signature.parameters.values(), document]
+    )
+    wrapper.__annotations__ = {
+        **getattr(fn, "__annotations__", {}),
+        "document": _DOCUMENT_ANNOTATION,
+    }
+
+
+def _document_notice(adapter: Any) -> str | None:
+    """The adapter's one-time warning about a shared document, if any."""
+    take = getattr(adapter, "take_document_notice", None)
+    notice = take() if callable(take) else None
+    return notice if isinstance(notice, str) and notice else None
+
+
+async def _use_document(adapter: Any, document: str, tool_name: str) -> None:
+    """Make ``document`` the active document, or refuse the call.
+
+    Raises:
+        ToolOperationError: When it isn't open (``not_found``) or SolidWorks
+            can't be reached; the tool was not run.
+    """
+    chosen = await adapter.use_document(document)
+    if not chosen.is_success:
+        raise ToolOperationError(
+            f"{tool_name} was not run: could not make {document!r} the active "
+            f"document: {chosen.error}",
+            chosen.execution_time,
+        )
+
+
 def tool_boundary(
     fn: Callable[..., Awaitable[dict[str, Any]]],
     classifier: ErrorClassifier = _CLASSIFIER,
     warning: str | None = None,
+    adapter: Any = None,
 ) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Wrap an async tool so every failure becomes an error payload.
 
@@ -239,6 +293,10 @@ def tool_boundary(
         warning: Added as ``warning`` to every successful result (a beta or
             experimental tool's level), after any warning of the tool's own;
             errors carry a ``hint`` instead.
+        adapter: The SolidWorks adapter. With it, a tool that acts on a
+            document takes ``document`` (activated before the tool runs), and
+            a successful result carries the adapter's shared-document
+            warning once.
 
     A dict passed where the tool expects its input model is validated as
     that model first, so a script can call any tool function with a dict, as
@@ -252,6 +310,7 @@ def tool_boundary(
     tool_name = fn.__name__
     models = model_parameters(fn)
     signature = inspect.signature(fn)
+    with_document = adapter is not None and takes_document(tool_name, tool_family(fn))
 
     def with_models(
         args: tuple[Any, ...], kwargs: dict[str, Any]
@@ -273,8 +332,11 @@ def tool_boundary(
         def elapsed() -> float:
             return time.perf_counter() - started
 
+        document = kwargs.pop("document", None) if with_document else None
         try:
             bound = with_models(args, kwargs)
+            if document:
+                await _use_document(adapter, document, tool_name)
             result = await fn(*bound.args, **bound.kwargs)
         except InvalidInputError as exc:
             return error_payload(
@@ -310,14 +372,31 @@ def tool_boundary(
                 classifier.classify(str(exc), exc, fallback=INTERNAL),
                 elapsed(),
             )
-        if warning is not None and result.get("status") == "success":
-            # A tool's own warning (e.g. a cut that removed nothing) comes first.
-            own = result.get("warning")
-            return {**result, "warning": f"{own} {warning}" if own else warning}
-        return result
+        if result.get("status") != "success":
+            return result
+        # A tool's own warning (e.g. a cut that removed nothing) comes first.
+        extra = [w for w in (warning, _document_notice(adapter)) if w]
+        if not extra:
+            return result
+        own = result.get("warning")
+        return {**result, "warning": " ".join([own, *extra] if own else extra)}
 
+    if with_document:
+        _add_document_parameter(fn, wrapper)
     wrapper.__tool_boundary__ = True  # type: ignore[attr-defined]
     return wrapper
+
+
+def takes_input(fn: Callable[..., Any]) -> bool:
+    """Whether a tool function takes an input, positionally.
+
+    The boundary gives document tools a keyword-only ``document``, so a tool
+    with no input of its own still has a parameter; only the others count.
+    """
+    return any(
+        p.kind is not inspect.Parameter.KEYWORD_ONLY
+        for p in inspect.signature(fn).parameters.values()
+    )
 
 
 def has_tool_boundary(fn: Any) -> bool:
@@ -343,8 +422,9 @@ class ToolRegistrar:
     It also gives each tool its title and behaviour hints from the hints
     table, its family tag (see :func:`tool_family`), and its support level
     from the levels table: a ``level:<level>`` tag and, below stable, a
-    ``warning`` on success. Everything else is forwarded to the wrapped
-    server unchanged.
+    ``warning`` on success. Given the adapter, document tools take
+    ``document`` (see :func:`tool_boundary`). Everything else is forwarded to
+    the wrapped server unchanged.
     """
 
     def __init__(
@@ -353,11 +433,13 @@ class ToolRegistrar:
         classifier: ErrorClassifier = _CLASSIFIER,
         hints: Mapping[str, ToolHints] = TOOL_HINTS,
         levels: Mapping[str, Support] = SUPPORT_LEVELS,
+        adapter: Any = None,
     ) -> None:
         self._mcp = mcp
         self._classifier = classifier
         self._hints = hints
         self._levels = levels
+        self._adapter = adapter
 
     def _support(self, name: str) -> Support:
         """The support entry of a tool being registered.
@@ -417,16 +499,23 @@ class ToolRegistrar:
 
     def _wrap(self, fn: Callable[..., Awaitable[dict[str, Any]]], name: str) -> Any:
         """The tool inside the boundary, with its level's success warning."""
-        return tool_boundary(fn, self._classifier, self._support(name).warning())
+        return tool_boundary(
+            fn, self._classifier, self._support(name).warning(), self._adapter
+        )
 
     @classmethod
-    def of(cls, mcp: Any) -> ToolRegistrar:
+    def of(cls, mcp: Any, adapter: Any = None) -> ToolRegistrar:
         """Wrap ``mcp`` unless it already is a registrar (idempotent).
 
-        Every ``register_<area>_tools`` starts with ``mcp = ToolRegistrar.of(mcp)``
-        so its tools get the boundary however the module is registered.
+        Every ``register_<area>_tools`` starts with
+        ``mcp = with_tool_boundary(mcp, adapter)`` so its tools get the
+        boundary however the module is registered.
         """
-        return mcp if isinstance(mcp, cls) else cls(mcp)
+        if isinstance(mcp, cls):
+            if adapter is not None and mcp._adapter is None:
+                mcp._adapter = adapter
+            return mcp
+        return cls(mcp, adapter=adapter)
 
     def tool(self, *args: Any, **kwargs: Any) -> Any:
         """Same contract as ``FastMCP.tool``, with the boundary and hints applied."""
@@ -448,10 +537,14 @@ class ToolRegistrar:
         return getattr(self._mcp, name)
 
 
-def with_tool_boundary[TServer](mcp: TServer) -> TServer:
+def with_tool_boundary[TServer](mcp: TServer, adapter: Any = None) -> TServer:
     """Return ``mcp`` wrapped in a :class:`ToolRegistrar` (typed as ``mcp``).
 
     The registrar duck-types the FastMCP surface the tool modules use
     (``tool()`` plus attribute forwarding), so modules keep their annotations.
+
+    Args:
+        mcp: The FastMCP server (or a registrar already).
+        adapter: The SolidWorks adapter the tools use, for ``document``.
     """
-    return cast(TServer, ToolRegistrar.of(mcp))
+    return cast(TServer, ToolRegistrar.of(mcp, adapter))

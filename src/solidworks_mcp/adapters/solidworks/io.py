@@ -120,6 +120,17 @@ def dimension_kind(adapter: Any, dimension: Any) -> tuple[str, str, float]:
         return DIMENSION_KINDS[0]
 
 
+def document_names(title: Any, path: Any) -> set[str]:
+    """The names a document answers to, lower case: title, path, file name."""
+    names = {
+        str(title).lower() if title else "",
+        str(path).lower() if path else "",
+        Path(str(path)).name.lower() if path else "",
+    }
+    names.discard("")
+    return names
+
+
 def from_system_value(system_value: float, kind: str, factor: float) -> float:
     """A ``SystemValue`` in the tools' unit: mm, degrees, or a whole count."""
     if kind == "count":
@@ -2264,13 +2275,7 @@ class SolidWorksIOMixin:
                 )
                 if title:
                     open_titles.append(str(title))
-                candidates = {
-                    str(title).lower() if title else "",
-                    str(path).lower() if path else "",
-                    Path(str(path)).name.lower() if path else "",
-                }
-                candidates.discard("")
-                if needle in candidates:
+                if needle in document_names(title, path):
                     match = doc
                     match_title = str(title) if title else None
                     break
@@ -2333,6 +2338,56 @@ class SolidWorksIOMixin:
             AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("activate_document", _activate),
         )
+
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Make an open document the one this session works on.
+
+        For a tool's ``document`` argument. When that document is already
+        active and this session's own, nothing is activated (a quick check,
+        not ``ActivateDoc3`` and its longer settle pause); otherwise it is
+        activated as ``activate_document`` does.
+
+        Args:
+            title_or_path: A window title, a full path, or a file name of a
+                document that is already open.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``activated``, ``verified`` and
+            ``switched`` (False when it already was the active document).
+        """
+        adapter = self._adapter(self)
+        target = (title_or_path or "").strip().lower()
+
+        def _already_active() -> str | None:
+            app = adapter.swApp
+            active = getattr(app, "ActiveDoc", None)
+            if active is None:
+                return None
+            title = adapter._get_attr_or_call(active, "GetTitle")
+            path = adapter._get_attr_or_call(active, "GetPathName")
+            if target not in document_names(title, path):
+                return None
+            key = adapter._document_key(active)
+            if key != adapter._last_active_document or key != adapter._document_key(
+                adapter.currentModel
+            ):
+                return None
+            return str(title)
+
+        if target and adapter.is_connected():
+            check = adapter._handle_com_operation(
+                "check_active_document", _already_active
+            )
+            if check.is_success and check.data:
+                return AdapterResult(
+                    status=AdapterResultStatus.SUCCESS,
+                    data={"activated": check.data, "verified": True, "switched": False},
+                    execution_time=check.execution_time,
+                )
+        result = await self.activate_document(title_or_path)
+        if result.is_success and isinstance(result.data, dict):
+            result.data["switched"] = True
+        return result
 
     async def list_configurations(self) -> AdapterResult[list[str]]:
         """List all configuration names on the active model.

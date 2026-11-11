@@ -206,7 +206,7 @@ async def register_macro_recording_tools(
     Example:
                         >>> tool_count = await register_macro_recording_tools(mcp, adapter, config)
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

@@ -129,7 +129,7 @@ async def register_template_management_tools(
     Example:
                         >>> tool_count = await register_template_management_tools(mcp, adapter, config)
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

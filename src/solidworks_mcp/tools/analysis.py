@@ -334,7 +334,7 @@ async def register_analysis_tools(
                         Analysis tools require an active SolidWorks document with geometry.
                         Some analyses may require specific material assignments for accurate results.
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

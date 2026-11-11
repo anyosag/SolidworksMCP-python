@@ -1550,6 +1550,30 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"title_or_path": title_or_path},
         )
 
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Use an open document through circuit breaker.
+
+        Args:
+            title_or_path (str): Title, full path, or file name of an open
+                document.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "use_document",
+            lambda: self.adapter.use_document(title_or_path),
+            input_dict={"title_or_path": title_or_path},
+        )
+
+    def take_document_notice(self) -> str | None:
+        """The wrapped adapter's shared-document warning (no breaker: no COM).
+
+        Returns:
+            str | None: The warning, or None.
+        """
+        return self.adapter.take_document_notice()
+
     # Assembly operations
 
     async def insert_component(

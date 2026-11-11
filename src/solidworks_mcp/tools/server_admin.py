@@ -61,7 +61,7 @@ async def register_server_admin_tools(
     Returns:
         int: Number of tools registered.
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
 
     @mcp.tool()
     async def reset_circuit_breaker(

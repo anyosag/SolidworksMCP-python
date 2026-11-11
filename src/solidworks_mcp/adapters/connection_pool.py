@@ -1436,6 +1436,29 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.activate_document(title_or_path),
         )
 
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Use an open document through the pool.
+
+        Args:
+            title_or_path (str): Title, full path, or file name of an open
+                document.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "use_document", lambda adapter: adapter.use_document(title_or_path)
+        )
+
+    def take_document_notice(self) -> str | None:
+        """The first pooled adapter's shared-document warning, if any.
+
+        Returns:
+            str | None: The warning, or None.
+        """
+        notices = [adapter.take_document_notice() for adapter in self.pool]
+        return next((notice for notice in notices if notice), None)
+
     # Assembly operations
 
     async def insert_component(

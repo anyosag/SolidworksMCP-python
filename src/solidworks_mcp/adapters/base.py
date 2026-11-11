@@ -1826,6 +1826,30 @@ class SolidWorksAdapter(ABC):
             error="activate_document is not implemented by this adapter",
         )
 
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Make an open document the one this session works on.
+
+        The tool boundary calls it for a tool's ``document`` argument. This
+        default activates it every time; an adapter that can tell it is
+        already active skips that.
+
+        Args:
+            title_or_path (str): Title, full path, or file name of an open
+                document.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: As ``activate_document``.
+        """
+        return await self.activate_document(title_or_path)
+
+    def take_document_notice(self) -> str | None:
+        """A warning about another MCP server on this session's document, once.
+
+        Returns:
+            str | None: The warning, or None (this default: never one).
+        """
+        return None
+
     @abstractmethod
     async def exit_sketch(self) -> AdapterResult[None]:
         """Exit sketch editing mode.

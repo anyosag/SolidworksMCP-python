@@ -317,8 +317,15 @@ updated 2026-04-24.
   message names both). Opening, creating, activating, closing and listing
   documents (`_DOCUMENT_CHOOSING_OPERATIONS`) always run.
 - **Two clients on one SolidWorks** take turns: each switch makes the other
-  one's next call fail this way, which is safe but slow. Give each client its
-  own SolidWorks where you can.
+  one's next call fail this way, which is safe but slow. A call that names its
+  `document` (every document tool takes one; `tools/target_document.py`) is
+  switched to it first, so it doesn't fail. Give each client its own
+  SolidWorks where you can.
+- **Two clients on the same document** don't see each other this way. Each
+  server writes its document to `%LOCALAPPDATA%\solidworks_mcp\sessions\<pid>.json`
+  (`SOLIDWORKS_MCP_SESSION_DIR` overrides; `adapters/solidworks/sessions.py`),
+  and a server that starts on a document another live server on the same
+  SolidWorks is using adds a `warning` to that reply.
 
 ### 17. A tool returns `solidworks_busy` or `operation_stopped`
 

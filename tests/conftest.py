@@ -147,6 +147,20 @@ def _no_solidworks_launch() -> Generator[None]:
         )
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _session_register_dir(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[None]:
+    """Keep the adapters' session files (``sessions.py``) out of LOCALAPPDATA."""
+    previous = os.environ.get("SOLIDWORKS_MCP_SESSION_DIR")
+    os.environ["SOLIDWORKS_MCP_SESSION_DIR"] = str(tmp_path_factory.mktemp("sessions"))
+    yield
+    if previous is None:
+        os.environ.pop("SOLIDWORKS_MCP_SESSION_DIR", None)
+    else:
+        os.environ["SOLIDWORKS_MCP_SESSION_DIR"] = previous
+
+
 @pytest.fixture(autouse=True)
 def _fresh_operation_limits() -> Generator[None]:
     """Start and end every test with no operation budget and the client present."""

@@ -338,7 +338,7 @@ async def register_file_management_tools(
                         File management tools require an active SolidWorks document.
                         Save operations preserve the current document state and metadata.
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     def _coerce_input(model_cls: Any, payload: Any) -> Any:

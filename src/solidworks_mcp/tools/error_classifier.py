@@ -133,8 +133,8 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "Nothing was done: since this session's last call, the user or "
             "another program switched SolidWorks to another document, and the "
             "call would have changed that one. If the user didn't say which "
-            "document to work on, ask. Then call activate_document with it "
-            "(the message names both) and retry."
+            "document to work on, ask. Then retry with `document` set to it "
+            "(the message names both), or call activate_document first."
         ),
         patterns=(r"active document changed between calls",),
     ),
@@ -259,6 +259,7 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             r"\bhas no (\w+ )?(edges|faces)\b",
             r"\bhas no [\w-]+ body\b",
             r"\bno view named\b",
+            r"\bno open document matches\b",
         ),
     ),
 )

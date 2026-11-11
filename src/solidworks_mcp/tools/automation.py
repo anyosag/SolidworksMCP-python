@@ -7,7 +7,6 @@ for configuration-driven variants, execute_workflow for scripted pipelines,
 create_template for reusable standards, and optimize_performance for tuning.
 """
 
-import inspect
 from typing import Any
 
 from fastmcp import Context, FastMCP
@@ -24,6 +23,7 @@ from .tool_boundary import (
     normalize_input,
     require_capability,
     require_success,
+    takes_input,
     with_tool_boundary,
 )
 
@@ -336,7 +336,7 @@ async def register_automation_tools(
     Returns:
         int: The computed numeric result.
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()
@@ -632,8 +632,7 @@ End Sub
                 raise InvalidInputError(
                     f"steps.{index}: {step.tool} is not available yet"
                 )
-            takes_input = bool(inspect.signature(registry[step.tool].fn).parameters)
-            if step.arguments and not takes_input:
+            if step.arguments and not takes_input(registry[step.tool].fn):
                 raise InvalidInputError(
                     f"steps.{index}: {step.tool} takes no arguments"
                 )
@@ -670,8 +669,8 @@ End Sub
                     message=f"Step {index + 1} of {total}: {step.tool}",
                 )
             fn = registry[step.tool].fn
-            takes_input = bool(inspect.signature(fn).parameters)
-            reply = await (fn(step.arguments) if takes_input else fn())
+            has_input = takes_input(fn)
+            reply = await (fn(step.arguments) if has_input else fn())
             entry = {
                 "index": index,
                 "tool": step.tool,

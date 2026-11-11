@@ -37,6 +37,11 @@ from .solidworks import (
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
 from .solidworks.io import activate_doc
+from .solidworks.sessions import (
+    SessionRegister,
+    session_directory,
+    shared_document_notice,
+)
 from .solidworks.window import (
     MinimizeKeeper,
     SolidWorksWindow,
@@ -237,6 +242,7 @@ _NOT_READY = "not_ready"
 _DOCUMENT_CHOOSING_OPERATIONS = frozenset(
     {
         "activate_document",
+        "check_active_document",
         "close_model",
         "create_assembly",
         "create_drawing",
@@ -2179,6 +2185,12 @@ class PyWin32Adapter(
         # ended (``None``: none), once a call has ended.
         self._last_active_document: tuple[str, str] | None = None
         self._active_document_seen = False
+        # This server's entry in the session register (other MCP servers on
+        # the same SolidWorks), the document it last recorded there, and the
+        # warning for the next reply when another server is on that document.
+        self._sessions = SessionRegister(session_directory())
+        self._recorded_document: tuple[str, str] | None = None
+        self._document_notice: str | None = None
         self._operation_depth = 0
         # The window the user was in when an operation last started with
         # SolidWorks minimized; the focus goes back there.
@@ -2286,6 +2298,9 @@ class PyWin32Adapter(
                             ```
         """
         await self._session_coordinator.disconnect()
+        self._sessions.forget()
+        self._recorded_document = None
+        self._document_notice = None
 
     def is_connected(self) -> bool:
         """Check if connected to SolidWorks.
@@ -2558,6 +2573,32 @@ class PyWin32Adapter(
             return
         self._last_active_document = self._active_document_key()
         self._active_document_seen = True
+        self._record_session_document()
+
+    def _record_session_document(self) -> None:
+        """Record this session's document in the register when it changes.
+
+        When another live MCP server drives the same SolidWorks on the same
+        document, the next reply carries a warning (``take_document_notice``).
+        """
+        key = self._last_active_document
+        if key == self._recorded_document:
+            return
+        self._recorded_document = key
+        try:
+            self._sessions.record(self._sw_process_id, key)
+            others = self._sessions.others_on(self._sw_process_id, key)
+        except Exception as exc:  # the register must never fail a call
+            logger.debug("Session register unavailable: {}", exc)
+            return
+        self._document_notice = shared_document_notice(
+            self._document_label(key), others
+        )
+
+    def take_document_notice(self) -> str | None:
+        """The warning about another MCP server on this document, once."""
+        notice, self._document_notice = self._document_notice, None
+        return notice
 
     @staticmethod
     def _document_label(key: tuple[str, str] | None) -> str:
@@ -2609,8 +2650,9 @@ class PyWin32Adapter(
                 f"SolidWorks' active document changed between calls ({now}), "
                 f"so {operation_name} was not run: the user or another program "
                 f"switched it, and this session was working on {working_on}. "
-                f"Call activate_document with {working_on} to go on with it, or "
-                "with the other document if that is the one to work on."
+                f"Retry with document {working_on} to go on with it (or call "
+                "activate_document), or with the other document if that is the "
+                "one to work on."
             ),
             execution_time=0.0,
         )

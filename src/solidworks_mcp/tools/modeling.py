@@ -1447,7 +1447,7 @@ async def register_modeling_tools(
                         print(f"Registered {tool_count} modeling tools")
                         ```
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

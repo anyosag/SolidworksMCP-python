@@ -602,7 +602,7 @@ async def register_sketching_tools(
                         print(f"Registered {tool_count} sketching tools")
                         ```
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
     # SolidWorks won't rename a sketch while it is open for editing (it
     # accepts the name, but the tree keeps the old one), so the name

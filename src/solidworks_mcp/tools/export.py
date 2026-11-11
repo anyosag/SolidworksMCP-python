@@ -202,7 +202,7 @@ async def register_export_tools(
                         print(f"Registered {tool_count} export tools")
                         ```
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

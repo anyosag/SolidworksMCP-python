@@ -239,7 +239,7 @@ async def register_vba_generation_tools(
     Example:
                         >>> tool_count = await register_vba_generation_tools(mcp, adapter, config)
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

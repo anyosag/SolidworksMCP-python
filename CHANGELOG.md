@@ -87,6 +87,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call is cancelled after `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5)
   and reported as `error_type: solidworks_dialog`, with its text, instead of
   hanging the server. It never answers Save or Don't Save.
+- **Every document tool takes `document`**: the title, file name or path of
+  an open document. The server makes it the active document before the tool
+  runs, and refuses the call (`not_found`) when it isn't open; nothing is
+  activated when it already is this session's active document. Two clients
+  on one SolidWorks no longer need `activate_document` before each call.
+  Tools that open, create or list documents, or work on files on disk, don't
+  take it.
+- **A warning when another MCP server works on the same document.** Each
+  server records the document it works on in
+  `%LOCALAPPDATA%\solidworks_mcp\sessions` (`SOLIDWORKS_MCP_SESSION_DIR`
+  overrides). When this session starts on a document another live server on
+  the same SolidWorks is using, that reply carries a `warning` naming the
+  other server's process.
 - **Long operations can't hang the next call or outlive their client.** On
   the dish rack, a client killed during `add_fillet`'s edge walk left
   SolidWorks at 100% CPU, and the next two calls each waited 1800 s. A COM

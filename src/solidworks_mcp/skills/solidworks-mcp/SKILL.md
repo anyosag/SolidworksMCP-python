@@ -15,6 +15,11 @@ checking the result, and what doesn't work yet.
 - Call `get_model_info` first. It says which document is active (it follows
   a switch the user made in the SolidWorks window). `list_open_documents`
   lists every open document; `activate_document` switches.
+- Every tool that works on a document takes `document`: the title, file name
+  or path of an open one. Give it when more than one document is open, or
+  when someone else may be using SolidWorks; the server activates it first.
+  A `warning` saying another MCP server is on the same document means two
+  clients are editing it: tell the user.
 - Call tools one at a time and wait for each result. The server pauses
   after every SolidWorks call on purpose: driving SolidWorks back-to-back
   crashes it.
