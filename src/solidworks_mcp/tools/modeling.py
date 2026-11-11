@@ -642,10 +642,18 @@ class DeleteFeatureInput(CompatInput):
 
     Attributes:
         name (str): Feature or sketch name to delete.
+        delete_absorbed (bool): Delete the feature's own sketch with it.
     """
 
     name: str = Field(
         description="Feature or sketch name, e.g. 'Boss-Extrude1' or 'Sketch1'"
+    )
+    delete_absorbed: bool = Field(
+        default=False,
+        description=(
+            "Delete the feature's own sketch too (a cut's profile); off leaves "
+            "it in the tree and the reply names it"
+        ),
     )
 
 
@@ -831,6 +839,49 @@ class SelectEdgesInput(CompatInput):
     def query(self) -> dict[str, Any]:
         """The rules as the adapter's ``select_edges`` takes them."""
         return self.model_dump(exclude={"append"}, exclude_none=True)
+
+
+DisplayType = Literal[
+    "planes",
+    "axes",
+    "temporary_axes",
+    "origins",
+    "coordinate_systems",
+    "points",
+    "sketches",
+]
+
+
+class SetVisibilityInput(CompatInput):
+    """Input schema for showing or hiding reference geometry and sketches.
+
+    Attributes:
+        visible (bool): Show (true) or hide (false).
+        names (list[str]): Planes, axes, points, coordinate systems or sketches.
+        types (list[str]): Every entity of these types in the document.
+    """
+
+    visible: bool = Field(description="true shows them, false hides them")
+    names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Planes, axes, points, coordinate systems or sketches by their tree "
+            "names, e.g. ['Plane1', 'Sketch3']"
+        ),
+    )
+    types: list[DisplayType] = Field(
+        default_factory=list,
+        description=(
+            "Every entity of these types in the document, as View > Hide/Show "
+            "does: planes, axes, temporary_axes, origins, coordinate_systems, "
+            "points, sketches"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.names = [n.strip() for n in self.names if n and n.strip()]
+        if not self.names and not self.types:
+            raise ValueError("give names, types or both to show or hide")
 
 
 class RebuildModelInput(CompatInput):
@@ -1126,8 +1177,9 @@ class PatternCircularInput(CompatInput):
         features (list[str]): Names of the features to pattern.
         axis (str): Name of the axis to rotate about.
         count (int): Total number of instances including the original.
-        angle (float): Total angle in degrees to spread instances over.
-        equal_spacing (bool): Space instances evenly across angle.
+        angle (float | None): Total angle in degrees, spread evenly.
+        step_angle (float | None): Angle in degrees between neighbours.
+        reverse_direction (bool): Pattern the other way round the axis.
     """
 
     features: list[str] = Field(
@@ -1142,14 +1194,26 @@ class PatternCircularInput(CompatInput):
         description="Total number of instances including the original. "
         "Must be at least 2 - a pattern of one is just the original feature"
     )
-    angle: float = Field(
-        default=360.0,
-        description="Total angle in degrees to spread the instances over. "
-        "Defaults to a full 360",
+    angle: float | None = Field(
+        default=None,
+        gt=0,
+        le=360,
+        description=(
+            "Total angle in degrees the instances are spread over evenly; a "
+            "full 360 when neither angle nor step_angle is given"
+        ),
     )
-    equal_spacing: bool = Field(
-        default=True,
-        description="Space instances evenly across 'angle'",
+    step_angle: float | None = Field(
+        default=None,
+        gt=0,
+        lt=360,
+        description=(
+            "Instead of angle: degrees between neighbouring instances, e.g. "
+            "60 for instances every 60 degrees"
+        ),
+    )
+    reverse_direction: bool = Field(
+        default=False, description="Pattern the other way round the axis"
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -1159,6 +1223,45 @@ class PatternCircularInput(CompatInput):
             raise ValueError("axis is required")
         if self.count < 2:
             raise ValueError("count must be at least 2")
+        if self.angle is not None and self.step_angle is not None:
+            raise ValueError(
+                "give angle (the total) or step_angle (between instances), not both"
+            )
+        if self.step_angle is not None:
+            turned = self.step_angle * (self.count - 1)
+            if turned >= 360 - 1e-6:
+                raise ValueError(
+                    f"{self.count - 1} steps of {self.step_angle:g} degrees turn "
+                    f"{turned:g} degrees, a full turn or more: the last instance "
+                    "would land on an earlier one"
+                )
+
+    def spacing(self) -> dict[str, Any]:
+        """How the pattern is spaced, for the adapter and the reply.
+
+        Returns:
+            dict[str, Any]: ``angle`` and ``equal_spacing`` as the adapter
+            takes them (SolidWorks reads ``angle`` as the total when spacing
+            is equal, else as the step), plus ``step_angle`` and
+            ``total_angle`` in degrees.
+        """
+        if self.step_angle is not None:
+            return {
+                "angle": self.step_angle,
+                "equal_spacing": False,
+                "step_angle": self.step_angle,
+                "total_angle": self.step_angle * (self.count - 1),
+            }
+        total = self.angle if self.angle is not None else 360.0
+        # A full turn's last step closes on the original; a partial one ends
+        # at the far end of the angle.
+        steps = self.count if abs(total - 360.0) < 1e-9 else self.count - 1
+        return {
+            "angle": total,
+            "equal_spacing": True,
+            "step_angle": total / steps,
+            "total_angle": total,
+        }
 
 
 class CreateDrawingInput(CompatInput):
@@ -1991,35 +2094,45 @@ async def register_modeling_tools(
         Ask the user before you call it: deleting a sketch also deletes every feature
         built from it (a cut, a boss), and deleting a feature deletes everything that
         depends on it. Use `suppress_feature` instead when you might want it back. Find
-        names and dependents with `list_features`. Needs: an open part or assembly.
-        Changes: removes the feature and its dependents (`undo` can restore them).
-        Returns: `data` with `deleted`, `removed_features` (every feature that went,
-        dependents included), `features_before` and `features_after`; the message names
-        the dependents, and a `warning` says so whenever more than the named feature
-        went: tell the user.
+        names and dependents with `list_features`. A feature's own sketch stays unless
+        `delete_absorbed`. Needs: an open part or assembly. Changes: removes the
+        feature and its dependents (`undo` can restore them). Returns: `data` with
+        `deleted`, `removed_features` (every feature that went, dependents included),
+        `absorbed_sketches_left` (its sketches still in the tree), `features_before`
+        and `features_after`; the message names the dependents, and a `warning` says
+        so whenever more than the named feature went: tell the user.
 
         Args:
-            input_data: The feature. `name` (e.g. "Fillet1") is required.
+            input_data: The feature. `name` (e.g. "Fillet1") is required;
+                `delete_absorbed` is off.
 
         Returns:
             dict[str, Any]: What was deleted.
         """
         input_data = normalize_input(input_data, DeleteFeatureInput)
-        result = await adapter.delete_feature(input_data.name)
+        result = await adapter.delete_feature(
+            input_data.name, input_data.delete_absorbed
+        )
         require_success(result, context="Failed to delete feature")
         data = result.data if isinstance(result.data, dict) else {}
         removed = data.get("removed_features") or [input_data.name]
-        dependents = [n for n in removed if n != input_data.name.split("@", 1)[0]]
+        absorbed = set(data.get("absorbed_sketches") or [])
+        own = input_data.name.split("@", 1)[0]
+        dependents = [n for n in removed if n != own and n not in absorbed]
+        left = data.get("absorbed_sketches_left") or []
+        message = f"Deleted {input_data.name}"
+        if dependents:
+            message += f" and its dependents: {', '.join(dependents)}"
+        if absorbed and not left:
+            message += f"; its sketch {', '.join(sorted(absorbed))} went with it"
+        if left:
+            message += (
+                f"; its sketch {', '.join(left)} is still in the tree "
+                "(delete_absorbed removes it too)"
+            )
         reply: dict[str, Any] = {
             "status": "success",
-            "message": (
-                f"Deleted {input_data.name}"
-                + (
-                    f" and its dependents: {', '.join(dependents)}"
-                    if dependents
-                    else ""
-                )
-            ),
+            "message": message,
             "data": data,
             "execution_time": result.execution_time,
         }
@@ -2202,6 +2315,42 @@ async def register_modeling_tools(
             "message": (
                 f"Selected {data.get('selected_edges', 0)} edge(s) of "
                 f"{data.get('source', 'the part')}"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def set_visibility(input_data: SetVisibilityInput) -> dict[str, Any]:
+        """Show or hide planes, axes, points, origins and sketches in the active document.
+
+        Use it to clear the view before a screenshot or a review, or to show a plane
+        again. By `names` it hides or shows those features (planes, axes, points,
+        coordinate systems, sketches) as the tree's Hide and Show do; a boss or a cut
+        can't be hidden this way (use `suppress_feature`). By `types` it switches
+        every entity of each type at once, as View > Hide/Show does, and the reply
+        gives each type's `before`, so you can put it back. Needs: an open document.
+        Changes: what is shown, not the geometry. Returns: `data` with `visible`,
+        `features` (name, type, visible) and `types` (each one's `before` and `after`).
+
+        Args:
+            input_data: What to show or hide. `visible` is required, with `names`,
+                `types` or both.
+
+        Returns:
+            dict[str, Any]: What was shown or hidden.
+        """
+        input_data = normalize_input(input_data, SetVisibilityInput)
+        result = await adapter.set_visibility(
+            input_data.names, list(input_data.types), input_data.visible
+        )
+        require_success(result, context="Failed to show or hide")
+        data = result.data if isinstance(result.data, dict) else {}
+        what = [*input_data.names, *(f"all {t}" for t in input_data.types)]
+        return {
+            "status": "success",
+            "message": (
+                f"{'Showed' if input_data.visible else 'Hid'} {', '.join(what)}"
             ),
             "data": data,
             "execution_time": result.execution_time,
@@ -2428,35 +2577,50 @@ async def register_modeling_tools(
         """Repeat features of the active part around an axis, e.g. a ring of bosses or ribs.
 
         Create the axis first with `create_axis`. Bosses and cuts both work (a ring of
-        holes is a patterned cut). It fails when the volume doesn't change, which
-        means no instance landed on the part. Needs: an open part with the named
-        features and axis. Changes: adds a circular pattern feature. Returns:
-        `pattern` with `name`, `patterned`, `axis`, `count`, `angle`,
-        `equal_spacing`, and `volume_before`, `volume_after` and `volume_change`
+        holes is a patterned cut). Give `angle` to spread the instances evenly over
+        that many degrees (360 by default), or `step_angle` for the degrees between
+        neighbours, e.g. 3 instances 60 degrees apart; `reverse_direction` turns the
+        other way. It fails when the volume doesn't change, which means no instance
+        landed on the part. Needs: an open part with the named features and axis.
+        Changes: adds a circular pattern feature. Returns: `pattern` with `name`,
+        `patterned`, `axis`, `count`, `step_angle`, `total_angle`,
+        `reverse_direction`, and `volume_before`, `volume_after` and `volume_change`
         (mm³, negative for cuts).
 
         Args:
             input_data: The pattern. `features` (at least one), `axis` and `count`
-                (2 or more, the original included) are required; `angle` (360) and
-                `equal_spacing` (on) have defaults.
+                (2 or more, the original included) are required; then `angle` or
+                `step_angle`, and `reverse_direction` (off).
 
         Returns:
             dict[str, Any]: The pattern created.
         """
         input_data = normalize_input(input_data, PatternCircularInput)
+        spacing = input_data.spacing()
         result = await adapter.pattern_circular(
             input_data.features,
             input_data.axis,
             input_data.count,
-            input_data.angle,
-            input_data.equal_spacing,
+            spacing["angle"],
+            spacing["equal_spacing"],
+            input_data.reverse_direction,
         )
         require_success(result, context="Failed to pattern feature")
         data = result.data if isinstance(result.data, dict) else {}
+        # The adapter's angle/equal_spacing are SolidWorks' two readings of one
+        # number; the reply gives both angles plainly instead.
+        for key in ("angle", "equal_spacing"):
+            data.pop(key, None)
+        data["step_angle"] = round(spacing["step_angle"], 9)
+        data["total_angle"] = round(spacing["total_angle"], 9)
+        data.setdefault("reverse_direction", input_data.reverse_direction)
         return {
             "status": "success",
-            "message": f"Patterned {', '.join(input_data.features)} "
-            f"around {input_data.axis} ({input_data.count} instances)",
+            "message": (
+                f"Patterned {', '.join(input_data.features)} around "
+                f"{input_data.axis} ({input_data.count} instances, "
+                f"{data['step_angle']:g} degrees apart)"
+            ),
             "pattern": data,
             "execution_time": result.execution_time,
         }

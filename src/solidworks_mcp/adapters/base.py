@@ -1165,6 +1165,32 @@ class SolidWorksAdapter(ABC):
             error="select_edges is not implemented by this adapter",
         )
 
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide reference geometry and sketches in the active document.
+
+        Args:
+            names (list[str] | None): Planes, axes, points, coordinate systems
+                and sketches by their tree names.
+            types (list[str] | None): Every entity of these types: ``planes``,
+                ``axes``, ``temporary_axes``, ``origins``,
+                ``coordinate_systems``, ``points``, ``sketches``.
+            visible (bool): Show (True) or hide (False).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``visible``, ``features`` (name,
+            type and state per name) and ``types`` (each type's ``before`` and
+            ``after``, so it can be put back).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_visibility is not implemented by this adapter",
+        )
+
     async def create_reference_plane(
         self,
         reference: str,
@@ -1267,6 +1293,7 @@ class SolidWorksAdapter(ABC):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis.
 
@@ -1274,8 +1301,10 @@ class SolidWorksAdapter(ABC):
             features (list[str]): Names of the features to pattern.
             axis (str): Name of the axis to rotate about.
             count (int): Total number of instances including the original.
-            angle (float): Total angle in degrees to spread them over. Defaults to 360.0.
-            equal_spacing (bool): Space instances evenly across ``angle``. Defaults to True.
+            angle (float): Degrees: the total spread with ``equal_spacing``
+                (360 by default), else the angle between neighbours.
+            equal_spacing (bool): Whether ``angle`` is the total. Defaults to True.
+            reverse_direction (bool): Pattern the other way round the axis.
 
         Returns:
             AdapterResult[dict[str, Any]]: What was patterned and the volume
@@ -1570,14 +1599,18 @@ class SolidWorksAdapter(ABC):
         )
 
     # Feature Editing
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a named feature or sketch from the active model.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
-            AdapterResult[dict[str, Any]]: What was deleted, or error.
+            AdapterResult[dict[str, Any]]: What was deleted, with
+            ``absorbed_sketches`` and ``absorbed_sketches_left``, or error.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

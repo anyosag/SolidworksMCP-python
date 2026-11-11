@@ -247,6 +247,53 @@ class SolidWorksSelectionMixin:
 
         return self._run_clean("select_edges", _select)
 
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide named reference geometry and sketches, or whole types.
+
+        See ``SolidWorksAdapter.set_visibility`` for the contract; the COM
+        calls live in ``visibility``.
+        """
+        from .visibility import (
+            DISPLAY_TOGGLES,
+            set_display_types,
+            set_feature_visibility,
+            unknown_types,
+        )
+
+        names, types = list(names or []), list(types or [])
+        if not names and not types:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="Give names, types or both to show or hide.",
+            )
+        unknown = unknown_types(types)
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Unknown type(s) {', '.join(unknown)}; use "
+                    f"{', '.join(DISPLAY_TOGGLES)}."
+                ),
+            )
+        if not self.currentModel:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+
+        def _apply() -> dict[str, Any]:
+            return {
+                "visible": bool(visible),
+                "features": set_feature_visibility(self, names, visible),
+                "types": set_display_types(self, types, visible),
+            }
+
+        return self._run_clean("set_visibility", _apply)
+
     def _run_clean(
         self, operation_name: str, operation: Callable[[], Any]
     ) -> AdapterResult[dict[str, Any]]:

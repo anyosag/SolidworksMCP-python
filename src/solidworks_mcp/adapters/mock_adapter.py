@@ -1007,6 +1007,91 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["feature_operation"] / 4,
         )
 
+    def _mock_feature_kind(self, name: str) -> str | None:
+        """``IFeature.GetTypeName2`` of a mock tree name, or None when absent."""
+        if name in self._BUILTIN_PLANES or name in self._reference_planes:
+            return "RefPlane"
+        if name in self._axes:
+            return "RefAxis"
+        if name in self._sketches:
+            return "ProfileFeature"
+        if any(f.name == name for f in self._features.values()):
+            return "Feature"
+        return None
+
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock showing or hiding reference geometry and sketches.
+
+        Keeps the document's display toggles (all shown at first) and the
+        names hidden one by one, and refuses what the live adapter refuses,
+        with its wording.
+        """
+        from .solidworks.visibility import (
+            DISPLAY_TOGGLES,
+            REFERENCE_TYPES,
+            SKETCH_TYPES,
+            unknown_types,
+        )
+
+        names, types = list(names or []), list(types or [])
+        if not names and not types:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="Give names, types or both to show or hide.",
+            )
+        unknown = unknown_types(types)
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Unknown type(s) {', '.join(unknown)}; use "
+                    f"{', '.join(DISPLAY_TOGGLES)}."
+                ),
+            )
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        toggles: dict[str, bool] = self.__dict__.setdefault(
+            "_display_toggles", dict.fromkeys(DISPLAY_TOGGLES, True)
+        )
+        hidden: set[str] = self.__dict__.setdefault("_hidden_features", set())
+
+        features = []
+        for name in names:
+            kind = self._mock_feature_kind(name)
+            if kind is None:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"Feature {name!r} not found; list_features names them.",
+                )
+            if kind not in SKETCH_TYPES | REFERENCE_TYPES:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        f"{name!r} is a {kind}, not a plane, axis, point, "
+                        "coordinate system or sketch; use suppress_feature to "
+                        "turn a feature off"
+                    ),
+                )
+            (hidden.discard if visible else hidden.add)(name)
+            features.append({"name": name, "type": kind, "visible": bool(visible)})
+        changed = {}
+        for name in types:
+            changed[name] = {"before": toggles[name], "after": bool(visible)}
+            toggles[name] = bool(visible)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"visible": bool(visible), "features": features, "types": changed},
+            execution_time=0.0,
+        )
+
     async def add_fillet(
         self, radius: float, edge_names: list[str]
     ) -> AdapterResult[SolidWorksFeature]:
@@ -3242,11 +3327,18 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     # Feature Editing
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Mock deleting a named feature from the active model.
+
+        A feature's absorbed sketch is the one its parameters name
+        (``sketch_name``, which the mock's extrusions and cuts record); like
+        SolidWorks, it stays unless ``delete_absorbed``.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -3265,18 +3357,30 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 ),
             )
 
+        sketch = (self._features[key].parameters or {}).get("sketch_name")
+        absorbed = (
+            [sketch] if isinstance(sketch, str) and sketch in self._sketches else []
+        )
         del self._features[key]
         self._suppressed_features.discard(name)
+        if delete_absorbed:
+            for sketch_name in absorbed:
+                del self._sketches[sketch_name]
         self._operation_count += 1
         after = [f.name for f in self._features.values()]
+        removed = [n for n in before if n not in after]
+        if delete_absorbed:
+            removed += absorbed
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "deleted": name,
-                "removed_features": [n for n in before if n not in after],
+                "removed_features": removed,
                 "features_before": len(before),
                 "features_after": len(after),
+                "absorbed_sketches": absorbed,
+                "absorbed_sketches_left": [] if delete_absorbed else absorbed,
             },
             execution_time=self._delays["model_operation"],
         )
@@ -3840,6 +3944,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock patterning features around an axis.
 
@@ -3863,8 +3968,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             features (list[str]): Names of the features to pattern.
             axis (str): Name of the axis to rotate about.
             count (int): Total number of instances including the original.
-            angle (float): Total angle in degrees to spread them over. Defaults to 360.0.
-            equal_spacing (bool): Space instances evenly across ``angle``. Defaults to True.
+            angle (float): Degrees: the total with ``equal_spacing``, else the step.
+            equal_spacing (bool): Whether ``angle`` is the total. Defaults to True.
+            reverse_direction (bool): Pattern the other way round the axis.
 
         Returns:
             AdapterResult[dict[str, Any]]: The pattern's name, inputs and
@@ -3919,6 +4025,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "count": int(count),
                 "angle": float(angle),
                 "equal_spacing": bool(equal_spacing),
+                "reverse_direction": bool(reverse_direction),
                 "volume_before": volume_before,
                 "volume_after": volume_after,
                 "volume_change": volume_after - volume_before,

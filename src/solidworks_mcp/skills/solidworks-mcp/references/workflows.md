@@ -77,8 +77,11 @@ plane; the reply's `end_condition` says `MidPlane`.
    centre is always the sketch origin.
 3. `exit_sketch`, then one `create_cut_extrude`.
 
-Don't use `pattern_circular` on a cut: it reports an error unless the
-volume grows.
+Or cut one hole and repeat the feature: `create_axis`, then
+`pattern_circular` with the cut, the axis and `count`. Give `angle` to
+spread them evenly (360 by default), or `step_angle` for the degrees between
+holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
+`reverse_direction` goes the other way round.
 
 ## Changing an existing model
 
@@ -90,6 +93,12 @@ volume grows.
 
 To turn a feature off without deleting it, `suppress_feature`. After
 `delete_feature`, call `list_features`: dependents may have gone too.
+Deleting a cut or boss leaves its own sketch (the reply's
+`absorbed_sketches_left` names it); `delete_absorbed: true` removes it too.
+
+To hide planes, axes or sketches (before a screenshot, say), use
+`set_visibility` with `types`; its reply gives each type's `before`, so a
+second call can put them back.
 
 ## An assembly
 

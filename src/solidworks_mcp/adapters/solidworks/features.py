@@ -107,7 +107,9 @@ class SolidWorksFeaturesMixin:
     ) -> AdapterResult[SolidWorksFeature]:
         return _add_chamfer_impl(self, distance, edge_names, angle, flip)
 
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a feature and report every feature that went with it.
 
         The tree is listed before and after with ``list_features``, the read
@@ -116,20 +118,27 @@ class SolidWorksFeaturesMixin:
 
         Args:
             name: The feature or sketch to delete.
+            delete_absorbed: Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The delete's data plus
             ``removed_features`` in tree order (just ``name`` when the tree
-            can't be listed).
+            can't be listed), ``absorbed_sketches`` and
+            ``absorbed_sketches_left`` (those still in the tree).
         """
         before = await self.list_features(include_suppressed=True)
-        result = _delete_feature_impl(self, name)
+        result = _delete_feature_impl(self, name, delete_absorbed)
         if not result.is_success:
             return result
         after = await self.list_features(include_suppressed=True)
         data = dict(result.data or {})
         data["removed_features"] = _removed_names(before, after) or [
             name.split("@", 1)[0]
+        ]
+        data["absorbed_sketches_left"] = [
+            sketch
+            for sketch in data.get("absorbed_sketches") or []
+            if sketch not in data["removed_features"]
         ]
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
@@ -208,6 +217,7 @@ class SolidWorksFeaturesMixin:
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis.
 
@@ -228,9 +238,12 @@ class SolidWorksFeaturesMixin:
             axis: Name of the axis to rotate about, e.g. ``"Axis1"`` from
                 ``create_axis``.
             count: Total number of instances including the original.
-            angle: Total angle in degrees to spread them over. Defaults to a
-                full 360.
-            equal_spacing: Space instances evenly across ``angle``.
+            angle: Degrees. With ``equal_spacing`` the total angle the
+                instances are spread over (360 by default); without it the
+                angle between neighbouring instances - SolidWorks reads its
+                ``Spacing`` argument both ways.
+            equal_spacing: Whether ``angle`` is the total (True) or the step.
+            reverse_direction: Pattern the other way round the axis.
 
         Returns:
             AdapterResult[dict[str, Any]]: What was patterned and the volume
@@ -249,7 +262,7 @@ class SolidWorksFeaturesMixin:
         )
 
         result = _pattern_circular_impl(
-            self, features, axis, count, angle, equal_spacing
+            self, features, axis, count, angle, equal_spacing, reverse_direction
         )
         if not result.is_success:
             return result
@@ -2472,6 +2485,43 @@ def _removed_names(
 _DELETE_CHILDREN = 1
 _DELETE_ABSORBED = 2
 
+#: ``IFeature.GetTypeName2`` of a sketch.
+_SKETCH_TYPE_NAMES = frozenset({"ProfileFeature", "3DProfileFeature"})
+_SUB_FEATURE_MEMBERS = ("GetFirstSubFeature", "GetNextSubFeature", "GetTypeName2")
+
+
+def _absorbed_sketches(adapter: Any, feature: Any) -> list[str]:
+    """The sketches a feature absorbed: its sub-features that are sketches.
+
+    A cut's or boss's sketch sits under it in the tree; ``GetFirstSubFeature``
+    and ``GetNextSubFeature`` walk those.
+
+    Args:
+        adapter: A connected adapter.
+        feature: The ``IFeature`` about to be deleted.
+
+    Returns:
+        list[str]: The sketch names, in tree order; empty for a sketch or a
+        feature without one.
+    """
+    names: list[str] = []
+    adapter._attempt(
+        lambda: sw_type_info.flag_members(feature, *_SUB_FEATURE_MEMBERS), default=0
+    )
+    sub = adapter._attempt(lambda: feature.GetFirstSubFeature(), default=None)
+    guard = 0
+    while sub is not None and guard < 1000:
+        guard += 1
+        adapter._attempt(
+            lambda s=sub: sw_type_info.flag_members(s, *_SUB_FEATURE_MEMBERS), default=0
+        )
+        kind = adapter._attempt(lambda s=sub: s.GetTypeName2(), default=None)
+        name = adapter._attempt(lambda s=sub: s.Name, default=None)
+        if kind in _SKETCH_TYPE_NAMES and name:
+            names.append(str(name))
+        sub = adapter._attempt(lambda s=sub: s.GetNextSubFeature(), default=None)
+    return names
+
 
 def _delete_users_of(adapter: Any, feature: Any) -> tuple[Any, Exception | None]:
     """Delete the features built from ``feature``, with their absorbed sketch.
@@ -2512,7 +2562,9 @@ def _delete_users_of(adapter: Any, feature: Any) -> tuple[Any, Exception | None]
     )
 
 
-def _delete_feature_impl(adapter: Any, name: str) -> AdapterResult[dict[str, Any]]:
+def _delete_feature_impl(
+    adapter: Any, name: str, delete_absorbed: bool = False
+) -> AdapterResult[dict[str, Any]]:
     """Delete a named feature or sketch from the active model.
 
     Selects the feature, then removes it with
@@ -2521,9 +2573,11 @@ def _delete_feature_impl(adapter: Any, name: str) -> AdapterResult[dict[str, Any
     the number of features removed is reported, not assumed to be one.
     ``IModelDoc2::EditDelete`` left a sketch in place when a cut used it
     (measured on SolidWorks 2026). A feature's own sketch is "absorbed", not
-    a child, so deleting a cut leaves its sketch. A sketch a feature uses
-    can't be deleted on its own at all, so its users are deleted instead,
-    taking it with them (:func:`_delete_users_of`).
+    a child, so deleting a cut leaves its sketch unless ``delete_absorbed``
+    adds ``swDelete_Absorbed``; either way the absorbed sketches are named
+    in ``absorbed_sketches``. A sketch a feature uses can't be deleted on its
+    own at all, so its users are deleted instead, taking it with them
+    (:func:`_delete_users_of`).
 
     Success is confirmed by the feature being absent from the tree
     afterwards, not by the call's return value.
@@ -2531,6 +2585,7 @@ def _delete_feature_impl(adapter: Any, name: str) -> AdapterResult[dict[str, Any
     Args:
         adapter: A connected adapter with a valid ``currentModel``.
         name: Name of the feature or sketch to delete.
+        delete_absorbed: Delete the feature's own sketch with it.
 
     Returns:
         AdapterResult[dict[str, Any]]: What was deleted and how the tree
@@ -2548,12 +2603,14 @@ def _delete_feature_impl(adapter: Any, name: str) -> AdapterResult[dict[str, Any
         if feature is None:
             raise Exception(f"Feature not found: {name}")
 
+        absorbed = _absorbed_sketches(adapter, feature)
         selected = adapter._attempt(
             lambda: adapter.currentModel.SelectionManager.GetSelectedObjectCount2(-1),
             default=None,
         )
+        options = _DELETE_CHILDREN | (_DELETE_ABSORBED if delete_absorbed else 0)
         deleted, error = adapter._attempt_with_error(
-            lambda: adapter.currentModel.Extension.DeleteSelection2(_DELETE_CHILDREN)
+            lambda: adapter.currentModel.Extension.DeleteSelection2(options)
         )
         if not deleted and error is None:
             deleted, error = _delete_users_of(adapter, feature)
@@ -2583,6 +2640,7 @@ def _delete_feature_impl(adapter: Any, name: str) -> AdapterResult[dict[str, Any
             "features_removed": (
                 before - after if before is not None and after is not None else None
             ),
+            "absorbed_sketches": absorbed,
         }
 
     return cast(
@@ -3555,12 +3613,18 @@ def _pattern_circular_impl(
     count: int,
     angle: float,
     equal_spacing: bool,
+    reverse_direction: bool = False,
 ) -> AdapterResult[dict[str, Any]]:
     """Select the axis and features, then call FeatureCircularPattern5.
 
     This build exposes FeatureCircularPattern through ...5; v5 is used, with
     the 14 arguments it declares. ``DName`` is a direction *name string*, so
     the axis is both selected under mark 1 and named in the call.
+
+    ``Spacing`` is the total angle when ``EqualSpacing`` is true and the
+    angle between neighbouring instances when it is false (SolidWorks API
+    help, ``IFeatureManager::FeatureCircularPattern5``); ``FlipDirection``
+    patterns the other way round the axis.
 
     Whether anything was produced is checked by the caller, which can read
     volume through ``get_mass_properties``.
@@ -3570,8 +3634,9 @@ def _pattern_circular_impl(
         features: Feature names to pattern.
         axis: Axis name to rotate about.
         count: Total instances including the original.
-        angle: Total spread in degrees.
-        equal_spacing: Space instances evenly across ``angle``.
+        angle: Degrees: the total with ``equal_spacing``, else the step.
+        equal_spacing: Whether ``angle`` is the total or the step.
+        reverse_direction: Pattern the other way round the axis.
 
     Returns:
         AdapterResult[dict[str, Any]]: The pattern's name and inputs.
@@ -3655,7 +3720,7 @@ def _pattern_circular_impl(
             lambda: feature_manager.FeatureCircularPattern5(
                 int(count),  # Number
                 math.radians(float(angle)),  # Spacing (radians)
-                False,  # FlipDirection
+                bool(reverse_direction),  # FlipDirection
                 axis,  # DName
                 False,  # GeometryPattern
                 bool(equal_spacing),  # EqualSpacing
@@ -3686,6 +3751,7 @@ def _pattern_circular_impl(
             "count": int(count),
             "angle": float(angle),
             "equal_spacing": bool(equal_spacing),
+            "reverse_direction": bool(reverse_direction),
         }
 
     return cast(

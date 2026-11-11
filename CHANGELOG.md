@@ -35,6 +35,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   length range. The reply counts what each rule left, and when nothing
   matches the `not_found` error names the rule that removed them.
   Experimental until its live test runs.
+- **`set_visibility`** shows or hides planes, axes, points, coordinate
+  systems and sketches: by name, as the tree's Hide and Show do, or every
+  one of a type, as View > Hide/Show does. The reply gives each type's
+  previous state so it can be put back. Experimental until its live test
+  runs.
+- **`pattern_circular` takes `step_angle` and `reverse_direction`**:
+  `step_angle` is the degrees between neighbouring instances (3 holes 60
+  degrees apart is `count: 3`, `step_angle: 60`), `angle` stays the total
+  spread, and `reverse_direction` patterns the other way round the axis.
+  The reply gives `step_angle` and `total_angle`.
+- **`delete_feature` takes `delete_absorbed`** and reports
+  `absorbed_sketches_left`: deleting a cut or boss leaves its own sketch, as
+  SolidWorks does, and the reply now names it; `delete_absorbed: true`
+  removes it too.
+
+### Changed
+
+- **BREAKING: `pattern_circular` no longer takes `equal_spacing`.** With it
+  off, SolidWorks read `angle` as the step between instances, not the total
+  the description promised, so 60-degree steps needed `angle: 300`. Give
+  `angle` for the total or `step_angle` for the step; a call that still
+  sends `equal_spacing` gets `invalid_input` saying so.
 
 ### Fixed
 

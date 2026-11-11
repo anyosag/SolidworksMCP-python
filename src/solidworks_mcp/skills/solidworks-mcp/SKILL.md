@@ -46,7 +46,8 @@ A solid feature always comes from a closed sketch:
 
 Repeat 2-5 for each feature. For holes in a ring or a row, draw every
 circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
-and cut once: `pattern_circular` and `mirror_feature` can't repeat a cut yet.
+and cut once, or repeat the cut with `pattern_circular` (`step_angle` for
+the degrees between instances) or `mirror_feature`.
 
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).

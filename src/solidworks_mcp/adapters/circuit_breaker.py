@@ -763,6 +763,19 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             error_results_are_failures=False,
         )
 
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide reference geometry and sketches through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_visibility",
+            lambda: self.adapter.set_visibility(names, types, visible),
+            input_dict={"names": names, "types": types, "visible": visible},
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:
@@ -860,12 +873,13 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "pattern_circular",
             lambda: self.adapter.pattern_circular(
-                features, axis, count, angle, equal_spacing
+                features, axis, count, angle, equal_spacing, reverse_direction
             ),
             input_dict={
                 "features": features,
@@ -873,6 +887,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "count": count,
                 "angle": angle,
                 "equal_spacing": equal_spacing,
+                "reverse_direction": reverse_direction,
             },
         )
 
@@ -1640,19 +1655,22 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict=params if isinstance(params, dict) else {},
         )
 
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a feature through circuit breaker.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "delete_feature",
-            lambda: self.adapter.delete_feature(name),
-            input_dict={"name": name},
+            lambda: self.adapter.delete_feature(name, delete_absorbed),
+            input_dict={"name": name, "delete_absorbed": delete_absorbed},
         )
 
     async def suppress_feature(

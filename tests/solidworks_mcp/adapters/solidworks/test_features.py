@@ -2618,6 +2618,7 @@ class TestFeatureTreeEditOutcomes:
             "features_before": 7,
             "features_after": 5,
             "features_removed": 2,
+            "absorbed_sketches": [],
         }
 
     def test_suppress_reports_the_read_back_state(self, monkeypatch) -> None:
@@ -3003,10 +3004,30 @@ class TestMirrorAndPatternImplOutcomes:
             "count": 6,
             "angle": 180.0,
             "equal_spacing": False,
+            "reverse_direction": False,
         }
         args = manager.FeatureCircularPattern5.call_args.args
         assert args[0] == 6
         assert args[1] == pytest.approx(math.pi)
+        assert args[2] is False  # FlipDirection
+
+    def test_a_reversed_pattern_flips_its_direction(self, monkeypatch) -> None:
+        """reverse_direction reaches FeatureCircularPattern5's FlipDirection."""
+        adapter = _build_adapter(monkeypatch)
+        adapter.currentModel = MagicMock()
+        adapter.currentModel.Extension.SelectByID2.return_value = True
+        manager = adapter.currentModel.FeatureManager
+        manager.FeatureCircularPattern5.return_value = SimpleNamespace(Name="P1")
+
+        result = _pattern_circular_impl(
+            adapter, ["Cut1"], "Axis1", 3, 60.0, False, reverse_direction=True
+        )
+
+        assert result.data["reverse_direction"] is True
+        args = manager.FeatureCircularPattern5.call_args.args
+        assert args[1] == pytest.approx(math.radians(60))
+        assert args[2] is True
+        assert args[5] is False  # EqualSpacing off: Spacing is the step
 
 
 # ---- create_extrusion end conditions -------------------------------------------
@@ -3544,7 +3565,10 @@ async def test_delete_feature_falls_back_to_the_name_without_a_listing(
 
     result = await adapter.delete_feature("Fillet1@Part1")
 
-    assert result.data == {"removed_features": ["Fillet1"]}
+    assert result.data == {
+        "removed_features": ["Fillet1"],
+        "absorbed_sketches_left": [],
+    }
 
 
 @pytest.mark.asyncio

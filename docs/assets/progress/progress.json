@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 158,
+  "total": 159,
   "by_level": {
    "stable": 106,
    "beta": 0,
-   "experimental": 12,
+   "experimental": 13,
    "planned": 40
   },
   "list": [
@@ -1017,6 +1017,13 @@
     "summary": "Set the active document's length units: mm, cm, m, in or ft."
    },
    {
+    "name": "set_visibility",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Show or hide planes, axes, points, origins and sketches in the active document."
+   },
+   {
     "name": "sketch_circular_pattern",
     "family": "sketching",
     "level": "stable",
@@ -1119,11 +1126,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 216,
+   "covered": 220,
    "total": 2838
   },
   "api": {
-   "covered": 240,
+   "covered": 244,
    "total": 5985
   },
   "interfaces": [
@@ -1163,6 +1170,8 @@
      "AddDimension2",
      "AddRadialDimension2",
      "AddRelation",
+     "BlankRefGeom",
+     "BlankSketch",
      "ClearSelection2",
      "CreateArc",
      "CreateCenterLine",
@@ -1222,6 +1231,8 @@
      "SketchAddConstraints",
      "SketchMirror",
      "SketchOffset2",
+     "UnBlankRefGeom",
+     "UnblankSketch",
      "ViewZoomtofit",
      "ViewZoomtofit2"
     ],

@@ -209,6 +209,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "set_component_state": _STABLE,
     "set_dimension": _STABLE,
     "set_units": _STABLE,
+    "set_visibility": _UNCHECKED,
     "suppress_feature": _STABLE,
     "undo": _STABLE,
     # server_admin

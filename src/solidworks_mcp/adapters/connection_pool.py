@@ -708,6 +708,18 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "select_edges", lambda adapter: adapter.select_edges(query, append)
         )
 
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide reference geometry and sketches using pool."""
+        return await self._execute_with_pool(
+            "set_visibility",
+            lambda adapter: adapter.set_visibility(names, types, visible),
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:
@@ -778,12 +790,13 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis using pool."""
         return await self._execute_with_pool(
             "pattern_circular",
             lambda adapter: adapter.pattern_circular(
-                features, axis, count, angle, equal_spacing
+                features, axis, count, angle, equal_spacing, reverse_direction
             ),
         )
 
@@ -1518,17 +1531,21 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "check_interference", lambda adapter: adapter.check_interference(params)
         )
 
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a feature using pool.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "delete_feature", lambda adapter: adapter.delete_feature(name)
+            "delete_feature",
+            lambda adapter: adapter.delete_feature(name, delete_absorbed),
         )
 
     async def suppress_feature(

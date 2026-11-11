@@ -44,6 +44,12 @@ REMOVED_INPUTS: dict[str, dict[str, str]] = {
         "auto_populate_views": "the tool always places the three standard views",
     },
     "SaveFileInput": {"force_save": "the tool always saves"},
+    "PatternCircularInput": {
+        "equal_spacing": (
+            "give `angle` for the total spread (evenly spaced) or `step_angle` "
+            "for the degrees between instances"
+        ),
+    },
     "ExportFileInput": {"options": _FILE_EXTENSION},
     "InterferenceCheckInput": {
         "tolerance": "the check has no tolerance",

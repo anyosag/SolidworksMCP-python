@@ -223,6 +223,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "select_feature": _sets("Select Feature"),
     "select_face_edges": _sets("Select Face Edges"),
     "select_edges": _sets("Select Edges By Rule"),
+    "set_visibility": _sets("Show Or Hide Reference Geometry"),
     "rebuild_model": _sets("Rebuild Model"),
     "undo": _discards("Undo"),
     "create_reference_plane": _adds("Create Reference Plane"),
