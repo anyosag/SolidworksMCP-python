@@ -40,6 +40,7 @@ _RESPONSE_KEYS = {
     "length_mm",
     "measured_change",
     "system_value",
+    "thin_spots",
     "usage_instructions",
     "vba_code",
 }

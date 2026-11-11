@@ -53,6 +53,14 @@ hexagonal holes is one call, not 150 `add_line` calls.
 4. `exit_sketch`, then `create_cut_extrude` with `end_condition: "ThroughAll"`.
    Check the volume fell by the holes' total area times the thickness.
 
+## Before a 3D print
+
+1. `verify_model` with the size and volume you expect.
+2. `check_wall_thickness` with your printer's thinnest wall as
+   `min_wall_mm` (0.8 mm is two 0.4 mm nozzle lines). Its `thin_spots` say
+   where each wall is too thin; check a doubtful one with `measure_entities`.
+3. `export_stl`.
+
 ## A bent plate or other wall from an open outline
 
 Draw the outline as an open chain of `add_line` (the plate's centreline or

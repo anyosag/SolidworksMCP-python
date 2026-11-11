@@ -1092,6 +1092,50 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=0.0,
         )
 
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock wall thickness of the canned 10 mm block: 10 mm everywhere.
+
+        One sample at the centre of each of the block's six faces, summarized
+        by the live adapter's own ``thickness.summarize``, so the reply has
+        the live shape and ``min_wall_mm`` above 10 finds every sample thin.
+        """
+        from .solidworks.thickness import summarize
+
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        kind = str(getattr(self._current_model, "type", "Part")).lower()
+        if kind != "part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "check_wall_thickness needs an active part document "
+                    f"(active document is {kind})."
+                ),
+            )
+        samples = []
+        for axis in range(3):
+            for sign in (1.0, -1.0):
+                normal = [0.0, 0.0, 0.0]
+                normal[axis] = sign
+                point = [0.005, 0.005, 0.005]
+                point[axis] = 0.01 if sign > 0 else 0.0
+                samples.append((point, normal))
+        samples = samples[: max(1, int(max_rays))]
+        reply = summarize(
+            samples, dict.fromkeys(range(len(samples)), 0.01), min_wall_mm
+        )
+        reply.update({"bodies": 1, "faces": 6})
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=reply,
+            execution_time=self._delays["feature_operation"] / 4,
+        )
+
     async def add_fillet(
         self, radius: float, edge_names: list[str]
     ) -> AdapterResult[SolidWorksFeature]:

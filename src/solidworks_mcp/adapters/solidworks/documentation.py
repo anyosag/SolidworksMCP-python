@@ -556,6 +556,36 @@ class SolidWorksDocumentationMixin:
             self._handle_com_operation("measure_entities", _measure),
         )
 
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the active part's wall thickness by casting rays inward.
+
+        See ``thickness.measure_wall_thickness``: points sampled on every face,
+        one ray each against the outward normal, the distance to where it
+        leaves the solid.
+
+        Args:
+            min_wall_mm: The thinnest wall the printer can make.
+            max_rays: The most rays to cast (samples are thinned evenly).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``min_thickness_mm`` and where,
+            ``below_minimum``, ``thin_spots``, ``ok``, and the counts.
+        """
+        from .thickness import measure_wall_thickness
+
+        guard = self._require_doc_type({1}, "check_wall_thickness")
+        if guard is not None:
+            return cast("AdapterResult[dict[str, Any]]", guard)
+        return cast(
+            "AdapterResult[dict[str, Any]]",
+            self._handle_com_operation(
+                "check_wall_thickness",
+                lambda: measure_wall_thickness(self, min_wall_mm, max_rays),
+            ),
+        )
+
     async def get_material(
         self, configuration: str | None = None
     ) -> AdapterResult[dict[str, Any]]:

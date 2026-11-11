@@ -81,6 +81,33 @@ class GeometryAnalysisInput(BaseModel):
     )
 
 
+class CheckWallThicknessInput(CompatInput):
+    """Input schema for the wall-thickness check.
+
+    Attributes:
+        min_wall_mm (float): The thinnest wall the printer can make, mm.
+        max_rays (int): The most points to measure.
+    """
+
+    min_wall_mm: float = Field(
+        default=0.8,
+        gt=0,
+        description=(
+            "The thinnest wall the printer can make, mm (0.8 is two 0.4 mm "
+            "nozzle lines); thinner spots are listed"
+        ),
+    )
+    max_rays: int = Field(
+        default=5000,
+        ge=10,
+        le=20000,
+        description=(
+            "The most points to measure; more finds thin spots on big parts, "
+            "slower (default 5000)"
+        ),
+    )
+
+
 class VerifyModelInput(BaseModel):
     """Expectations for ``verify_model``; every field is optional.
 
@@ -423,10 +450,11 @@ async def register_analysis_tools(
         """Run a geometry analysis on the active model, such as curvature, draft or wall thickness.
 
         Not available yet: no adapter implements it, so every call returns an error with
-        `error_type: "not_supported"`. It is planned for a future release. For distances
-        and angles today, use `measure_entities`; for size and volume, use
-        `verify_model` or `calculate_mass_properties`. Read-only. Returns: once
-        available, the analysis under `data`.
+        `error_type: "not_supported"`. It is planned for a future release. For wall
+        thickness today, use `check_wall_thickness`; for distances and angles,
+        `measure_entities`; for size and volume, `verify_model` or
+        `calculate_mass_properties`. Read-only. Returns: once available, the analysis
+        under `data`.
 
         Args:
             input_data: The analysis. `analysis_type` (e.g. curvature, draft,
@@ -447,6 +475,55 @@ async def register_analysis_tools(
             "status": "success",
             "message": f"Geometry analysis ({input_data.analysis_type}) completed",
             "data": result.data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def check_wall_thickness(
+        input_data: CheckWallThicknessInput | None = None,
+    ) -> dict[str, Any]:
+        """Measure the active part's thinnest walls before 3D printing it.
+
+        It samples points on every face and, from each, measures how far the solid
+        goes straight inward (the wall's local thickness), then reports the thinnest
+        and every spot under `min_wall_mm`. Points near edges and on fillets can read
+        a little off, and a face with few display triangles gets few points: treat
+        it as a screen, then check a doubtful spot with `measure_entities`. Needs:
+        an open part. Read-only. Returns: `data` with `min_thickness_mm`, `at_mm` and
+        `normal` (where), `below_minimum`, `thin_spots` (up to 20), `ok`, `samples`
+        and `measured`.
+
+        Args:
+            input_data: The check. Nothing is required: `min_wall_mm` (0.8) and
+                `max_rays` (5000) have defaults.
+
+        Returns:
+            dict[str, Any]: The thickness found.
+        """
+        input_data = normalize_input(input_data, CheckWallThicknessInput)
+        result = await adapter.check_wall_thickness(
+            input_data.min_wall_mm, input_data.max_rays
+        )
+        require_success(result, context="Failed to measure wall thickness")
+        data = result.data if isinstance(result.data, dict) else {}
+        thinnest = data.get("min_thickness_mm")
+        below = data.get("below_minimum", 0)
+        if thinnest is None:
+            message = "No wall could be measured"
+        elif below:
+            message = (
+                f"Thinnest wall {thinnest:g} mm; {below} of {data.get('measured')} "
+                f"points are under {input_data.min_wall_mm:g} mm"
+            )
+        else:
+            message = (
+                f"Thinnest wall {thinnest:g} mm; every point is at least "
+                f"{input_data.min_wall_mm:g} mm"
+            )
+        return {
+            "status": "success",
+            "message": message,
+            "data": data,
             "execution_time": result.execution_time,
         }
 

@@ -83,6 +83,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "analyze_geometry": _PLANNED,
     "calculate_mass_properties": _STABLE,
     "check_interference": _STABLE,
+    "check_wall_thickness": _UNCHECKED,
     "get_mass_properties": _STABLE,
     "get_material_properties": _PLANNED,
     "verify_model": _STABLE,

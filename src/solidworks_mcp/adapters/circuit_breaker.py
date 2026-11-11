@@ -776,6 +776,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"names": names, "types": types, "visible": visible},
         )
 
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure wall thickness through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "check_wall_thickness",
+            lambda: self.adapter.check_wall_thickness(min_wall_mm, max_rays),
+            input_dict={"min_wall_mm": min_wall_mm, "max_rays": max_rays},
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:

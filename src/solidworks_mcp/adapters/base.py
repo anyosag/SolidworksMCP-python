@@ -1191,6 +1191,25 @@ class SolidWorksAdapter(ABC):
             error="set_visibility is not implemented by this adapter",
         )
 
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the active part's wall thickness, for 3D printing.
+
+        Args:
+            min_wall_mm (float): The thinnest wall the printer can make.
+            max_rays (int): The most rays to cast.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``min_thickness_mm``, ``at_mm``,
+            ``normal``, ``below_minimum``, ``thin_spots``, ``ok``,
+            ``samples``, ``measured``, ``bodies`` and ``faces``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="check_wall_thickness is not implemented by this adapter",
+        )
+
     async def create_reference_plane(
         self,
         reference: str,

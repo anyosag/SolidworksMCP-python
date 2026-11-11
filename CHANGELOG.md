@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   degrees apart is `count: 3`, `step_angle: 60`), `angle` stays the total
   spread, and `reverse_direction` patterns the other way round the axis.
   The reply gives `step_angle` and `total_angle`.
+- **`check_wall_thickness`** measures the active part's thinnest walls
+  before 3D printing: points sampled on every face, a ray cast inward from
+  each (`RayIntersections`), the distance to where it leaves the solid. The
+  reply gives the thinnest wall and where, and every spot under
+  `min_wall_mm` (0.8 by default). Experimental until its live test runs.
 - **`delete_feature` takes `delete_absorbed`** and reports
   `absorbed_sketches_left`: deleting a cut or boss leaves its own sketch, as
   SolidWorks does, and the reply now names it; `delete_absorbed: true`

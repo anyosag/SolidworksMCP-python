@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 159,
+  "total": 160,
   "by_level": {
    "stable": 106,
    "beta": 0,
-   "experimental": 13,
+   "experimental": 14,
    "planned": 40
   },
   "list": [
@@ -308,6 +308,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Check whether a sketch is fully defined, under-defined or over-defined."
+   },
+   {
+    "name": "check_wall_thickness",
+    "family": "analysis",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Measure the active part's thinnest walls before 3D printing it."
    },
    {
     "name": "classify_feature_tree",
@@ -1126,11 +1133,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 220,
+   "covered": 227,
    "total": 2838
   },
   "api": {
-   "covered": 244,
+   "covered": 248,
    "total": 5985
   },
   "interfaces": [
@@ -1202,6 +1209,7 @@
      "GetMassProperties",
      "GetNext",
      "GetPathName",
+     "GetRayIntersectionsPoints",
      "GetSaveFlag",
      "GetTitle",
      "GetType",
@@ -1217,6 +1225,7 @@
      "InsertSketch",
      "Lock",
      "Parameter",
+     "RayIntersections",
      "Save",
      "Save3",
      "SaveAs",
@@ -1254,6 +1263,7 @@
      "GetWhatsWrong",
      "GetWhatsWrongCount",
      "InsertBomTable4",
+     "RayIntersections",
      "SaveAs",
      "SaveAs2",
      "SaveAs3",
@@ -1277,6 +1287,8 @@
      "GetBodies2",
      "GetMaterialPropertyName2",
      "GetPartBox",
+     "GetTessNorms",
+     "GetTessTriangles",
      "InsertMirrorFeature",
      "SetMaterialPropertyName2"
     ],
@@ -1382,6 +1394,8 @@
      "GetModelDoc2",
      "GetPathName",
      "GetSuppression2",
+     "GetTessNorms",
+     "GetTessTriangles",
      "GetType",
      "IsEnvelope",
      "IsFixed",
