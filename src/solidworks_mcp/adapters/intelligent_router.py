@@ -123,9 +123,15 @@ class IntelligentRouter:
             if isinstance(cached, AdapterResult):
                 return cached, RouteResult(route="cache", used_cache=True)
 
-        decision = self._analyzer.analyze(operation=operation, payload=payload)
+        # The analysis only chooses between COM and VBA; with no VBA route
+        # (the server passes none since #208) there is nothing to choose.
+        decision = (
+            self._analyzer.analyze(operation=operation, payload=payload)
+            if vba_operation is not None
+            else None
+        )
 
-        if decision.prefer_vba and vba_operation is not None:
+        if decision is not None and decision.prefer_vba and vba_operation is not None:
             vba_result = await self._safe_call(vba_operation, call_args, call_kwargs)
             self._analyzer.record_result(
                 operation=operation,
@@ -147,7 +153,11 @@ class IntelligentRouter:
             self._cache_result(operation, payload, com_result, cache_ttl_seconds)
             return com_result, RouteResult(route="com", used_cache=False)
 
-        if not decision.prefer_vba and vba_operation is not None:
+        if (
+            decision is not None
+            and not decision.prefer_vba
+            and vba_operation is not None
+        ):
             fallback_result = await self._safe_call(
                 vba_operation,
                 call_args,

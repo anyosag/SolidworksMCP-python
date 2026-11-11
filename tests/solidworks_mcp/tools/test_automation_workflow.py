@@ -64,6 +64,8 @@ async def test_it_stops_at_the_first_failure(part: Any) -> None:
 
     assert result["status"] == "error"
     assert result["error_type"] == "not_found"
+    # The failed step's own hint comes through, not one for the workflow.
+    assert result["hint"] == result["data"]["steps"][4]["result"]["hint"]
     assert result["message"].startswith(
         "Workflow 'workflow' stopped at step 5 of 9 (select_edges): "
     )

@@ -41,9 +41,10 @@ it will again.
 
 ## Tools that can't run yet
 
-39 tools are registered but nothing implements them (support level
-`planned`). Their description says "Not available yet"; every call returns
-`not_supported`. They are
+39 tools are planned: nothing implements them (support level `planned`).
+The server lists them only when it runs with
+`SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=true`; their description says "Not
+available yet", and every call returns `not_supported`. They are
 mostly batch, template, macro-recording and drawing-analysis tools, plus
 `tutorial_simple_hole`, `add_dimension`, `create_section_view`, `create_detail_view`,
 `update_title_block`, `analyze_geometry`, `get_material_properties` and

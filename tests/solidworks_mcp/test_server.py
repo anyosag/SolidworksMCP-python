@@ -1,5 +1,6 @@
 """Tests for SolidWorks MCP Server and configuration."""
 
+import asyncio
 import os
 from argparse import Namespace
 from types import SimpleNamespace
@@ -422,7 +423,7 @@ class TestSolidWorksMCPServer:
         server = SolidWorksMCPServer(config)
 
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
-            with patch("solidworks_mcp.server.Agent") as mock_agent:
+            with patch("pydantic_ai.Agent") as mock_agent:
                 await server._setup_agent()
 
         # Agent should be called with model and system_prompt, but NOT toolsets
@@ -442,7 +443,7 @@ class TestSolidWorksMCPServer:
         server = SolidWorksMCPServer(config)
 
         with patch.dict(os.environ, {}, clear=True):
-            with patch("solidworks_mcp.server.Agent") as mock_agent:
+            with patch("pydantic_ai.Agent") as mock_agent:
                 await server._setup_agent()
 
         mock_agent.assert_not_called()
@@ -917,7 +918,9 @@ class TestServerToolEventLogging:
         def _fake_insert(*_a, **_kw):
             called["count"] += 1
 
-        monkeypatch.setattr("solidworks_mcp.server.insert_tool_event", _fake_insert)
+        monkeypatch.setattr(
+            "solidworks_mcp.agents.history_db.insert_tool_event", _fake_insert
+        )
         server._log_tool_event(tool_name="t", phase="start", payload=None)
         assert called["count"] == 0
 
@@ -934,7 +937,9 @@ class TestServerToolEventLogging:
         def _fake_insert(*_a, **_kw):
             called["count"] += 1
 
-        monkeypatch.setattr("solidworks_mcp.server.insert_tool_event", _fake_insert)
+        monkeypatch.setattr(
+            "solidworks_mcp.agents.history_db.insert_tool_event", _fake_insert
+        )
         server._log_tool_event(tool_name="t", phase="start", payload={"k": "v"})
         assert called["count"] == 1
 
@@ -948,14 +953,16 @@ class TestServerToolEventLogging:
         def _broken_insert(*_a, **_kw):
             raise RuntimeError("database is locked")
 
-        monkeypatch.setattr("solidworks_mcp.server.insert_tool_event", _broken_insert)
+        monkeypatch.setattr(
+            "solidworks_mcp.agents.history_db.insert_tool_event", _broken_insert
+        )
 
         server._log_tool_event(tool_name="t", phase="end", payload=None)
 
 
 @pytest.mark.asyncio
-async def test_start_marks_connected_on_success(mock_config):
-    """Covers successful adapter connect branch in start()."""
+async def test_start_answers_the_handshake_before_connecting(mock_config):
+    """start() no longer connects; connecting waits for the handshake or a tool."""
     server = SolidWorksMCPServer(mock_config)
     server.config.deployment_mode = DeploymentMode.LOCAL
     server.setup = AsyncMock()
@@ -967,29 +974,215 @@ async def test_start_marks_connected_on_success(mock_config):
 
     await server.start()
 
+    adapter.connect.assert_not_called()
+    server._run_local_stdio.assert_awaited_once()
+    assert server.state.is_connected is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_connected_connects_once(mock_config):
+    """A connected adapter is not connected again."""
+    server = SolidWorksMCPServer(mock_config)
+    adapter = Mock()
+    adapter.connect = AsyncMock(return_value=None)
+    adapter.is_connected = Mock(return_value=True)
+    server.adapter = adapter
+
+    assert await server.ensure_connected() is True
+    assert await server.ensure_connected() is True
+
+    adapter.connect.assert_awaited_once()
     assert server.state.is_connected is True
 
 
 @pytest.mark.asyncio
-async def test_start_logs_mock_fallback_warning_when_connect_fails(mock_config):
-    """Covers connect-failure fallback warning branch in non-mock mode."""
+async def test_ensure_connected_without_an_adapter_is_false(mock_config):
+    """Nothing to connect before setup()."""
     server = SolidWorksMCPServer(mock_config)
-    server.config.deployment_mode = DeploymentMode.LOCAL
-    server.config.mock_solidworks = False
-    server.setup = AsyncMock()
-    server._run_local_stdio = AsyncMock()
 
+    assert await server.ensure_connected() is False
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connect_is_not_retried_at_once(mock_config, monkeypatch):
+    """After a failure, calls within the retry window don't try again."""
+    server = SolidWorksMCPServer(mock_config)
+    server.config.mock_solidworks = False
     adapter = Mock()
     adapter.connect = AsyncMock(side_effect=RuntimeError("connect failed"))
+    adapter.is_connected = Mock(return_value=False)
     server.adapter = adapter
+    clock = {"now": 100.0}
+    monkeypatch.setattr("solidworks_mcp.server.time.monotonic", lambda: clock["now"])
 
     with patch("solidworks_mcp.server.logger.warning") as mock_warning:
-        await server.start()
+        assert await server.ensure_connected() is False
+        assert await server.ensure_connected() is False
+        clock["now"] += 31.0
+        assert await server.ensure_connected() is False
 
+    assert adapter.connect.await_count == 2
     assert any(
-        "Continuing with mock adapter for testing" in str(call.args[0])
+        "Could not connect to SolidWorks" in str(call.args[0])
         for call in mock_warning.call_args_list
     )
+    assert server.state.is_connected is False
+
+
+@pytest.mark.asyncio
+async def test_a_successful_connect_clears_the_failure(mock_config, monkeypatch):
+    """Once the retry window passes, a working connect is used."""
+    server = SolidWorksMCPServer(mock_config)
+    adapter = Mock()
+    adapter.connect = AsyncMock(side_effect=[RuntimeError("not yet"), None])
+    adapter.is_connected = Mock(return_value=False)
+    server.adapter = adapter
+    clock = {"now": 100.0}
+    monkeypatch.setattr("solidworks_mcp.server.time.monotonic", lambda: clock["now"])
+
+    assert await server.ensure_connected() is False
+    clock["now"] += 31.0
+    assert await server.ensure_connected() is True
+
+    assert server._last_connect_failure is None
+    assert server.state.is_connected is True
+
+
+class _RunningProbeAdapter:
+    """An adapter that can say whether its application is running."""
+
+    def __init__(self, running: bool | Exception) -> None:
+        self.running = running
+        self.connected = False
+        self.connect_calls = 0
+
+    def is_application_running(self) -> bool:
+        if isinstance(self.running, Exception):
+            raise self.running
+        return self.running
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        self.connected = True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("running", "connected"),
+    [(True, True), (False, False), (RuntimeError("probe broke"), False)],
+)
+async def test_background_connect_only_attaches(mock_config, running, connected):
+    """The background connect never launches the application."""
+    server = SolidWorksMCPServer(mock_config)
+    adapter = _RunningProbeAdapter(running)
+    server.adapter = adapter
+
+    server.start_background_connect()
+    server.start_background_connect()  # a second notification starts nothing
+    assert server._connect_task is not None
+    assert await server._connect_task is connected
+
+    assert adapter.connect_calls == (1 if connected else 0)
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_connects_even_when_nothing_is_running(mock_config):
+    """launch=True (a tool call) connects without asking whether it runs."""
+    server = SolidWorksMCPServer(mock_config)
+    adapter = _RunningProbeAdapter(False)
+    server.adapter = adapter
+
+    assert await server.ensure_connected() is True
+    assert adapter.connect_calls == 1
+
+
+def test_background_connect_without_an_adapter_does_nothing(mock_config):
+    """Nothing is scheduled before setup()."""
+    server = SolidWorksMCPServer(mock_config)
+
+    server.start_background_connect()
+
+    assert server._connect_task is None
+
+
+@pytest.mark.asyncio
+async def test_the_initialized_notification_starts_the_background_connect():
+    """notifications/initialized schedules the attach; tool calls connect first."""
+    from solidworks_mcp.server import _ConnectOnDemand
+
+    server = Mock()
+    middleware = _ConnectOnDemand(server)
+    call_next = AsyncMock(return_value="done")
+
+    other = SimpleNamespace(method="notifications/cancelled")
+    assert await middleware.on_notification(other, call_next) == "done"
+    server.start_background_connect.assert_not_called()
+
+    initialized = SimpleNamespace(method="notifications/initialized")
+    assert await middleware.on_notification(initialized, call_next) == "done"
+    server.start_background_connect.assert_called_once_with()
+
+    server.ensure_connected = AsyncMock(return_value=True)
+    assert await middleware.on_call_tool(SimpleNamespace(), call_next) == "done"
+    server.ensure_connected.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_a_tool_call_through_the_server_connects_the_adapter(mock_config):
+    """The middleware runs on real tool calls."""
+    server = SolidWorksMCPServer(mock_config)
+    await server.setup()
+    assert server.state.is_connected is False
+
+    await server.mcp.call_tool("list_open_documents", {})
+
+    assert server.state.is_connected is True
+
+
+@pytest.mark.asyncio
+async def test_planned_tools_are_hidden_unless_asked_for(mock_config):
+    """Planned tools stay out of the tool list by default."""
+    hidden = SolidWorksMCPServer(mock_config)
+    await hidden.setup()
+    shown_config = mock_config.model_copy(update={"show_planned_tools": True})
+    shown = SolidWorksMCPServer(shown_config)
+    await shown.setup()
+
+    hidden_names = {t.name for t in await hidden.mcp.list_tools()}
+    shown_names = {t.name for t in await shown.mcp.list_tools()}
+
+    assert "batch_export" not in hidden_names
+    assert "batch_export" in shown_names
+    assert "execute_workflow" in hidden_names
+    assert hidden.state.tool_count == len(hidden_names)
+
+
+@pytest.mark.asyncio
+async def test_listed_schemas_are_compact_unless_turned_off(mock_config):
+    """Optional fields are listed as their plain type; aliases are left out."""
+    compact = SolidWorksMCPServer(mock_config)
+    await compact.setup()
+    full_config = mock_config.model_copy(update={"compact_tool_schemas": False})
+    full = SolidWorksMCPServer(full_config)
+    await full.setup()
+
+    def add_line_fields(tools):
+        tool = next(t for t in tools if t.name == "add_line")
+        return tool.parameters["properties"]["input_data"]["properties"]
+
+    compact_fields = add_line_fields(await compact.mcp.list_tools())
+    full_fields = add_line_fields(await full.mcp.list_tools())
+
+    assert compact_fields["x1"] == {
+        "type": "number",
+        "description": "Start point X coordinate in mm",
+    }
+    assert "start_x" not in compact_fields
+    assert "anyOf" in full_fields["x1"]
+    assert "start_x" in full_fields
 
 
 def test_cli_applies_overrides_and_runs_with_loaded_config():
@@ -1267,3 +1460,43 @@ def test_the_server_warns_once_when_started_without_a_year(
     if warned:
         assert "--year" in warning.call_args.args[0]
         assert "setup" in warning.call_args.args[0]
+
+
+class _PlainAdapter:
+    """An adapter with no running check that takes a moment to connect."""
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.connect_calls = 0
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def connect(self) -> None:
+        self.connect_calls += 1
+        await asyncio.sleep(0)
+        self.connected = True
+
+
+@pytest.mark.asyncio
+async def test_background_connect_without_a_running_check_connects(mock_config):
+    """An adapter that can't say whether it runs (the mock) is connected."""
+    server = SolidWorksMCPServer(mock_config)
+    adapter = _PlainAdapter()
+    server.adapter = adapter
+
+    assert await server.ensure_connected(launch=False) is True
+    assert adapter.connect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_share_one_connect(mock_config):
+    """A caller that waited for the lock finds the connection already made."""
+    server = SolidWorksMCPServer(mock_config)
+    adapter = _PlainAdapter()
+    server.adapter = adapter
+
+    results = await asyncio.gather(server.ensure_connected(), server.ensure_connected())
+
+    assert results == [True, True]
+    assert adapter.connect_calls == 1

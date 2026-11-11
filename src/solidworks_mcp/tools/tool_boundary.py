@@ -65,6 +65,9 @@ class ToolOperationError(Exception):
         execution_time: The adapter's timing for the failed call, if any.
         data: Diagnostic data that explains the failure (e.g. rebuild errors),
             returned to the caller under ``data``.
+        classification: The ``error_type`` and ``hint`` to report, when the
+            raiser already knows them (``execute_workflow`` passing on its
+            failed step's); otherwise the classifier names the failure.
     """
 
     def __init__(
@@ -72,10 +75,12 @@ class ToolOperationError(Exception):
         message: str,
         execution_time: float | None = None,
         data: Any = None,
+        classification: Classification | None = None,
     ) -> None:
         super().__init__(message)
         self.execution_time = execution_time
         self.data = data
+        self.classification = classification
 
 
 class UnsupportedOperationError(Exception):
@@ -362,7 +367,10 @@ def tool_boundary(
             # call before timing it; fall back to the tool's own wall time.
             timing = exc.execution_time if exc.execution_time is not None else elapsed()
             return error_payload(
-                message, classifier.classify(message), timing, exc.data
+                message,
+                exc.classification or classifier.classify(message),
+                timing,
+                exc.data,
             )
         except Exception as exc:
             logger.exception("Tool {} raised", tool_name)

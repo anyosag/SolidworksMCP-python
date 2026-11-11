@@ -192,6 +192,51 @@ def _settle_seconds(variable: str, default: float) -> float:
         return default
 
 
+#: Operations that only read. They start no SolidWorks UI work, so they don't
+#: open a settle gap of their own (they still wait out an earlier operation's
+#: gap). Anything that rebuilds, selects, redraws or changes a document must
+#: stay off this list.
+_READ_ONLY_OPERATIONS = frozenset(
+    {
+        "get_application_info",
+        "get_custom_properties",
+        "get_dimension",
+        "get_material",
+        "get_model_geometry_summary",
+        "get_model_info",
+        "get_model_update_stamp",
+        "list_available_materials",
+        "list_components",
+        "list_configurations",
+        "list_drawing_views",
+        "list_features",
+        "list_model_dimensions",
+        "list_open_documents",
+    }
+)
+
+
+def _settle_pause(operation_name: str) -> float:
+    """The settle gap an operation needs after it, in seconds."""
+    if operation_name in _DOCUMENT_OPERATIONS:
+        return _settle_seconds(
+            "SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", _DEFAULT_DOC_SETTLE_SECONDS
+        )
+    return _settle_seconds(
+        "SOLIDWORKS_MCP_COM_SETTLE_SECONDS", _DEFAULT_COM_SETTLE_SECONDS
+    )
+
+
+def _settle_mode() -> str:
+    """``"gap"`` (the default) or ``"after"``, from ``SOLIDWORKS_MCP_SETTLE_MODE``.
+
+    ``after`` restores the original behaviour - a fixed sleep after every
+    operation - should the gap mode ever prove less safe on a live session.
+    """
+    mode = os.getenv("SOLIDWORKS_MCP_SETTLE_MODE", "gap").strip().lower()
+    return "after" if mode == "after" else "gap"
+
+
 def _settle_after(operation_name: str) -> None:
     """Pause after a COM operation so SolidWorks can finish its UI work.
 
@@ -202,17 +247,13 @@ def _settle_after(operation_name: str) -> None:
     fast. Tunable via ``SOLIDWORKS_MCP_COM_SETTLE_SECONDS`` (every operation)
     and ``SOLIDWORKS_MCP_DOC_SETTLE_SECONDS`` (document open/create/close).
 
+    Used in ``SOLIDWORKS_MCP_SETTLE_MODE=after``; the default gap mode is
+    :class:`_ComPacer`.
+
     Args:
         operation_name: The ``_handle_com_operation`` name just completed.
     """
-    if operation_name in _DOCUMENT_OPERATIONS:
-        pause = _settle_seconds(
-            "SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", _DEFAULT_DOC_SETTLE_SECONDS
-        )
-    else:
-        pause = _settle_seconds(
-            "SOLIDWORKS_MCP_COM_SETTLE_SECONDS", _DEFAULT_COM_SETTLE_SECONDS
-        )
+    pause = _settle_pause(operation_name)
     if pause > 0:
         time.sleep(pause)
 
@@ -295,6 +336,52 @@ def _dialog_timeout_seconds() -> float:
     return _settle_seconds(
         "SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS", _DEFAULT_DIALOG_TIMEOUT_SECONDS
     )
+
+
+class _ComPacer:
+    """Keep the settle gap between SolidWorks operations, and only that.
+
+    The protection against pitfall #26 is the *gap* between one operation
+    ending and the next one starting. Sleeping right after each operation
+    gives that gap, but the reply then waits for it even though the agent
+    takes seconds to send the next call. The pacer records when the last
+    operation ended and sleeps, before the next one, only for what is left
+    of its gap. Back-to-back operations (inside one tool, a batch, or a
+    script) get exactly the gap they got before; an agent's next call
+    usually waits for nothing.
+
+    Read-only operations (``_READ_ONLY_OPERATIONS``) wait out the gap like
+    any other, but don't open a new one.
+
+    One pacer serves the process: there is one SolidWorks.
+    """
+
+    def __init__(self) -> None:
+        self._last_end: float | None = None
+        self._gap = 0.0
+
+    def wait(self) -> None:
+        """Sleep until the last operation's gap has passed."""
+        if self._last_end is None:
+            return
+        remaining = self._gap - (time.monotonic() - self._last_end)
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def mark(self, operation_name: str) -> None:
+        """Record that ``operation_name`` just ended (successful or not)."""
+        if operation_name in _READ_ONLY_OPERATIONS:
+            return
+        self._gap = _settle_pause(operation_name)
+        self._last_end = time.monotonic()
+
+    def reset(self) -> None:
+        """Forget the last operation (tests, reconnects)."""
+        self._last_end = None
+        self._gap = 0.0
+
+
+_PACER = _ComPacer()
 
 
 def _run_macro_error_name(code: Any) -> str:
@@ -1855,16 +1942,20 @@ class _FeatureSelectionService:
                     default=0,
                 )
 
-        # Always augment the forward traversal with FeatureByPositionReverse.
-        # Some SolidWorks COM/type-library combinations stop GetNextFeature at
-        # the system folders even though later sketches and body features
-        # exist. The dedupe set keeps this fallback safe when both traversals
-        # return the same entries.
+        # Augment the forward traversal with FeatureByPositionReverse when it
+        # came up short. Some SolidWorks COM/type-library combinations stop
+        # GetNextFeature at the system folders even though later sketches and
+        # body features exist. The dedupe set keeps this fallback safe when
+        # both traversals return the same entries. When the forward walk
+        # already visited every top-level feature, the second walk (about
+        # three more round trips per feature) found nothing new.
         feature_manager = getattr(document, "FeatureManager", None)
         count = self._adapter._attempt(
             lambda: int(feature_manager.GetFeatureCount(True) or 0),  # type: ignore[union-attr]
             default=0,
         )
+        if count and pos >= count:
+            return features
         # FeatureByPositionReverse is zero-based. Starting at one silently
         # skipped the newest feature (typically the just-created extrusion).
         for reverse_pos in range(0, count or 0):
@@ -2323,6 +2414,27 @@ class PyWin32Adapter(
         """
         return self.swApp is not None
 
+    def is_application_running(self) -> bool:
+        """Whether a SolidWorks instance is already running, without starting one.
+
+        Attaches with ``GetActiveObject`` only. The server uses it to connect
+        in the background after the MCP handshake without launching
+        SolidWorks; a tool call still launches it through ``connect``. Must run
+        on the thread that will call ``connect`` (the event-loop thread): it
+        initialises that thread's COM apartment, which ``connect`` then reuses.
+
+        Returns:
+            bool: True when ``SldWorks.Application`` is in the running object
+            table.
+        """
+        if not PYWIN32_AVAILABLE:
+            return False
+        self._session_coordinator.initialize_com_apartment()
+        try:
+            return win32com.client.GetActiveObject("SldWorks.Application") is not None
+        except pywintypes.com_error:
+            return False
+
     async def health_check(self) -> AdapterHealth:
         """Get adapter health status.
 
@@ -2415,6 +2527,11 @@ class PyWin32Adapter(
                 ),
                 execution_time=0.0,
             )
+        gap_mode = _settle_mode() == "gap"
+        if gap_mode:
+            # Wait out the last operation's settle gap before any COM
+            # call, the checks below included (pitfall #26).
+            _PACER.wait()
 
         # Only the outermost call keeps the window minimized and watches for
         # dialogs; operations that call other operations don't act twice.
@@ -2456,12 +2573,17 @@ class PyWin32Adapter(
             self._operation_depth -= 1
             if outermost:
                 limits.end()
-            # After the timing in _run_com_operation, so execution_time stays
-            # the call itself; the watchdog stays armed through the pause.
-            _settle_after(operation_name)
-            dialogs = watchdog.disarm() if watchdog is not None else []
-            if outermost:
+                # Read as part of the operation, before its settle gap.
                 self._remember_active_document()
+            # After the timing in _run_com_operation, so execution_time stays
+            # the call itself. In the default gap mode the next operation
+            # waits out the gap; in after mode this sleeps, with the
+            # watchdog still armed.
+            if gap_mode:
+                _PACER.mark(operation_name)
+            else:
+                _settle_after(operation_name)
+            dialogs = watchdog.disarm() if watchdog is not None else []
             if outermost:
                 self._keep_minimized(
                     was_minimized or (keeper is not None and keeper.wanted), focus
@@ -2905,6 +3027,19 @@ class PyWin32Adapter(
             data=data,
             execution_time=result.execution_time,
         )
+
+    def pace_before_com(self) -> None:
+        """Wait out the settle gap before an adapter method touches COM.
+
+        ``_handle_com_operation`` waits before its closure, but some methods
+        make COM calls before reaching it (re-reading ``ActiveDoc``, flagging
+        a dispatch). The circuit breaker calls this as each adapter method
+        starts so those calls keep the gap too. A no-op in
+        ``SOLIDWORKS_MCP_SETTLE_MODE=after``, where the previous operation
+        already slept.
+        """
+        if _settle_mode() == "gap":
+            _PACER.wait()
 
     def _attempt(
         self, operation: Callable[[], T], default: T | None = None

@@ -20,6 +20,7 @@ from solidworks_mcp.config import (
     SolidWorksMCPConfig,
 )
 from solidworks_mcp.server import SolidWorksMCPServer
+from solidworks_mcp.tools.support_levels import SUPPORT_LEVELS, SupportLevel
 from solidworks_mcp.tools.tool_boundary import takes_input
 
 # ---------------------------------------------------------------------------
@@ -212,9 +213,23 @@ class TestLevelASchema:
             )
 
         registered_names = {t.name for t in await mock_server.mcp.list_tools()}
+        # Planned tools are left out of the list unless the server is told
+        # to show them (SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS); a catalog
+        # generated with them in still lists them.
+        hidden = (
+            set()
+            if mock_server.config.show_planned_tools
+            else {
+                tool
+                for tool, support in SUPPORT_LEVELS.items()
+                if support.level is SupportLevel.PLANNED
+            }
+        )
         missing: list[str] = []
         for entry in catalog:
             name = entry["tool_name"]
+            if name in hidden:
+                continue
             # Also check func_name as some tools use a name= override
             if (
                 name not in registered_names

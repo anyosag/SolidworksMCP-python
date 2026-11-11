@@ -20,9 +20,13 @@ checking the result, and what doesn't work yet.
   when someone else may be using SolidWorks; the server activates it first.
   A `warning` saying another MCP server is on the same document means two
   clients are editing it: tell the user.
-- Call tools one at a time and wait for each result. The server pauses
-  after every SolidWorks call on purpose: driving SolidWorks back-to-back
-  crashes it.
+- Call tools one at a time and wait for each result. The server keeps a
+  short pause between SolidWorks calls on purpose: driving SolidWorks
+  back-to-back crashes it.
+- Each call is a round trip, and round trips are most of a build's time.
+  Run a known sequence in one call with `execute_workflow` (below).
+- If your client loads tool schemas on demand (a tool search), load every
+  tool the job needs in one search, not one per tool.
 
 ## The build order
 
@@ -54,12 +58,23 @@ circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
 and cut once, or repeat the cut with `pattern_circular` (`step_angle` for
 the degrees between instances) or `mirror_feature`.
 
-When you know the whole sequence, `execute_workflow` runs it in one call:
-`steps` is a list of `{"tool": ..., "arguments": ...}`, run in order and
-stopped at the first failure; `rollback_on_error` then deletes what the
-earlier steps added. To change a model that exists, edit in place
-(`edit_feature`, `edit_sketch`, `set_rollback`) rather than deleting and
-re-creating, which takes dependents with it.
+To change a model that exists, edit in place (`edit_feature`,
+`edit_sketch`, `set_rollback`) rather than deleting and re-creating, which
+takes dependents with it.
+
+Give `create_part` its `material` when you know the exact name; it saves a
+`set_material` call.
+
+## Several steps in one call
+
+`execute_workflow` runs a list of steps, each `{"tool": ..., "arguments":
+{...}}`, in order, exactly as separate calls would; `arguments` is what you
+would pass that tool. A sketch and its feature (steps 2-5) fit in one call;
+up to 100 steps per call. It stops at the first failed step and reports
+that step's `error_type` and `hint`; the error's `data.steps` shows what
+ran. With `rollback_on_error` it then deletes the features and sketches the
+earlier steps added. Read every step's result, including each feature's
+`measured_change`, before the next call.
 
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
@@ -118,12 +133,19 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
   description opens with "Beta: ..." or "Experimental: ...", and a successful
   result carries the same sentence as `warning`. Read it, and check the
   result (`verify_model`, `list_features`) before building on it.
-- 39 tools are planned: registered, but nothing implements them. Their
-  description says "Not available yet" and every call returns
-  `not_supported`. Use the tool their description names instead.
+- 39 tools are planned: nothing implements them. The server leaves them
+  out of its tool list unless it runs with
+  `SOLIDWORKS_MCP_SHOW_PLANNED_TOOLS=true`; then their description says "Not
+  available yet" and every call returns `not_supported`. Use the tool their
+  description names instead.
 - Some tools ignore some of their inputs, and a few behave in ways you must
   work around. The list, with the workaround for each:
   [references/errors-and-limits.md](references/errors-and-limits.md).
+
+## Long sessions
+
+SolidWorks slows down as documents pile up. Close a part with `close_model`
+once it is saved and you are done with it.
 
 ## When to write VBA instead
 

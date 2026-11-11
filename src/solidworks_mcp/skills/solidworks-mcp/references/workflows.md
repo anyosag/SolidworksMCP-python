@@ -28,6 +28,22 @@ step. Values are examples; sizes are millimetres.
 10. `set_material` (find the exact name with `list_available_materials`),
     then `save_part` with a `file_path` ending in `.sldprt`.
 
+### The same plate in fewer calls
+
+Steps 1-5 as one `execute_workflow` call:
+
+```json
+{"steps": [
+  {"tool": "create_part", "arguments": {"name": "plate"}},
+  {"tool": "create_sketch", "arguments": {"plane": "Top"}},
+  {"tool": "add_rectangle", "arguments": {"x1": -50, "y1": -30, "x2": 50, "y2": 30}},
+  {"tool": "exit_sketch"},
+  {"tool": "create_extrusion", "arguments": {"depth": 10}}
+]}
+```
+
+Check step 5's `measured_change`, then send steps 6-7 the same way.
+
 ## Sketching somewhere other than the three planes
 
 `create_reference_plane` with `reference: "Top Plane"` and `offset: 10` makes

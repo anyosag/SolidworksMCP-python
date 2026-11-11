@@ -1420,7 +1420,9 @@ class SolidWorksIOMixin:
         ``ActiveDoc`` is a fresh, unflagged dispatch; it is flagged for its
         document type here so downstream zero-arg accessors (``GetTitle`` and
         friends) resolve as methods rather than property values that then
-        raise when called (COM pitfall #5).
+        raise when called (COM pitfall #5). When it is the document
+        ``currentModel`` already wraps, the flagged ``currentModel`` is kept:
+        flagging a part again costs 906 ``GetIDsOfNames`` round trips.
 
         Returns:
             Any: The active document dispatch, or ``None`` when nothing is
@@ -1430,15 +1432,24 @@ class SolidWorksIOMixin:
         active_model = (
             getattr(adapter.swApp, "ActiveDoc", None) if adapter.swApp else None
         )
+        if _sw_type_info.same_com_object(active_model, adapter.currentModel):
+            return adapter.currentModel
         if active_model is not None:
             doc_type = adapter._get_attr_or_call(active_model, "GetType")
-            adapter._attempt(
-                lambda: _sw_type_info.flag_doc(
-                    active_model,
-                    int(doc_type) if isinstance(doc_type, (int, float)) else 1,
-                ),
-                default=0,
-            )
+            if isinstance(doc_type, (int, float)):
+                adapter._attempt(
+                    lambda: _sw_type_info.flag_doc(active_model, int(doc_type)),
+                    default=0,
+                )
+            else:
+                # Type unknown: flag as a part did before, but name by name,
+                # never from the DISPID memo (it is per document type).
+                adapter._attempt(
+                    lambda: _sw_type_info.flag_methods(
+                        active_model, *_sw_type_info.DOC_TYPE_TO_INTERFACES[1]
+                    ),
+                    default=0,
+                )
             adapter.currentModel = active_model
         return adapter.currentModel
 
@@ -2444,9 +2455,10 @@ class SolidWorksIOMixin:
 
         def _get() -> MassProperties:
             """Get mass properties."""
-            adapter._attempt(
-                lambda: adapter.currentModel.ForceRebuild3(False), default=None
-            )
+            # EditRebuild3 rebuilds only what is out of date, which is all the
+            # mass properties need; ForceRebuild3(False) rebuilt every feature
+            # (sub-assemblies included) on every read.
+            adapter._attempt(lambda: adapter.currentModel.EditRebuild3(), default=None)
 
             # Primary: Extension.CreateMassProperty() object API (most detailed)
             mass_props = adapter._attempt(

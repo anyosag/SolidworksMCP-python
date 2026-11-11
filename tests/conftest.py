@@ -37,6 +37,9 @@ _REAL_INTEGRATION = os.getenv(
 if not _REAL_INTEGRATION:
     os.environ.setdefault("SOLIDWORKS_MCP_COM_SETTLE_SECONDS", "0")
     os.environ.setdefault("SOLIDWORKS_MCP_DOC_SETTLE_SECONDS", "0")
+    # Unit tests fake the gen_py wrapper; a method table cached in %TEMP% by a
+    # real server run must not stand in for the fakes.
+    os.environ.setdefault("SOLIDWORKS_MCP_TYPEINFO_CACHE", "0")
 
 # A non-live run must never start SolidWorks. Creating SldWorks.Application
 # from a process outside the desktop session (an SSH shell, CI) starts a hidden
@@ -193,6 +196,10 @@ def _no_real_type_library(
 
     monkeypatch.setattr(docs_discovery, "load_type_library", _no_library)
     monkeypatch.setattr(docs_discovery, "target_version", _no_library)
+    # Lookups prefer the server's cache folder (the user's home); tests must
+    # keep to the repo's test index folders and never leave an index there.
+    monkeypatch.setattr(docs_discovery, "_config_index_dir", lambda _config: None)
+    monkeypatch.setattr(docs_discovery, "_loaded_index", None)
 
 
 @pytest.fixture(scope="session")

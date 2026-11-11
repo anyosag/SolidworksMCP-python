@@ -12,27 +12,38 @@ import json
 import os
 import platform
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import typer
 from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.providers.skills import SkillProvider
+from fastmcp.server.transforms import Visibility
 from loguru import logger
 from pydantic import BaseModel
-from pydantic_ai import Agent
 
 from . import adapters, security, tools, utils
 from .adapters.base import AdapterResult
 from .adapters.complexity_analyzer import ComplexityAnalyzer
 from .adapters.intelligent_router import IntelligentRouter
-from .agents.history_db import insert_tool_event
 from .cache.response_cache import CachePolicy, ResponseCache
 from .config import DeploymentMode, SolidWorksMCPConfig, load_config
 from .exceptions import SolidWorksMCPError
 from .skills import SERVER_INSTRUCTIONS, SKILL_DIR
+from .tools.schema_compaction import CompactToolSchemas
 from .version import __version__
+
+# pydantic_ai (the optional OpenAI agent) and agents.history_db (sqlmodel and
+# sqlalchemy, for optional DB logging) are imported where they are used: the
+# default server path never runs them, and importing them cost 1.35 s of every
+# start (docs/agents/mcp-speed-review.md, finding 4).
+
+#: After a failed connect, how long tool calls wait before trying again, so a
+#: missing SolidWorks doesn't cost every call a full connect attempt.
+_CONNECT_RETRY_SECONDS = 30.0
 
 AGENT_SYSTEM_PROMPT = (
     "You are a SolidWorks automation expert. You have access to comprehensive "
@@ -60,6 +71,39 @@ class MCPServerState(BaseModel):
     is_connected: bool = False
     startup_time: str | None = None
     tool_count: int = 0
+
+
+class _ConnectOnDemand(Middleware):
+    """Connect to SolidWorks after the MCP handshake instead of before it.
+
+    ``start()`` used to await ``adapter.connect()`` before the stdio transport
+    ran, so the client's ``initialize`` waited for the gen_py load, method
+    flagging, and - when SolidWorks wasn't running - a full SolidWorks launch.
+    Now the handshake is answered first. When the client confirms it with
+    ``notifications/initialized``, a background task attaches to a SolidWorks
+    that is already running; a tool call connects (launching SolidWorks if
+    needed) before it runs, unless that already happened.
+
+    Both run on the event-loop thread, the thread every tool's COM calls use
+    (CLAUDE.md, COM threading rule 1).
+    """
+
+    def __init__(self, server: SolidWorksMCPServer) -> None:
+        self._server = server
+
+    async def on_notification(
+        self, context: MiddlewareContext[Any], call_next: Any
+    ) -> Any:
+        result = await call_next(context)
+        if context.method == "notifications/initialized":
+            self._server.start_background_connect()
+        return result
+
+    async def on_call_tool(
+        self, context: MiddlewareContext[Any], call_next: Any
+    ) -> Any:
+        await self._server.ensure_connected()
+        return await call_next(context)
 
 
 class SolidWorksMCPServer:
@@ -112,6 +156,10 @@ class SolidWorksMCPServer:
         self.adapter: Any | None = None
         self.agent: Any | None = None
         self._router: IntelligentRouter | None = None
+        self._connect_lock: asyncio.Lock | None = None
+        self._connect_task: asyncio.Task[bool] | None = None
+        self._last_connect_failure: float | None = None
+        self.mcp.add_middleware(_ConnectOnDemand(self))
 
     @staticmethod
     def _env_truthy(value: str | None) -> bool:
@@ -147,6 +195,8 @@ class SolidWorksMCPServer:
         if not self._db_logging_enabled:
             return
         try:
+            from .agents.history_db import insert_tool_event
+
             insert_tool_event(
                 run_id=self._db_run_id,
                 tool_name=tool_name,
@@ -325,6 +375,7 @@ class SolidWorksMCPServer:
 
         # Register tools and derive canonical count from FastMCP runtime
         await tools.register_tools(self.mcp, self.adapter, self.config)
+        self._apply_tool_listing_policy()
         self.state.tool_count = len(await self.mcp.list_tools())
         self.server = self.mcp
 
@@ -335,6 +386,91 @@ class SolidWorksMCPServer:
 
         self._setup_complete = True
         logger.info(f"Server setup complete with {self.state.tool_count} tools")
+
+    def _apply_tool_listing_policy(self) -> None:
+        """Hide planned tools and compact listed schemas, as the config asks.
+
+        Planned tools only return ``not_supported``; listing them cost about
+        10.5k tokens of agent context. Compaction trims the schemas the client
+        lists without changing what a call accepts (see
+        ``tools/schema_compaction.py``).
+        """
+        if not getattr(self.config, "show_planned_tools", False):
+            self.mcp.add_transform(Visibility(False, tags={"level:planned"}))
+        if getattr(self.config, "compact_tool_schemas", True):
+            self.mcp.add_transform(CompactToolSchemas())
+
+    def start_background_connect(self) -> None:
+        """Attach to an already-running SolidWorks in the background.
+
+        Started once the client has the ``initialize`` reply, so the
+        connection is made while the agent is still on its first turn. It
+        never launches SolidWorks: if none is running, the first tool call
+        connects (and launches it) instead.
+        """
+        if self._connect_task is not None or self.adapter is None:
+            return
+        self._connect_task = asyncio.get_running_loop().create_task(
+            self.ensure_connected(launch=False)
+        )
+
+    async def _application_running(self) -> bool:
+        """Whether the adapter's application is running, when it can tell."""
+        # Looked up on the class so a test double's auto-attributes don't count.
+        probe = getattr(type(self.adapter), "is_application_running", None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe(self.adapter))
+        except Exception as exc:
+            logger.debug("SolidWorks running check failed: {}", exc)
+            return False
+
+    async def ensure_connected(self, *, launch: bool = True) -> bool:
+        """Connect the adapter if it isn't connected yet.
+
+        Safe to call before every tool call: once connected it returns at
+        once. Concurrent callers share one connect. After a failed connect,
+        calls within ``_CONNECT_RETRY_SECONDS`` don't try again; the tool
+        then reports that SolidWorks isn't connected.
+
+        Args:
+            launch: Allow ``connect`` to start SolidWorks. ``False`` only
+                attaches to one that is already running.
+
+        Returns:
+            bool: True when the adapter is connected.
+        """
+        adapter = self.adapter
+        if adapter is None:
+            return False
+        if self.state.is_connected and adapter.is_connected():
+            return True
+        if self._connect_lock is None:
+            self._connect_lock = asyncio.Lock()
+        async with self._connect_lock:
+            if self.state.is_connected and adapter.is_connected():
+                return True
+            failed_at = self._last_connect_failure
+            if (
+                failed_at is not None
+                and time.monotonic() - failed_at < _CONNECT_RETRY_SECONDS
+            ):
+                return False
+            if not launch and not await self._application_running():
+                return False
+            try:
+                await adapter.connect()
+            except Exception as e:
+                self._last_connect_failure = time.monotonic()
+                logger.warning(f"Could not connect to SolidWorks: {e}")
+                if not self.config.mock_solidworks:
+                    logger.warning("Tools that need SolidWorks will report it")
+                return False
+            self._last_connect_failure = None
+            self.state.is_connected = True
+            logger.info("Connected to SolidWorks")
+            return True
 
     async def _setup_agent(self) -> None:
         """Setup PydanticAI agent for enhanced LLM integration.
@@ -352,6 +488,8 @@ class SolidWorksMCPServer:
             )
             self.agent = None
             return
+
+        from pydantic_ai import Agent
 
         self.agent = Agent(
             model="openai:gpt-4",
@@ -414,16 +552,8 @@ class SolidWorksMCPServer:
             None: None.
         """
         await self.setup()
-
-        if self.adapter:
-            try:
-                await self.adapter.connect()
-                self.state.is_connected = True
-                logger.info("Connected to SolidWorks")
-            except Exception as e:
-                logger.warning(f"Could not connect to SolidWorks: {e}")
-                if not self.config.mock_solidworks:
-                    logger.warning("Continuing with mock adapter for testing")
+        # No connect here: _ConnectOnDemand connects after the handshake, so
+        # the client gets its initialize reply without waiting for SolidWorks.
 
         # Record startup time
         from datetime import datetime

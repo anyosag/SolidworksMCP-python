@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
 from ..adapters.solidworks import limits
+from .error_classifier import OPERATION_FAILED, Classification
 from .input_compat import CompatInput
 from .support_levels import SUPPORT_LEVELS, SupportLevel
 from .tool_boundary import (
@@ -694,6 +695,12 @@ End Sub
                     f"Workflow '{name}' stopped at step {index + 1} of "
                     f"{len(input_data.steps)} ({step.tool}): {reply.get('message')}",
                     data=data,
+                    # The failed step's own error_type and hint, rather than a
+                    # new classification of this workflow message.
+                    classification=Classification(
+                        str(reply.get("error_type") or OPERATION_FAILED),
+                        str(reply.get("hint") or ""),
+                    ),
                 )
         if ctx is not None:
             await ctx.report_progress(
