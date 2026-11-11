@@ -18,8 +18,8 @@ Save the active document, to its own path or to a new path in its own format.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `force_save` | `bool` | — | `True` | Force save even if no changes |
 | `file_path` | `str?` | — | `None` | Optional output path. If omitted, saves the current active document. |
+| `overwrite_modified_references` | `bool` | — | `False` | _OVERWRITE_REFERENCES_DESCRIPTION |
 
 **Sample call:**
 
@@ -42,6 +42,7 @@ Save the active document under a new path, as a SolidWorks file or in an exchang
 | `file_path` | `str` | ✅ | `` | Full path for the new file |
 | `format_type` | `str` | — | `solidworks` | File format (solidworks, step, iges, etc.) |
 | `overwrite` | `bool` | — | `False` | Overwrite existing file |
+| `overwrite_modified_references` | `bool` | — | `False` | _OVERWRITE_REFERENCES_DESCRIPTION |
 
 **Sample call:**
 
@@ -71,7 +72,7 @@ Report the active document's file details: name, path, size, dates, type, config
 
 Report the active document's title, path, type, active configuration, unsaved changes, feature count and rebuild status.
 
-**Prerequisite:** Active document
+**Prerequisite:** SolidWorks running
 
 **Sample call:**
 
@@ -85,13 +86,28 @@ Report the active document's title, path, type, active configuration, unsaved ch
 
 List the feature tree of the active part or assembly, in order.
 
-**Prerequisite:** Active document
+**Prerequisite:** SolidWorks running
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `include_suppressed` | `bool` | — | `False` | Include suppressed features in the returned list |
+| `max_assembly_depth` | `int` | — | `2` | For Assembly documents, how many levels of sub-assembly to recurse into when flattening component features. Ignored for Part documents. |
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
+### `get_selected_entities`
+
+Describe the faces, edges and vertices selected in the SolidWorks window right now.
+
+**Prerequisite:** SolidWorks running
 
 **Sample call:**
 
@@ -105,18 +121,15 @@ List the feature tree of the active part or assembly, in order.
 
 Classify the active model's kind (part, sheet metal, assembly, drawing and so on) from its feature tree, and suggest how to work on it.
 
-Useful for routing between direct MCP modeling, VBA-backed workflows, assembly planning,
-and low-confidence “inspect more” cases before any write operations.
-
-**Prerequisite:** Active document, unless you pass `model_info` and `features` explicitly
+**Prerequisite:** SolidWorks running
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `include_suppressed` | `bool` | — | `True` | Include suppressed features when reading the active model tree |
-| `model_info` | `Dict[str, Any]?` | — | `None` | Optional pre-fetched model-info payload |
-| `features` | `List[Dict[str, Any]]?` | — | `None` | Optional pre-fetched feature-tree payload |
+| `model_info` | `Dict[str, Any]?` | — | `None` | Optional pre-fetched model info payload to classify without re-reading the active model |
+| `features` | `List[Dict[str, Any]]?` | — | `None` | Optional feature-tree payload to classify without re-reading the active model |
 
 **Sample call:**
 
@@ -130,7 +143,7 @@ and low-confidence “inspect more” cases before any write operations.
 
 List the names of the active model's configurations.
 
-**Prerequisite:** Active document
+**Prerequisite:** SolidWorks running
 
 **Sample call:**
 
@@ -277,6 +290,13 @@ Save the active part in place, or as a new .sldprt with the target path checked 
 
 **Prerequisite:** Active Part document
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file_path` | `str?` | — | `None` | Optional output path. If omitted, saves the active part to its existing location. |
+| `overwrite` | `bool` | — | `False` | Overwrite existing file |
+
 **Sample call:**
 
 ```json
@@ -291,6 +311,15 @@ Save the active assembly in place, or as a new .sldasm, optionally copying the p
 
 **Prerequisite:** Active Assembly document
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `file_path` | `str?` | — | `None` | Optional output path. If omitted, saves the active assembly to its existing location. |
+| `overwrite` | `bool` | — | `False` | Overwrite existing file |
+| `include_references` | `bool` | — | `False` | When true and file_path is set, copy referenced assembly files into the target folder. |
+| `overwrite_modified_references` | `bool` | — | `False` | _OVERWRITE_REFERENCES_DESCRIPTION |
+
 **Sample call:**
 
 ```json
@@ -303,50 +332,25 @@ Save the active assembly in place, or as a new .sldasm, optionally copying the p
 
 Copy an assembly and every part it references into one folder, with the references updated (SolidWorks Pack and Go).
 
-The active assembly (or `source_path`) is opened, every referenced component is enumerated via the native SolidWorks IPackAndGo COM API, and all files are written into `target_dir` with internal paths rewritten so the copy opens without any dependency on the original file locations.
-
-**Prerequisite:** SolidWorks running with the assembly loaded (or openable). `target_dir` must be writable.
+**Prerequisite:** SolidWorks running
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `source_path` | `str` | ✅ | | Absolute path to the source `.sldasm` file |
-| `target_dir` | `str` | ✅ | | Directory where the assembly and all referenced parts will be copied |
+| `source_path` | `str` | ✅ | `` | Absolute path to the source .sldasm file |
+| `target_dir` | `str` | ✅ | `` | Directory where the assembly and all referenced parts will be copied |
 | `export_preview` | `bool` | — | `True` | Export an isometric PNG preview next to the copied files |
-| `overwrite` | `bool` | — | `False` | Overwrite files that already exist in `target_dir` |
+| `overwrite` | `bool` | — | `False` | Overwrite files that already exist in target_dir |
 
 **Sample call:**
 
 ```json
 {
-  "source_path": "C:\\Projects\\robot_arm.sldasm",
-  "target_dir": "C:\\Exports\\robot_arm_pkg",
-  "export_preview": true
+  "source_path": "C:\\Temp\\mcp_demo\\file.sldprt",
+  "target_dir": "example"
 }
 ```
-
-**Response fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | `str` | `"success"` or `"error"` |
-| `file_path` | `str` | Path to the copied root assembly file |
-| `copied_file_count` | `int` | Total number of files written |
-| `copied_files` | `list[str]` | Absolute paths of every copied file |
-| `all_files_saved` | `bool` | `true` when every per-file save status is `swPackAndGoSaveStatus_Ok` (0) |
-| `save_status_warnings` | `list[str]` | Human-readable description of any non-zero per-file statuses (empty list on full success) |
-| `preview_image` | `str?` | Path to the isometric PNG preview, or `null` if export was skipped or failed |
-
-**`swPackAndGoSaveStatus_e` reference** (values reported in `save_status_warnings`):
-
-| Code | Name | Meaning |
-|------|------|---------|
-| `0` | `Ok` | File was written successfully |
-| `2` | `FileAlreadyExist` | Target file already existed and was not overwritten |
-| `3` | `MissingSource` | Source reference file could not be found |
-
-All zeros in the per-file status array (`all_files_saved: true`) means SolidWorks confirmed every file was written successfully via its native Pack-and-Go engine.
 
 ---
 
@@ -356,21 +360,11 @@ List every document open in SolidWorks and say which one is active.
 
 **Prerequisite:** SolidWorks running
 
-**Parameters:** none
-
 **Sample call:**
 
 ```json
 {}
 ```
-
-**Response fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | `str` | `"success"` or `"error"` |
-| `documents` | `list[dict]` | One `{title, path, type, is_active}` entry per open document |
-| `count` | `int` | Number of open documents |
 
 ---
 
@@ -378,45 +372,21 @@ List every document open in SolidWorks and say which one is active.
 
 Make an already-open document the active one, so the next tools act on it.
 
-**Prerequisite:** The target document is already open
+**Prerequisite:** SolidWorks running
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `title_or_path` | `str` | ✅ | `` | Window title, full path, or bare file name of an open document |
+| `title_or_path` | `str` | ✅ | `` | Window title (e.g. 'bracket.SLDPRT'), full path, or bare file name of a document that is already open |
 
 **Sample call:**
 
 ```json
 {
-  "title_or_path": "bracket.SLDPRT"
+  "title_or_path": "C:\\Temp\\mcp_demo\\file.sldprt"
 }
 ```
-
----
-
-### `get_selected_entities`
-
-Describe the faces, edges and vertices selected in the SolidWorks window right now.
-
-**Prerequisite:** Active document with at least one entity selected in the SolidWorks UI (returns an empty list otherwise)
-
-**Parameters:** none
-
-**Sample call:**
-
-```json
-{}
-```
-
-**Response fields:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | `str` | `"success"` or `"error"` |
-| `entities` | `list[dict]` | One descriptor per selected entity — `type` (`FACE`/`EDGE`/`VERTEX`) plus type-specific fields (`bounding_box_mm`/`center_mm`/`area_mm2`/`normal` for faces, `start_mm`/`end_mm`/`length_mm` for edges, `point_mm` for vertices) |
-| `count` | `int` | Number of selected entities |
 
 ---
 
@@ -424,7 +394,7 @@ Describe the faces, edges and vertices selected in the SolidWorks window right n
 
 Save one solid body of the active multibody part as a new part file (Insert > Features > Save Bodies).
 
-**Prerequisite:** Active multibody part
+**Prerequisite:** SolidWorks running
 
 **Parameters:**
 
@@ -437,8 +407,8 @@ Save one solid body of the active multibody part as a new part file (Insert > Fe
 
 ```json
 {
-  "body_name": "Boss-Extrude1",
-  "file_path": "C:\parts\bracket_body.sldprt"
+  "body_name": "MCP_Demo_Part",
+  "file_path": "C:\\Temp\\mcp_demo\\part.sldprt"
 }
 ```
 

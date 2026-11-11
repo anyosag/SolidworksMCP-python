@@ -4,7 +4,7 @@ Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge
 
 > **Prerequisite:** An active part document with an active sketch edit session.
 
-**Total tools in this category: 18**
+**Total tools in this category: 22**
 
 ---
 
@@ -18,8 +18,8 @@ Open a new sketch on a plane of the active part, ready for lines, circles and ot
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `plane` | `str` | ✅ | `` | Sketch plane name (e.g., 'Top', 'Front', 'Right', 'XY', 'XZ', 'YZ') |
-| `sketch_name` | `str?` | — | `None` | Sketch name alias |
+| `plane` | `str` | ✅ | `` | Plane to sketch on: 'Front' (or 'XY'), 'Top' ('XZ'), 'Right' ('YZ'), or the exact name of a plane in the part, e.g. 'Plane1' |
+| `sketch_name` | `str?` | — | `None` | Name to give the sketch in the feature tree, applied when exit_sketch closes it; omit to keep SolidWorks' own (Sketch1, Sketch2, ...) |
 
 **Sample call:**
 
@@ -54,12 +54,7 @@ Draw a straight line between two points in the open sketch, in mm.
 **Sample call:**
 
 ```json
-{
-  "x1": 0.0,
-  "y1": 0.0,
-  "x2": 80.0,
-  "y2": 0.0
-}
+{}
 ```
 
 ---
@@ -114,12 +109,7 @@ Draw a closed, axis-aligned rectangle in the open sketch from two opposite corne
 **Sample call:**
 
 ```json
-{
-  "x1": -40.0,
-  "y1": 0.0,
-  "x2": 40.0,
-  "y2": 52.0
-}
+{}
 ```
 
 ---
@@ -129,6 +119,26 @@ Draw a closed, axis-aligned rectangle in the open sketch from two opposite corne
 Close the open sketch so a feature can use it.
 
 **Prerequisite:** Active sketch edit mode
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
+### `check_sketch_fully_defined`
+
+Check whether a sketch is fully defined, under-defined or over-defined.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `sketch_name` | `str?` | — | `None` | Optional sketch name. If omitted, checks the active or last sketch. |
 
 **Sample call:**
 
@@ -154,6 +164,7 @@ Draw a circular arc in the open sketch from its centre, start point and end poin
 | `start_y` | `float` | ✅ | `` | Arc start point Y coordinate in mm |
 | `end_x` | `float` | ✅ | `` | Arc end point X coordinate in mm |
 | `end_y` | `float` | ✅ | `` | Arc end point Y coordinate in mm |
+| `direction` | `Literal['ccw', 'cw']` | — | `ccw` | Which way the arc runs from start to end, looking at the sketch (x right, y up): 'ccw' counter-clockwise (the default) or 'cw' |
 
 **Sample call:**
 
@@ -165,6 +176,72 @@ Draw a circular arc in the open sketch from its centre, start point and end poin
   "start_y": 0.0,
   "end_x": 30.0,
   "end_y": 0.0
+}
+```
+
+---
+
+### `add_outlines`
+
+Draw whole outlines of lines and arcs in the open sketch in one call, in mm.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `outlines` | `List[Outline]` | ✅ | `` | One or more outlines, each a closed loop by default. Give each either 'points' (a polygon) or 'start' plus 'segments' (lines and arcs) |
+
+**Sample call:**
+
+```json
+{
+  "outlines": []
+}
+```
+
+---
+
+### `edit_sketch`
+
+Open an existing sketch for editing, listing its segments with ids.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | `str` | ✅ | `` | The sketch to open, e.g. 'Sketch3' |
+
+**Sample call:**
+
+```json
+{
+  "name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `delete_sketch_entities`
+
+Delete lines, arcs and other entities of the open sketch by id.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `ids` | `List[str]` | ✅ | `` | Ids of the entities to delete, from edit_sketch or the add_* tools |
+
+**Sample call:**
+
+```json
+{
+  "ids": []
 }
 ```
 
@@ -228,12 +305,7 @@ Draw a centreline (construction line) in the open sketch, in mm.
 **Sample call:**
 
 ```json
-{
-  "x1": 0.0,
-  "y1": 0.0,
-  "x2": 0.0,
-  "y2": 120.0
-}
+{}
 ```
 
 ---
@@ -272,76 +344,21 @@ Add a geometric relation between sketch entities: horizontal, vertical, parallel
 
 **Prerequisite:** Active sketch edit mode with named entities
 
-**SolidWorks automation note:** Implemented via `ISketchRelationManager.AddRelation(entities, swConstraintType_e)`. Entities must be IDs returned from a previous `add_line` / `add_circle` / `add_arc` call (e.g. `"Line_1"`).
-
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `entity1` | `str` | ✅ | `` | First entity name or ID |
-| `entity2` | `str?` | — | `None` | Second entity name or ID (for two-entity relations) |
-| `entity3` | `str?` | — | `None` | Third entity name or ID. **Required only for `symmetric`** (the centerline of symmetry, e.g. `"Centerline_5"`); must be `None` for all other relations |
-| `relation_type` | `str` | ✅ | `` | One of the supported relation names (see below) |
+| `entity2` | `str?` | — | `None` | Second entity name or ID (if required) |
+| `entity3` | `str?` | — | `None` | Third entity ID. Required for 'symmetric' (the centerline of symmetry); must be null for all other relations. |
+| `relation_type` | `str` | ✅ | `` | Relation type (parallel, perpendicular, tangent, coincident, etc.) |
 
-**Supported `relation_type` values (case-insensitive):**
-
-| Name | Entity arity | Notes |
-|------|--------------|-------|
-| `horizontal` | 1 or 2 | Line(s) horizontal; with 2 endpoints aligns them horizontally |
-| `vertical` | 1 or 2 | Line(s) vertical; with 2 endpoints aligns them vertically |
-| `parallel` | 2 | Two lines parallel |
-| `perpendicular` | 2 | Two lines at 90° |
-| `tangent` | 2 | Line ↔ arc/circle, or arc ↔ arc |
-| `coincident` | 2 | Two points (or point on entity) share location |
-| `concentric` | 2 | Two arcs/circles share center |
-| `equal` | 2 | Equal length (lines) or equal radius (arcs/circles) — maps to `swConstraintType_SAMELENGTH` |
-| `symmetric` | 3 | Two entities about a centerline; `entity3` must be the centerline ID returned by `add_centerline` |
-| `collinear` | 2 | Two lines on the same infinite line |
-| `fix` | 1 | Pin the entity in place |
-
-> **`entity3` is only used by `symmetric`.** All other relation types reject a non-null `entity3` with a clear error.
-
-**Sample call (two-entity perpendicular):**
+**Sample call:**
 
 ```json
 {
-  "entity1": "Line_1",
-  "entity2": "Line_2",
+  "entity1": "Line1",
   "relation_type": "perpendicular"
-}
-```
-
-**Sample call (three-entity symmetric):**
-
-```json
-{
-  "entity1": "Line_1",
-  "entity2": "Line_2",
-  "entity3": "Centerline_5",
-  "relation_type": "symmetric"
-}
-```
-
-**Sample call (single-entity horizontal):**
-
-```json
-{
-  "entity1": "Line_1",
-  "relation_type": "horizontal"
-}
-```
-
-**Response shape on success:**
-
-```json
-{
-  "status": "success",
-  "constraint": {
-    "id": "Constraint_3",
-    "type": "perpendicular",
-    "entity1": "Line_1",
-    "entity2": "Line_2"
-  }
 }
 ```
 
@@ -352,8 +369,6 @@ Add a geometric relation between sketch entities: horizontal, vertical, parallel
 Add a driving dimension to sketch entities: linear, angular, radial or diameter.
 
 **Prerequisite:** Active sketch edit mode
-
-**SolidWorks automation note:** In real SolidWorks sessions, sketch dimension creation can open the interactive `Modify` approval dialog and block unattended runs. The implementation keeps the sketch-input preferences disabled for the full automation session and uses `AddRadialDimension2` or `AddDiameterDimension2` for radial and diameter dimensions so these calls stay non-interactive.
 
 **Parameters:**
 
@@ -368,16 +383,10 @@ Add a driving dimension to sketch entities: linear, angular, radial or diameter.
 
 ```json
 {
-  "entity1": "Line_1",
+  "entity1": "Line1",
   "value": 50.0
 }
 ```
-
-**Why this is implemented this way:**
-
-- SolidWorks may treat sketch dimension creation like an interactive Smart Dimension workflow unless the sketch-input preferences are suppressed.
-- The adapter disables `swInputDimValOnCreate`, `swSketchAcceptNumericInput`, `swSketchCreateDimensionOnlyWhenEntered`, and `swScaleSketchOnFirstDimension` when automation connects, so the tool does not wait for a manual approve click.
-- Radial and diameter dimensions use the dedicated `IModelDoc2` APIs instead of the generic extension call because that path is more reliable for circles and arcs in live COM sessions.
 
 ---
 

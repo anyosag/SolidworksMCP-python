@@ -44,6 +44,21 @@ REMOVED_INPUTS: dict[str, dict[str, str]] = {
         "auto_populate_views": "the tool always places the three standard views",
     },
     "SaveFileInput": {"force_save": "the tool always saves"},
+    "WorkflowInput": {
+        "parallel_execution": (
+            "steps run one at a time, in order: SolidWorks takes one call at a time"
+        ),
+        "error_handling": (
+            "it stops at the first step that fails; `rollback_on_error` also "
+            "removes what the earlier steps added"
+        ),
+    },
+    "PatternCircularInput": {
+        "equal_spacing": (
+            "give `angle` for the total spread (evenly spaced) or `step_angle` "
+            "for the degrees between instances"
+        ),
+    },
     "ExportFileInput": {"options": _FILE_EXTENSION},
     "InterferenceCheckInput": {
         "tolerance": "the check has no tolerance",

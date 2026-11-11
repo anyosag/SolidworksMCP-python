@@ -17,6 +17,7 @@ from ..adapters.base import (
     SolidWorksAdapter,
     SweepParameters,
 )
+from ..adapters.solidworks.cut_check import shortfall_warning
 from .input_compat import CompatInput
 from .tool_boundary import (
     normalize_input,
@@ -25,6 +26,12 @@ from .tool_boundary import (
 )
 
 # Input schemas using Python 3.14 built-in types
+
+
+def _with_units(value: Any, units: str) -> str:
+    """``12 mm``, ``180 deg`` or ``2 (count)`` for a reply message."""
+    shown = f"{value:g}" if isinstance(value, int | float) else str(value)
+    return f"{shown} (count)" if units == "count" else f"{shown} {units}"
 
 
 def _result_value(data: Any, *keys: str, default: Any = None) -> Any:
@@ -130,6 +137,69 @@ def _attach_measured_change(
             "the direction and the depth."
         )
     return reply
+
+
+def _flag_a_shallow_cut(
+    reply: dict[str, Any], applied: Any, input_data: Any
+) -> dict[str, Any]:
+    """Warn when a blind cut removed far less than its floor area x depth.
+
+    Args:
+        reply: The cut's reply, with ``measured_change`` when measured.
+        applied: The cut's ``parameters`` from the adapter.
+        input_data: The cut's input (``end_condition``, ``depth``).
+
+    Returns:
+        dict[str, Any]: ``reply``, with ``cut_extrude.floor_area_mm2`` and a
+        ``warning`` when the depth ran outside the part.
+    """
+    floor = applied.get("floor_area_mm2") if isinstance(applied, dict) else None
+    if not isinstance(floor, int | float):
+        return reply
+    reply["cut_extrude"]["floor_area_mm2"] = round(float(floor), 4)
+    delta = (reply.get("measured_change") or {}).get("volume_delta_mm3")
+    if str(input_data.end_condition).lower() != "blind" or not isinstance(
+        delta, int | float
+    ):
+        return reply
+    warning = shortfall_warning(-float(delta), float(floor), float(input_data.depth))
+    if warning is not None:
+        own = reply.get("warning")
+        reply["warning"] = f"{own} {warning}" if own else warning
+    return reply
+
+
+def _cut_direction_note(applied: Any) -> str:
+    """Say in a cut's message which side it cut, when it was not the one wanted.
+
+    Args:
+        applied: The cut's ``parameters`` from the adapter.
+
+    Returns:
+        str: A note in parentheses, or ``""`` when the cut went the way asked
+        (or, with no direction given, along the sketch normal as compared).
+    """
+    if not isinstance(applied, dict):
+        return ""
+    flipped = bool(applied.get("direction_flipped"))
+    choice = applied.get("direction_choice")
+    removed = applied.get("volume_removed_mm3")
+    if choice == "not_compared" and applied.get("direction_note"):
+        return f" (the two sides were not compared: {applied['direction_note']})"
+    if flipped and isinstance(removed, dict):
+        return (
+            " (it cut against the sketch normal, the side with more material: "
+            f"{removed.get('against_normal', 0.0):.4g} mm3 against "
+            f"{removed.get('along_normal', 0.0):.4g} mm3 along it)"
+        )
+    if flipped and choice == "only_side_with_material":
+        return (
+            " (the side along the sketch normal had no material, so it cut the "
+            "other way)"
+        )
+    if flipped:
+        return " (the requested direction found no material, so it cut the other way)"
+    return ""
 
 
 class OpenModelInput(BaseModel):
@@ -404,8 +474,16 @@ class SetDimensionInput(CompatInput):
         description="Dimension name (e.g., 'D1@Sketch1', 'D1@Boss-Extrude1')",
     )
     dimension_name: str | None = Field(default=None, description="Dimension name alias")
-    value: float = Field(description="New dimension value in millimeters")
-    units: str | None = Field(default=None, description="Units alias")
+    value: float = Field(
+        description=(
+            "New value in the dimension's own unit: millimetres for a length, "
+            "degrees for an angle, a whole number for a count (a pattern's "
+            "instances). list_model_dimensions gives each one's `units`."
+        )
+    )
+    units: str | None = Field(
+        default=None, description="Not used; kept for old callers"
+    )
 
     def model_post_init(self, __context: Any) -> None:
         """Provide model post init support for the set dimension input.
@@ -448,6 +526,14 @@ class CloseModelInput(BaseModel):
     """
 
     save: bool = Field(default=False, description="Save the model before closing")
+    overwrite_modified_references: bool = Field(
+        default=False,
+        description=(
+            "Set true only after the user agreed: lets saving an assembly also "
+            "overwrite the user's own modified part files that a "
+            "`confirmation_required` error listed."
+        ),
+    )
 
 
 class CreateCutExtrudeInput(CompatInput):
@@ -457,19 +543,25 @@ class CreateCutExtrudeInput(CompatInput):
         depth (float): Cut depth in millimeters.
         draft_angle (float): Draft angle in degrees.
         end_condition (str): End condition type.
-        reverse_direction (bool): Reverse cut direction.
+        reverse_direction (bool | None): True cuts along the sketch normal,
+            False against it; None lets a one-way cut take the side with more
+            material.
         both_directions (bool): With ``"ThroughAll"``, cut both ways.
         sketch_name (str | None): Sketch to cut from.
     """
 
     depth: float = Field(description="Cut depth in millimeters")
     draft_angle: float = Field(default=0.0, description="Draft angle in degrees")
-    reverse_direction: bool = Field(
-        default=False,
+    reverse_direction: bool | None = Field(
+        default=None,
         description=(
-            "Cut against the sketch normal instead of along it. Usually not "
-            "needed: if the requested direction finds no material, the cut is "
-            "retried the other way and the reply sets direction_flipped"
+            "Usually leave unset: a one-way cut then tries both sides of the "
+            "sketch and keeps the one that removes more material (on a tie, "
+            "the side along the sketch normal, where create_extrusion grows). "
+            "true cuts along the sketch normal, the side create_extrusion grows "
+            "into by default; false cuts against it (from a sketch on a face, "
+            "into the part). A set side that has no material is cut the other "
+            "way instead, and the reply sets direction_flipped"
         ),
     )
     end_condition: str = Field(
@@ -642,10 +734,18 @@ class DeleteFeatureInput(CompatInput):
 
     Attributes:
         name (str): Feature or sketch name to delete.
+        delete_absorbed (bool): Delete the feature's own sketch with it.
     """
 
     name: str = Field(
         description="Feature or sketch name, e.g. 'Boss-Extrude1' or 'Sketch1'"
+    )
+    delete_absorbed: bool = Field(
+        default=False,
+        description=(
+            "Delete the feature's own sketch too (a cut's profile); off leaves "
+            "it in the tree and the reply names it"
+        ),
     )
 
 
@@ -744,6 +844,211 @@ class SelectFaceEdgesInput(CompatInput):
         problem = validate_face_query(self.point, self.side, self.plane, self.edge_type)
         if problem:
             raise ValueError(problem)
+
+
+class SelectEdgesInput(CompatInput):
+    """Input schema for selecting edges by rule.
+
+    Attributes:
+        feature (str | None): Take the edges of the faces this feature made.
+        face_point (list[float] | None): Take the edges of the face at this point.
+        side (str | None): Take the edges of the furthest face facing this way.
+        plane (str | None): Take the edges of the face(s) on this plane.
+        edge_type (str): Keep all, linear or circular edges.
+        parallel_to (str | list[float] | None): Keep straight edges along this.
+        parallel_tolerance_deg (float): How far off parallel still counts.
+        inside_box (list[list[float]] | None): Keep edges inside this box, mm.
+        min_length (float | None): Keep edges at least this long, mm.
+        max_length (float | None): Keep edges at most this long, mm.
+        append (bool): Add to the current selection instead of replacing it.
+    """
+
+    feature: str | None = Field(
+        default=None,
+        description=(
+            "Take the edges of the faces this feature made, e.g. 'Cut-Extrude2' "
+            "(the cut's walls and rims). Give at most one of feature, "
+            "face_point, side and plane; none takes every edge of the part"
+        ),
+    )
+    face_point: list[float] | None = Field(
+        default=None,
+        description="Take the edges of the face at this point, [x, y, z] mm",
+    )
+    side: str | None = Field(
+        default=None,
+        description=(
+            "Take the edges of the furthest flat face facing this way: top, "
+            "bottom, front, back, right, left or +X..-Z"
+        ),
+    )
+    plane: str | None = Field(
+        default=None,
+        description="Take the edges of the face(s) lying on this plane, e.g. 'Top Plane'",
+    )
+    edge_type: str = Field(
+        default="all",
+        description="Keep 'all' (the default), 'linear' or 'circular' edges",
+    )
+    parallel_to: str | list[float] | None = Field(
+        default=None,
+        description=(
+            "Keep only straight edges along this direction: 'x', 'y', 'z' or [x, y, z]"
+        ),
+    )
+    parallel_tolerance_deg: float = Field(
+        default=1.0,
+        gt=0,
+        le=45,
+        description="How many degrees off parallel_to an edge may be (default 1)",
+    )
+    inside_box: list[list[float]] | None = Field(
+        default=None,
+        description=(
+            "Keep only edges wholly inside this box: [[xmin, ymin, zmin], "
+            "[xmax, ymax, zmax]] in model mm"
+        ),
+    )
+    min_length: float | None = Field(
+        default=None, ge=0, description="Keep only edges at least this long, mm"
+    )
+    max_length: float | None = Field(
+        default=None, ge=0, description="Keep only edges at most this long, mm"
+    )
+    append: bool = Field(
+        default=False,
+        description="Add to the current selection instead of replacing it",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from ..adapters.solidworks.edge_rules import validate_edge_query
+
+        self.edge_type = str(self.edge_type or "all").strip().lower()
+        problem = validate_edge_query(self.query())
+        if problem:
+            raise ValueError(problem)
+
+    def query(self) -> dict[str, Any]:
+        """The rules as the adapter's ``select_edges`` takes them."""
+        return self.model_dump(exclude={"append"}, exclude_none=True)
+
+
+DisplayType = Literal[
+    "planes",
+    "axes",
+    "temporary_axes",
+    "origins",
+    "coordinate_systems",
+    "points",
+    "sketches",
+]
+
+
+class SetVisibilityInput(CompatInput):
+    """Input schema for showing or hiding reference geometry and sketches.
+
+    Attributes:
+        visible (bool): Show (true) or hide (false).
+        names (list[str]): Planes, axes, points, coordinate systems or sketches.
+        types (list[str]): Every entity of these types in the document.
+    """
+
+    visible: bool = Field(description="true shows them, false hides them")
+    names: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Planes, axes, points, coordinate systems or sketches by their tree "
+            "names, e.g. ['Plane1', 'Sketch3']"
+        ),
+    )
+    types: list[DisplayType] = Field(
+        default_factory=list,
+        description=(
+            "Every entity of these types in the document, as View > Hide/Show "
+            "does: planes, axes, temporary_axes, origins, coordinate_systems, "
+            "points, sketches"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.names = [n.strip() for n in self.names if n and n.strip()]
+        if not self.names and not self.types:
+            raise ValueError("give names, types or both to show or hide")
+
+
+class EditFeatureInput(CompatInput):
+    """Input schema for changing an existing feature's parameters.
+
+    Attributes:
+        name (str): The feature to change.
+        depth (float | None): New depth, mm (extrude, cut).
+        end_condition (str | None): New end condition (extrude, cut).
+        reverse_direction (bool | None): New direction (extrude, cut, revolve).
+        angle (float | None): New angle, degrees (revolve).
+        radius (float | None): New radius, mm (fillet).
+    """
+
+    name: str = Field(description="The feature to change, e.g. 'Cut-Extrude2'")
+    depth: float | None = Field(
+        default=None, gt=0, description="Extrude or cut: the new depth, mm"
+    )
+    end_condition: str | None = Field(
+        default=None,
+        description=(
+            "Extrude or cut: Blind, ThroughAll, ThroughAllBoth, MidPlane or UpToNext"
+        ),
+    )
+    reverse_direction: bool | None = Field(
+        default=None,
+        description="Extrude, cut or revolve: true to go the other way",
+    )
+    angle: float | None = Field(
+        default=None, gt=0, le=360, description="Revolve: the new angle, degrees"
+    )
+    radius: float | None = Field(
+        default=None, gt=0, description="Fillet: the new radius, mm"
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name is required")
+        if not self.changes():
+            raise ValueError(
+                "give at least one change: depth, end_condition, "
+                "reverse_direction, angle or radius"
+            )
+
+    def changes(self) -> dict[str, Any]:
+        """The changes given, by name."""
+        return self.model_dump(
+            include={"depth", "end_condition", "reverse_direction", "angle", "radius"},
+            exclude_none=True,
+        )
+
+
+class SetRollbackInput(CompatInput):
+    """Input schema for moving the rollback bar.
+
+    Attributes:
+        before (str | None): Put the bar just above this feature.
+        after (str | None): Put the bar just below this feature.
+    """
+
+    before: str | None = Field(
+        default=None,
+        description="Put the bar just above this feature, e.g. 'Fillet1'",
+    )
+    after: str | None = Field(
+        default=None,
+        description="Put the bar just below this feature; neither moves it to the end",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.before = (self.before or "").strip() or None
+        self.after = (self.after or "").strip() or None
+        if self.before and self.after:
+            raise ValueError("give before or after, not both")
 
 
 class RebuildModelInput(CompatInput):
@@ -1039,8 +1344,9 @@ class PatternCircularInput(CompatInput):
         features (list[str]): Names of the features to pattern.
         axis (str): Name of the axis to rotate about.
         count (int): Total number of instances including the original.
-        angle (float): Total angle in degrees to spread instances over.
-        equal_spacing (bool): Space instances evenly across angle.
+        angle (float | None): Total angle in degrees, spread evenly.
+        step_angle (float | None): Angle in degrees between neighbours.
+        reverse_direction (bool): Pattern the other way round the axis.
     """
 
     features: list[str] = Field(
@@ -1055,14 +1361,26 @@ class PatternCircularInput(CompatInput):
         description="Total number of instances including the original. "
         "Must be at least 2 - a pattern of one is just the original feature"
     )
-    angle: float = Field(
-        default=360.0,
-        description="Total angle in degrees to spread the instances over. "
-        "Defaults to a full 360",
+    angle: float | None = Field(
+        default=None,
+        gt=0,
+        le=360,
+        description=(
+            "Total angle in degrees the instances are spread over evenly; a "
+            "full 360 when neither angle nor step_angle is given"
+        ),
     )
-    equal_spacing: bool = Field(
-        default=True,
-        description="Space instances evenly across 'angle'",
+    step_angle: float | None = Field(
+        default=None,
+        gt=0,
+        lt=360,
+        description=(
+            "Instead of angle: degrees between neighbouring instances, e.g. "
+            "60 for instances every 60 degrees"
+        ),
+    )
+    reverse_direction: bool = Field(
+        default=False, description="Pattern the other way round the axis"
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -1072,6 +1390,45 @@ class PatternCircularInput(CompatInput):
             raise ValueError("axis is required")
         if self.count < 2:
             raise ValueError("count must be at least 2")
+        if self.angle is not None and self.step_angle is not None:
+            raise ValueError(
+                "give angle (the total) or step_angle (between instances), not both"
+            )
+        if self.step_angle is not None:
+            turned = self.step_angle * (self.count - 1)
+            if turned >= 360 - 1e-6:
+                raise ValueError(
+                    f"{self.count - 1} steps of {self.step_angle:g} degrees turn "
+                    f"{turned:g} degrees, a full turn or more: the last instance "
+                    "would land on an earlier one"
+                )
+
+    def spacing(self) -> dict[str, Any]:
+        """How the pattern is spaced, for the adapter and the reply.
+
+        Returns:
+            dict[str, Any]: ``angle`` and ``equal_spacing`` as the adapter
+            takes them (SolidWorks reads ``angle`` as the total when spacing
+            is equal, else as the step), plus ``step_angle`` and
+            ``total_angle`` in degrees.
+        """
+        if self.step_angle is not None:
+            return {
+                "angle": self.step_angle,
+                "equal_spacing": False,
+                "step_angle": self.step_angle,
+                "total_angle": self.step_angle * (self.count - 1),
+            }
+        total = self.angle if self.angle is not None else 360.0
+        # A full turn's last step closes on the original; a partial one ends
+        # at the far end of the angle.
+        steps = self.count if abs(total - 360.0) < 1e-9 else self.count - 1
+        return {
+            "angle": total,
+            "equal_spacing": True,
+            "step_angle": total / steps,
+            "total_angle": total,
+        }
 
 
 class CreateDrawingInput(CompatInput):
@@ -1121,7 +1478,7 @@ async def register_modeling_tools(
                         print(f"Registered {tool_count} modeling tools")
                         ```
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()
@@ -1290,16 +1647,21 @@ async def register_modeling_tools(
 
         Use it when you are done with a document. Unsaved changes are lost unless `save`
         is on. Needs: an open, active document. Changes: closes the document, and with
-        `save` writes it first. Returns: `saved`, whether a save was asked for.
+        `save` writes it first, without SolidWorks dialogs; a save that fails, or that
+        would overwrite the user's own modified part files (`confirmation_required`),
+        leaves the document open. Returns: `saved`, whether a save was asked for.
 
         Args:
-            input_data: The close. Nothing is required: `save` is off.
+            input_data: The close. Nothing is required: `save` and
+                `overwrite_modified_references` are off.
 
         Returns:
             dict[str, Any]: The close result.
         """
         input_data = normalize_input(input_data, CloseModelInput)
-        result = await adapter.close_model(input_data.save)
+        result = await adapter.close_model(
+            input_data.save, input_data.overwrite_modified_references
+        )
 
         require_success(result, context="Failed to close model")
         return {
@@ -1442,8 +1804,9 @@ async def register_modeling_tools(
         """Read one dimension of the active model by its full name, e.g. "D1@Sketch1".
 
         Find names with `list_model_dimensions`. Needs: an open part or assembly.
-        Read-only. Returns: `dimension` with `name`, `value` and `units` (mm for a
-        length).
+        Read-only. Returns: `dimension` with `name`, `value`, `units` and `kind`:
+        mm for a length, degrees (`deg`) for an angle, a whole number for a count
+        such as a pattern's instances.
 
         Args:
             input_data: The dimension. Give `name` (or `dimension_name`), e.g.
@@ -1461,27 +1824,33 @@ async def register_modeling_tools(
         dimension_units = _result_value(value, "units", default="mm")
         return {
             "status": "success",
-            "message": f"Dimension {input_data.name} = {dimension_value} {dimension_units}",
+            "message": (
+                f"Dimension {input_data.name} = "
+                f"{_with_units(dimension_value, dimension_units)}"
+            ),
             "dimension": {
                 "name": input_data.name,
                 "value": dimension_value,
                 "units": dimension_units,
+                "kind": _result_value(value, "kind", default="length"),
             },
             "execution_time": result.execution_time,
         }
 
     @mcp.tool()
     async def set_dimension(input_data: SetDimensionInput) -> dict[str, Any]:
-        """Change one length dimension of the active model, in mm, and rebuild.
+        """Change one dimension of the active model and rebuild.
 
         Use it to resize an existing model; find the full name with
         `list_model_dimensions` and check the result with `rebuild_model` or
-        `verify_model`. The value is always millimetres. Needs: an open part or
-        assembly. Changes: the dimension and the geometry it drives. Returns:
-        `dimension_update` with `name`, `old_value` and `new_value`.
+        `verify_model`. The value is in the dimension's own unit: millimetres for
+        a length, degrees for an angle, a whole number for a count (a pattern's
+        instances). Needs: an open part or assembly. Changes: the dimension and
+        the geometry it drives. Returns: `dimension_update` with `name`,
+        `old_value`, `new_value` (read back), `units` and `kind`.
 
         Args:
-            input_data: The change. `value` (mm) is required, with `name` (or
+            input_data: The change. `value` is required, with `name` (or
                 `dimension_name`) such as "D1@Sketch1"; `units` is not used.
 
         Returns:
@@ -1492,16 +1861,19 @@ async def register_modeling_tools(
 
         require_success(result, context="Failed to set dimension")
         payload = result.data
+        units = _result_value(payload, "units", default="mm")
+        new_value = _result_value(payload, "new_value", default=input_data.value)
         return {
             "status": "success",
-            "message": f"Set dimension {input_data.name} = {input_data.value} mm",
+            "message": (
+                f"Set dimension {input_data.name} = {_with_units(new_value, units)}"
+            ),
             "dimension_update": {
                 "name": input_data.name,
                 "old_value": _result_value(payload, "old_value"),
-                "new_value": _result_value(
-                    payload, "new_value", default=input_data.value
-                ),
-                "units": input_data.units or "mm",
+                "new_value": new_value,
+                "units": units,
+                "kind": _result_value(payload, "kind", default="length"),
             },
             "execution_time": result.execution_time,
         }
@@ -1544,9 +1916,13 @@ async def register_modeling_tools(
 
         Use it after `exit_sketch`. Pass `sketch_name` unless the sketch you just closed
         is the one: with no name only that sketch is used, and any doubt is an error
-        naming the sketches found. A one-way cut that finds no material is retried the
-        other way (`direction_flipped`). For a sketch inside the body, use
-        ThroughAllBoth. Needs: an open part with a solid body. Changes: adds a
+        naming the sketches found. With `reverse_direction` unset, a one-way cut tries
+        both sides of the sketch and keeps the one that removes more material (a tie
+        keeps the side along the sketch normal, where `create_extrusion` grows). Set,
+        true cuts along the sketch normal and false against it, and the other side is
+        tried only when that one has no material. `direction_flipped` says the cut
+        went the other way. For a sketch inside the body, use ThroughAllBoth. Needs:
+        an open part with a solid body. Changes: adds a
         Cut-Extrude feature. Returns: `cut_extrude` (`name`, `sketch_name`,
         `direction_flipped`) and `measured_change` (volume, bounding box and solid-body
         count before and after; left out when the model can't be read).
@@ -1564,7 +1940,6 @@ async def register_modeling_tools(
         params = ExtrusionParameters(
             depth=input_data.depth,
             draft_angle=input_data.draft_angle,
-            reverse_direction=input_data.reverse_direction,
             both_directions=input_data.both_directions,
             thin_feature=False,
             thin_thickness=None,
@@ -1574,6 +1949,9 @@ async def register_modeling_tools(
             auto_select=True,
             sketch_name=input_data.sketch_name,
         )
+        if input_data.reverse_direction is not None:
+            # Set only when given: left unset, the adapter picks the side.
+            params.reverse_direction = input_data.reverse_direction
         before = await _read_summary(adapter)
         result = await adapter.create_cut_extrude(params)
         require_success(result, context="Failed to create cut-extrude")
@@ -1589,14 +1967,10 @@ async def register_modeling_tools(
             isinstance(feature_params, dict) and feature_params.get("direction_flipped")
         )
         name = _result_value(feature, "feature_name", "name", default="Cut-Extrude")
-        message = f"Created cut-extrude: {name}"
-        if flipped:
-            message += (
-                " (the requested direction found no material, so it cut the other way)"
-            )
         reply = {
             "status": "success",
-            "message": message,
+            "message": f"Created cut-extrude: {name}"
+            + _cut_direction_note(feature_params),
             "cut_extrude": {
                 "name": name,
                 "depth": input_data.depth,
@@ -1605,7 +1979,8 @@ async def register_modeling_tools(
             },
             "execution_time": result.execution_time,
         }
-        return _attach_measured_change(reply, before, after)
+        reply = _attach_measured_change(reply, before, after)
+        return _flag_a_shallow_cut(reply, feature_params, input_data)
 
     @mcp.tool()
     async def add_fillet(input_data: AddFilletInput) -> dict[str, Any]:
@@ -1904,35 +2279,45 @@ async def register_modeling_tools(
         Ask the user before you call it: deleting a sketch also deletes every feature
         built from it (a cut, a boss), and deleting a feature deletes everything that
         depends on it. Use `suppress_feature` instead when you might want it back. Find
-        names and dependents with `list_features`. Needs: an open part or assembly.
-        Changes: removes the feature and its dependents (`undo` can restore them).
-        Returns: `data` with `deleted`, `removed_features` (every feature that went,
-        dependents included), `features_before` and `features_after`; the message names
-        the dependents, and a `warning` says so whenever more than the named feature
-        went: tell the user.
+        names and dependents with `list_features`. A feature's own sketch stays unless
+        `delete_absorbed`. Needs: an open part or assembly. Changes: removes the
+        feature and its dependents (`undo` can restore them). Returns: `data` with
+        `deleted`, `removed_features` (every feature that went, dependents included),
+        `absorbed_sketches_left` (its sketches still in the tree), `features_before`
+        and `features_after`; the message names the dependents, and a `warning` says
+        so whenever more than the named feature went: tell the user.
 
         Args:
-            input_data: The feature. `name` (e.g. "Fillet1") is required.
+            input_data: The feature. `name` (e.g. "Fillet1") is required;
+                `delete_absorbed` is off.
 
         Returns:
             dict[str, Any]: What was deleted.
         """
         input_data = normalize_input(input_data, DeleteFeatureInput)
-        result = await adapter.delete_feature(input_data.name)
+        result = await adapter.delete_feature(
+            input_data.name, input_data.delete_absorbed
+        )
         require_success(result, context="Failed to delete feature")
         data = result.data if isinstance(result.data, dict) else {}
         removed = data.get("removed_features") or [input_data.name]
-        dependents = [n for n in removed if n != input_data.name.split("@", 1)[0]]
+        absorbed = set(data.get("absorbed_sketches") or [])
+        own = input_data.name.split("@", 1)[0]
+        dependents = [n for n in removed if n != own and n not in absorbed]
+        left = data.get("absorbed_sketches_left") or []
+        message = f"Deleted {input_data.name}"
+        if dependents:
+            message += f" and its dependents: {', '.join(dependents)}"
+        if absorbed and not left:
+            message += f"; its sketch {', '.join(sorted(absorbed))} went with it"
+        if left:
+            message += (
+                f"; its sketch {', '.join(left)} is still in the tree "
+                "(delete_absorbed removes it too)"
+            )
         reply: dict[str, Any] = {
             "status": "success",
-            "message": (
-                f"Deleted {input_data.name}"
-                + (
-                    f" and its dependents: {', '.join(dependents)}"
-                    if dependents
-                    else ""
-                )
-            ),
+            "message": message,
             "data": data,
             "execution_time": result.execution_time,
         }
@@ -2052,8 +2437,9 @@ async def register_modeling_tools(
         Pick the face with one of `point` (a point on it, mm), `side` (top, bottom,
         front, back, right, left or +X..-Z; the furthest flat face that way) or `plane`
         (the face lying on that plane). `edge_type` narrows to linear or circular edges
-        (hole rims). Needs: an open part. Changes: the selection only. Returns: `data`
-        with `face`, `edges`, `selected_edges` and `selection_count`.
+        (hole rims); for a feature's edges or edges along an axis or inside a box, use
+        `select_edges`. Needs: an open part. Changes: the selection only. Returns:
+        `data` with `face`, `edges`, `selected_edges` and `selection_count`.
 
         Args:
             input_data: The face. Give exactly one of `point`, `side` or `plane`;
@@ -2079,6 +2465,149 @@ async def register_modeling_tools(
                 f"Selected {data.get('selected_edges', 0)} edge(s) "
                 f"({', '.join(kinds)}) on the face at "
                 f"{data.get('face', {}).get('center_mm')} mm"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def select_edges(input_data: SelectEdgesInput) -> dict[str, Any]:
+        """Select the edges of the active part that match rules, ready for `add_fillet` or `add_chamfer` with no edge names.
+
+        Take edges from one source: a `feature` (the edges of the faces it made, e.g.
+        a cut's rims), a face (`face_point`, `side` or `plane`), or, with none, the
+        whole part. Then keep those that pass every filter given: `edge_type`,
+        `parallel_to` (straight edges along x, y, z or a direction), `inside_box` (mm)
+        and `min_length`/`max_length` (mm). Needs: an open part. Changes: the
+        selection only, all or nothing. Returns: `data` with `source`, `matched` (how
+        many edges were left after each rule; when none match, the error names the
+        rule that removed them), `edges` (up to 50), `selected_edges` and
+        `selection_count`.
+
+        Args:
+            input_data: The rules. Nothing is required: at most one source, any
+                filters; `append` is off.
+
+        Returns:
+            dict[str, Any]: The edges selected.
+        """
+        input_data = normalize_input(input_data, SelectEdgesInput)
+        result = await adapter.select_edges(input_data.query(), input_data.append)
+        require_success(result)
+        data = result.data if isinstance(result.data, dict) else {}
+        return {
+            "status": "success",
+            "message": (
+                f"Selected {data.get('selected_edges', 0)} edge(s) of "
+                f"{data.get('source', 'the part')}"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def set_visibility(input_data: SetVisibilityInput) -> dict[str, Any]:
+        """Show or hide planes, axes, points, origins and sketches in the active document.
+
+        Use it to clear the view before a screenshot or a review, or to show a plane
+        again. By `names` it hides or shows those features (planes, axes, points,
+        coordinate systems, sketches) as the tree's Hide and Show do; a boss or a cut
+        can't be hidden this way (use `suppress_feature`). By `types` it switches
+        every entity of each type at once, as View > Hide/Show does, and the reply
+        gives each type's `before`, so you can put it back. Needs: an open document.
+        Changes: what is shown, not the geometry. Returns: `data` with `visible`,
+        `features` (name, type, visible) and `types` (each one's `before` and `after`).
+
+        Args:
+            input_data: What to show or hide. `visible` is required, with `names`,
+                `types` or both.
+
+        Returns:
+            dict[str, Any]: What was shown or hidden.
+        """
+        input_data = normalize_input(input_data, SetVisibilityInput)
+        result = await adapter.set_visibility(
+            input_data.names, list(input_data.types), input_data.visible
+        )
+        require_success(result, context="Failed to show or hide")
+        data = result.data if isinstance(result.data, dict) else {}
+        what = [*input_data.names, *(f"all {t}" for t in input_data.types)]
+        return {
+            "status": "success",
+            "message": (
+                f"{'Showed' if input_data.visible else 'Hid'} {', '.join(what)}"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def edit_feature(input_data: EditFeatureInput) -> dict[str, Any]:
+        """Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius.
+
+        Use it instead of deleting and re-creating a feature, which takes its
+        dependents (fillets, patterns) with it. Give `name` and only the changes:
+        `depth` (mm), `end_condition`, `reverse_direction` (extrudes and cuts),
+        `angle` (revolves) or `radius` (fillets). Other features' sizes change with
+        `set_dimension`. Needs: an open part. Changes: the feature, then a rebuild;
+        `undo` reverts it. Returns: `data` with `feature`, `type`, `before` and `after`
+        (read back from SolidWorks after the rebuild).
+
+        Args:
+            input_data: The change. `name` and at least one change are required.
+
+        Returns:
+            dict[str, Any]: The feature's values before and after.
+        """
+        input_data = normalize_input(input_data, EditFeatureInput)
+        changes = input_data.changes()
+        result = await adapter.edit_feature(input_data.name, changes)
+        require_success(result, context=f"Failed to edit {input_data.name}")
+        data = result.data if isinstance(result.data, dict) else {}
+        after = data.get("after") or {}
+
+        def _shown(value: Any) -> str:
+            return f"{value:g}" if isinstance(value, float) else str(value)
+
+        described = ", ".join(
+            f"{k} {_shown(after.get(k, v))}" for k, v in changes.items()
+        )
+        return {
+            "status": "success",
+            "message": f"Changed {input_data.name}: {described}",
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def set_rollback(
+        input_data: SetRollbackInput | None = None,
+    ) -> dict[str, Any]:
+        """Move the rollback bar before or after a feature, so new features go in there, or back to the end.
+
+        Use it to add a feature in the middle of the tree: roll back to just after the
+        feature it builds on, add it, then call this with no input to roll forward.
+        Features below the bar are not built while it is up. Needs: an open part or
+        assembly. Changes: the rollback bar's position. Returns: `data` with `position`
+        and `rolled_back` (the features now below the bar).
+
+        Args:
+            input_data: Where to put the bar: `before` or `after` a feature; neither
+                (or no input) moves it to the end.
+
+        Returns:
+            dict[str, Any]: Where the bar is now.
+        """
+        input_data = normalize_input(input_data, SetRollbackInput)
+        result = await adapter.set_rollback(input_data.before, input_data.after)
+        require_success(result, context="Failed to move the rollback bar")
+        data = result.data if isinstance(result.data, dict) else {}
+        rolled = data.get("rolled_back") or []
+        return {
+            "status": "success",
+            "message": (
+                f"Rollback bar at {data.get('position', 'the end')}"
+                + (f"; {len(rolled)} feature(s) below it" if rolled else "")
             ),
             "data": data,
             "execution_time": result.execution_time,
@@ -2305,35 +2834,50 @@ async def register_modeling_tools(
         """Repeat features of the active part around an axis, e.g. a ring of bosses or ribs.
 
         Create the axis first with `create_axis`. Bosses and cuts both work (a ring of
-        holes is a patterned cut). It fails when the volume doesn't change, which
-        means no instance landed on the part. Needs: an open part with the named
-        features and axis. Changes: adds a circular pattern feature. Returns:
-        `pattern` with `name`, `patterned`, `axis`, `count`, `angle`,
-        `equal_spacing`, and `volume_before`, `volume_after` and `volume_change`
+        holes is a patterned cut). Give `angle` to spread the instances evenly over
+        that many degrees (360 by default), or `step_angle` for the degrees between
+        neighbours, e.g. 3 instances 60 degrees apart; `reverse_direction` turns the
+        other way. It fails when the volume doesn't change, which means no instance
+        landed on the part. Needs: an open part with the named features and axis.
+        Changes: adds a circular pattern feature. Returns: `pattern` with `name`,
+        `patterned`, `axis`, `count`, `step_angle`, `total_angle`,
+        `reverse_direction`, and `volume_before`, `volume_after` and `volume_change`
         (mm³, negative for cuts).
 
         Args:
             input_data: The pattern. `features` (at least one), `axis` and `count`
-                (2 or more, the original included) are required; `angle` (360) and
-                `equal_spacing` (on) have defaults.
+                (2 or more, the original included) are required; then `angle` or
+                `step_angle`, and `reverse_direction` (off).
 
         Returns:
             dict[str, Any]: The pattern created.
         """
         input_data = normalize_input(input_data, PatternCircularInput)
+        spacing = input_data.spacing()
         result = await adapter.pattern_circular(
             input_data.features,
             input_data.axis,
             input_data.count,
-            input_data.angle,
-            input_data.equal_spacing,
+            spacing["angle"],
+            spacing["equal_spacing"],
+            input_data.reverse_direction,
         )
         require_success(result, context="Failed to pattern feature")
         data = result.data if isinstance(result.data, dict) else {}
+        # The adapter's angle/equal_spacing are SolidWorks' two readings of one
+        # number; the reply gives both angles plainly instead.
+        for key in ("angle", "equal_spacing"):
+            data.pop(key, None)
+        data["step_angle"] = round(spacing["step_angle"], 9)
+        data["total_angle"] = round(spacing["total_angle"], 9)
+        data.setdefault("reverse_direction", input_data.reverse_direction)
         return {
             "status": "success",
-            "message": f"Patterned {', '.join(input_data.features)} "
-            f"around {input_data.axis} ({input_data.count} instances)",
+            "message": (
+                f"Patterned {', '.join(input_data.features)} around "
+                f"{input_data.axis} ({input_data.count} instances, "
+                f"{data['step_angle']:g} degrees apart)"
+            ),
             "pattern": data,
             "execution_time": result.execution_time,
         }

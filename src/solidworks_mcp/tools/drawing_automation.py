@@ -265,7 +265,7 @@ async def register_drawing_automation_tools(
         int: Number of tools registered.
     """
 
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
 
     def _supports(method: str) -> None:
         require_capability(

@@ -222,14 +222,8 @@ Place a model's three standard views (front, top and side) on the active drawing
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `template` | `str?` | — | `None` | Drawing template file path |
-| `model_file` | `str?` | — | `None` | Model file to create drawing from |
-| `sheet_size` | `str` | — | `A3` | Sheet size |
-| `title` | `str` | — | `` | Drawing title |
-| `output_path` | `str?` | — | `None` | Output drawing path |
-| `sheet_format` | `str?` | — | `None` | Sheet format |
-| `scale` | `str` | — | `1:1` | Drawing scale |
-| `auto_populate_views` | `bool` | — | `False` | Automatically populate standard views |
+| `model_file` | `str?` | — | `None` | Model file (.sldprt or .sldasm) to draw |
+| `projection` | `Literal['third_angle', 'first_angle']` | — | `third_angle` | Projection the views are laid out in |
 
 **Sample call:**
 
@@ -251,7 +245,7 @@ Place one named view of a part or assembly on the active drawing sheet; the same
 |-----------|------|----------|---------|-------------|
 | `drawing_path` | `str?` | — | `None` | Path to drawing file |
 | `view_name` | `str?` | — | `None` | Name of the drawing view |
-| `operation` | `str` | — | `add` | Operation to perform (create, update, delete) |
+| `operation` | `str` | — | `add` | Only "add" is supported; any other value is refused |
 | `model_file` | `str?` | — | `None` | Model file path |
 | `view_type` | `str?` | — | `None` | Type of view |
 | `parent_view` | `str?` | — | `None` | Parent view alias |
@@ -315,38 +309,11 @@ Fill in the active drawing's title-block fields (title, drawn by, drawing number
 
 ---
 
-### `auto_center_marks`
-
-Insert centre marks on the holes, slots and (optionally) fillets of one drawing view.
-
-**Prerequisite:** Active drawing containing the named view
-
-**Parameters:**
-
-| Parameter | Type | Required | Default | Description |
-|-----------|------|----------|---------|-------------|
-| `view_name` | `str` | ✅ | `` | Name of a view on the active drawing, e.g. 'Drawing View1' |
-| `mark_holes` | `bool` | — | `true` | Mark holes / bores |
-| `mark_fillets` | `bool` | — | `false` | Mark fillets |
-| `mark_slots` | `bool` | — | `true` | Mark slots |
-
-**Sample call:**
-
-```json
-{
-  "view_name": "Drawing View1"
-}
-```
-
----
-
 ### `list_drawing_views`
 
 List the views on the active drawing, by name.
 
-**Prerequisite:** Active drawing
-
-**Parameters:** none
+**Prerequisite:** SolidWorks running
 
 **Sample call:**
 
@@ -354,14 +321,28 @@ List the views on the active drawing, by name.
 {}
 ```
 
-**Sample response:**
+---
+
+### `auto_center_marks`
+
+Insert centre marks on the holes, slots and (optionally) fillets of one drawing view.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `view_name` | `str` | ✅ | `` | Name of a view on the active drawing, e.g. 'Drawing View1' |
+| `mark_holes` | `bool` | — | `True` | Mark holes / bores |
+| `mark_fillets` | `bool` | — | `False` | Mark fillets |
+| `mark_slots` | `bool` | — | `True` | Mark slots |
+
+**Sample call:**
 
 ```json
 {
-  "status": "success",
-  "message": "3 view(s): Drawing View1, Drawing View2, Drawing View3",
-  "views": ["Drawing View1", "Drawing View2", "Drawing View3"],
-  "count": 3
+  "view_name": "MCP_Demo_Part"
 }
 ```
 

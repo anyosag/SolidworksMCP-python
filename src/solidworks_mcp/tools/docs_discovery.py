@@ -1193,7 +1193,7 @@ async def register_docs_discovery_tools(
     Returns:
         int: The number of tools registered.
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
 
     @mcp.tool()
     async def discover_solidworks_docs(

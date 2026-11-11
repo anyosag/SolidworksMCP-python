@@ -293,6 +293,73 @@ async def test_com_calls_stay_on_the_connect_thread(connected_adapter) -> None:
     assert still_works.is_success, still_works.error
 
 
+async def test_reconnects_after_the_connected_solidworks_exits(
+    connected_adapter,
+) -> None:
+    """The first call after SolidWorks restarts reconnects; the next one works.
+
+    Simulated without closing SolidWorks: the adapter is told it connected to
+    another process, so the running SolidWorks looks like a restarted one.
+    The reconnect goes through ``GetActiveObject``, which never starts
+    SolidWorks, and sets the session up again as ``connect`` does.
+    """
+    adapter = connected_adapter
+    real_pid = adapter._sw_process_id
+    assert real_pid, "connect did not record the SolidWorks process"
+    adapter._sw_process_id = real_pid + 4  # Windows process ids are multiples of 4
+
+    first = await adapter.list_open_documents()
+    evidence("first call after the simulated restart", first)
+    assert first.is_error
+    assert "has reconnected to the SolidWorks running now" in first.error
+    assert adapter._sw_process_id == real_pid
+
+    second = await adapter.list_open_documents()
+    evidence("the next call", second)
+    assert second.is_success, second.error
+
+
+async def test_a_document_another_client_activated_is_left_alone(
+    connected_adapter, scratch
+) -> None:
+    """A second client's new part becomes active; this session won't touch it.
+
+    Two adapters on one SolidWorks, like two MCP clients. Once the other one
+    creates a part, this session's next modelling call is refused until it
+    activates its own part again, and then works on that part.
+    """
+    from solidworks_mcp.adapters.pywin32_adapter import PyWin32Adapter
+
+    adapter = connected_adapter
+    created = await adapter.create_part()
+    assert created.is_success, created.error
+    ours = adapter._get_attr_or_call(adapter.currentModel, "GetTitle")
+
+    other = PyWin32Adapter({})
+    await other.connect()
+    try:
+        theirs = await other.create_part()
+        assert theirs.is_success, theirs.error
+        their_title = other._get_attr_or_call(other.currentModel, "GetTitle")
+    finally:
+        await other.disconnect()
+
+    refused = await adapter.create_sketch("Front")
+    evidence("create_sketch after the other client's create_part", refused)
+    assert refused.is_error
+    assert "active document changed between calls" in refused.error
+    assert f"working on '{ours}'" in refused.error
+
+    activated = await adapter.activate_document(ours)
+    assert activated.is_success, activated.error
+    sketched = await adapter.create_sketch("Front")
+    evidence("create_sketch after activate_document", sketched)
+    assert sketched.is_success, sketched.error
+    assert adapter._get_attr_or_call(adapter.currentModel, "GetTitle") == ours
+    assert ours != their_title
+    await adapter.exit_sketch()
+
+
 # ---- add_sketch_constraint live regression ----
 
 
@@ -2090,6 +2157,7 @@ def _ujoint_assembly_path() -> str:
 
 async def test_list_features_assembly_resolves_real_components_and_subassembly(
     connected_adapter,
+    scratch,
 ) -> None:
     """End-to-end: ``list_features`` on a real, multi-level assembly
     resolves every component's features, including one level of
@@ -2126,88 +2194,84 @@ async def test_list_features_assembly_resolves_real_components_and_subassembly(
 
     adapter = connected_adapter
 
-    # A prior run may have left the sample open; start clean so
-    # open_model definitely produces a fresh ActiveDoc.
-    adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    # Close only what this test opens: a sample already open stays open.
+    scratch.opened_files.append(assembly_path)
 
-    try:
-        result = await adapter.open_model(assembly_path)
-        assert result.is_success, f"open_model failed: {result.error}"
+    result = await adapter.open_model(assembly_path)
+    assert result.is_success, f"open_model failed: {result.error}"
 
-        feat_result = await adapter.list_features(
-            include_suppressed=False, max_assembly_depth=2
-        )
-        assert feat_result.is_success, f"list_features failed: {feat_result.error}"
+    feat_result = await adapter.list_features(
+        include_suppressed=False, max_assembly_depth=2
+    )
+    assert feat_result.is_success, f"list_features failed: {feat_result.error}"
 
-        data = feat_result.data
-        assert isinstance(data, list), (
-            "list_features must stay a flat list even for an Assembly - "
-            "see design.md's rejected nested-response alternative"
-        )
+    data = feat_result.data
+    assert isinstance(data, list), (
+        "list_features must stay a flat list even for an Assembly - "
+        "see design.md's rejected nested-response alternative"
+    )
 
-        own_features = [r for r in data if r["component"] is None]
-        assert own_features, "assembly's own top-level features must be present"
+    own_features = [r for r in data if r["component"] is None]
+    assert own_features, "assembly's own top-level features must be present"
 
-        # Top-level components in the shipped U-Joint sample: five parts
-        # plus the "crank sub" sub-assembly.
-        top_level = {
-            "bracket-1",
-            "Yoke_male-1",
-            "Yoke_female-1",
-            "spider-1",
-            "pin-1",
-            "pin-2",
-            "pin-3",
-            "crank sub-1",
-        }
-        components_seen = {r["component"] for r in data if r["component"]}
-        missing = top_level - components_seen
-        assert not missing, f"expected top-level components missing: {missing}"
+    # Top-level components in the shipped U-Joint sample: five parts
+    # plus the "crank sub" sub-assembly.
+    top_level = {
+        "bracket-1",
+        "Yoke_male-1",
+        "Yoke_female-1",
+        "spider-1",
+        "pin-1",
+        "pin-2",
+        "pin-3",
+        "crank sub-1",
+    }
+    components_seen = {r["component"] for r in data if r["component"]}
+    missing = top_level - components_seen
+    assert not missing, f"expected top-level components missing: {missing}"
 
-        # Sub-assembly recursion (max_assembly_depth=2, the default):
-        # crank sub-1's own three part components must be resolved too,
-        # not left as a single bare Component marker.
-        sub_assembly_parts = {"crank-arm-1", "crank-knob-1", "crank-shaft-1"}
-        missing_nested = sub_assembly_parts - components_seen
-        assert not missing_nested, (
-            f"sub-assembly recursion did not surface nested parts: {missing_nested}"
-        )
+    # Sub-assembly recursion (max_assembly_depth=2, the default):
+    # crank sub-1's own three part components must be resolved too,
+    # not left as a single bare Component marker.
+    sub_assembly_parts = {"crank-arm-1", "crank-knob-1", "crank-shaft-1"}
+    missing_nested = sub_assembly_parts - components_seen
+    assert not missing_nested, (
+        f"sub-assembly recursion did not surface nested parts: {missing_nested}"
+    )
 
-        # The whole point of bug #2 above: nothing should come back
-        # UnresolvedComponent on a real, fully-resolvable assembly.
-        unresolved = [r for r in data if r["type"] == "UnresolvedComponent"]
-        assert not unresolved, f"unresolved components: {unresolved}"
+    # The whole point of bug #2 above: nothing should come back
+    # UnresolvedComponent on a real, fully-resolvable assembly.
+    unresolved = [r for r in data if r["type"] == "UnresolvedComponent"]
+    assert not unresolved, f"unresolved components: {unresolved}"
 
-        # component_parent must link crank sub-1's children back to it.
-        crank_children = [r for r in data if r["component"] in sub_assembly_parts]
-        assert crank_children, "expected features tagged to crank sub-1's children"
-        assert all(r["component_parent"] == "crank sub-1" for r in crank_children), (
-            f"crank sub-1 children missing correct component_parent: "
-            f"{crank_children[:3]}"
-        )
+    # component_parent must link crank sub-1's children back to it.
+    crank_children = [r for r in data if r["component"] in sub_assembly_parts]
+    assert crank_children, "expected features tagged to crank sub-1's children"
+    assert all(r["component_parent"] == "crank sub-1" for r in crank_children), (
+        f"crank sub-1 children missing correct component_parent: {crank_children[:3]}"
+    )
 
-        # build_component_tree must nest those children under crank
-        # sub-1's own node, not flatten them alongside its top-level
-        # siblings.
-        from solidworks_mcp.utils.feature_tree_classifier import build_component_tree
+    # build_component_tree must nest those children under crank
+    # sub-1's own node, not flatten them alongside its top-level
+    # siblings.
+    from solidworks_mcp.utils.feature_tree_classifier import build_component_tree
 
-        tree = build_component_tree(data)
-        assert "crank sub-1" in tree["components"], sorted(tree["components"])
-        nested = tree["components"]["crank sub-1"]["components"]
-        assert sub_assembly_parts <= set(nested), (
-            f"expected {sub_assembly_parts} nested under crank sub-1, "
-            f"got {sorted(nested)}"
-        )
-        assert not (sub_assembly_parts & set(tree["components"])), (
-            "sub-assembly parts leaked into the top-level tree instead of "
-            "nesting under crank sub-1"
-        )
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    tree = build_component_tree(data)
+    assert "crank sub-1" in tree["components"], sorted(tree["components"])
+    nested = tree["components"]["crank sub-1"]["components"]
+    assert sub_assembly_parts <= set(nested), (
+        f"expected {sub_assembly_parts} nested under crank sub-1, got {sorted(nested)}"
+    )
+    assert not (sub_assembly_parts & set(tree["components"])), (
+        "sub-assembly parts leaked into the top-level tree instead of "
+        "nesting under crank sub-1"
+    )
 
 
 @pytest.mark.asyncio
-async def test_assembly_insert_list_and_mate_change_real_geometry(connected_adapter):
+async def test_assembly_insert_list_and_mate_change_real_geometry(
+    connected_adapter, scratch
+):
     """Insert two components, list them, and mate them - verified by geometry.
 
     A tool returning ``status: "success"`` proves nothing here: AddComponent5
@@ -2228,63 +2292,62 @@ async def test_assembly_insert_list_and_mate_change_real_geometry(connected_adap
 
     adapter = connected_adapter
     part_path = Path(tempfile.mkdtemp(prefix="swmcp_asm_")) / "block.SLDPRT"
+    scratch.written_files.append(str(part_path))
 
-    try:
-        # 80 x 40 x 10 mm = 32000 mm^3
-        await adapter.create_part()
-        await adapter.create_sketch("Top")
-        await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
-        await adapter.exit_sketch()
-        await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
+    # 80 x 40 x 10 mm = 32000 mm^3
+    await adapter.create_part()
+    await adapter.create_sketch("Top")
+    await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
+    await adapter.exit_sketch()
+    await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
 
-        part_props = await adapter.get_mass_properties()
-        assert part_props.is_success, part_props.error
-        part_volume = part_props.data.volume
-        assert part_volume == pytest.approx(32000.0, rel=1e-6), part_volume
+    part_props = await adapter.get_mass_properties()
+    assert part_props.is_success, part_props.error
+    part_volume = part_props.data.volume
+    assert part_volume == pytest.approx(32000.0, rel=1e-6), part_volume
 
-        saved = await adapter.save_file(str(part_path))
-        assert saved.is_success, saved.error
-        assert part_path.exists()
+    saved = await adapter.save_file(str(part_path))
+    assert saved.is_success, saved.error
+    assert part_path.exists()
 
-        created = await adapter.create_assembly()
-        assert created.is_success, created.error
+    created = await adapter.create_assembly()
+    assert created.is_success, created.error
 
-        first = await adapter.insert_component(str(part_path), 0.0, 0.0, 0.0)
-        assert first.is_success, first.error
-        second = await adapter.insert_component(str(part_path), 0.1, 0.0, 0.06)
-        assert second.is_success, second.error
+    first = await adapter.insert_component(str(part_path), 0.0, 0.0, 0.0)
+    assert first.is_success, first.error
+    second = await adapter.insert_component(str(part_path), 0.1, 0.0, 0.06)
+    assert second.is_success, second.error
 
-        listed = await adapter.list_components()
-        assert listed.is_success, listed.error
-        assert len(listed.data) == 2, listed.data
+    listed = await adapter.list_components()
+    assert listed.is_success, listed.error
+    assert len(listed.data) == 2, listed.data
 
-        asm_props = await adapter.get_mass_properties()
-        assert asm_props.is_success, asm_props.error
-        assert asm_props.data.volume == pytest.approx(2 * part_volume, rel=1e-6), (
-            f"assembly volume {asm_props.data.volume} is not twice the part "
-            f"volume {part_volume} - an insert reported success but placed "
-            f"nothing"
-        )
+    asm_props = await adapter.get_mass_properties()
+    assert asm_props.is_success, asm_props.error
+    assert asm_props.data.volume == pytest.approx(2 * part_volume, rel=1e-6), (
+        f"assembly volume {asm_props.data.volume} is not twice the part "
+        f"volume {part_volume} - an insert reported success but placed "
+        f"nothing"
+    )
 
-        mated = await adapter.add_mate(listed.data[0], listed.data[1])
-        assert mated.is_success, mated.error
-        assert mated.data["geometry_moved"] is True, (
-            f"add_mate reported success but no component transform changed: "
-            f"{mated.data}"
-        )
-        assert mated.data["moved_components"], mated.data
+    mated = await adapter.add_mate(listed.data[0], listed.data[1])
+    assert mated.is_success, mated.error
+    assert mated.data["geometry_moved"] is True, (
+        f"add_mate reported success but no component transform changed: {mated.data}"
+    )
+    assert mated.data["moved_components"], mated.data
 
-        after = await adapter.get_mass_properties()
-        assert after.is_success, after.error
-        assert after.data.volume == pytest.approx(2 * part_volume, rel=1e-6), (
-            "the mate changed the assembly's volume, so it moved more than position"
-        )
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    after = await adapter.get_mass_properties()
+    assert after.is_success, after.error
+    assert after.data.volume == pytest.approx(2 * part_volume, rel=1e-6), (
+        "the mate changed the assembly's volume, so it moved more than position"
+    )
 
 
 @pytest.mark.asyncio
-async def test_drawing_views_and_notes_produce_real_artifacts(connected_adapter):
+async def test_drawing_views_and_notes_produce_real_artifacts(
+    connected_adapter, scratch
+):
     """Place views and a note on a drawing - verified by what is on the sheet.
 
     ``CreateDrawViewFromModelView3`` returns ``None`` for a model SolidWorks
@@ -2299,75 +2362,71 @@ async def test_drawing_views_and_notes_produce_real_artifacts(connected_adapter)
 
     adapter = connected_adapter
     part_path = Path(tempfile.mkdtemp(prefix="swmcp_dwg_")) / "plate.SLDPRT"
+    scratch.written_files.append(str(part_path))
 
-    try:
-        await adapter.create_part()
-        await adapter.create_sketch("Top")
-        await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
-        await adapter.exit_sketch()
-        await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
-        saved = await adapter.save_file(str(part_path))
-        assert saved.is_success, saved.error
-        assert part_path.exists()
+    await adapter.create_part()
+    await adapter.create_sketch("Top")
+    await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
+    await adapter.exit_sketch()
+    await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
+    saved = await adapter.save_file(str(part_path))
+    assert saved.is_success, saved.error
+    assert part_path.exists()
 
-        # create_drawing reads template slot 10; slot 1 comes back empty on
-        # SW 2025 and used to leave NewDocument with an empty path.
-        created = await adapter.create_drawing()
-        assert created.is_success, created.error
+    # create_drawing reads template slot 10; slot 1 comes back empty on
+    # SW 2025 and used to leave NewDocument with an empty path.
+    created = await adapter.create_drawing()
+    assert created.is_success, created.error
 
-        empty = await adapter.list_drawing_views()
-        assert empty.is_success, empty.error
-        assert empty.data == [], empty.data
+    empty = await adapter.list_drawing_views()
+    assert empty.is_success, empty.error
+    assert empty.data == [], empty.data
 
-        placed = await adapter.create_drawing_view(
-            {
-                "model_path": str(part_path),
-                "orientation": "front",
-                "position_x": 100.0,
-                "position_y": 150.0,
-            }
-        )
-        assert placed.is_success, placed.error
-        assert placed.data["views_before"] == 0
-        assert placed.data["views_after"] == 1
-        assert placed.data["name"], placed.data
+    placed = await adapter.create_drawing_view(
+        {
+            "model_path": str(part_path),
+            "orientation": "front",
+            "position_x": 100.0,
+            "position_y": 150.0,
+        }
+    )
+    assert placed.is_success, placed.error
+    assert placed.data["views_before"] == 0
+    assert placed.data["views_after"] == 1
+    assert placed.data["name"], placed.data
 
-        one = await adapter.list_drawing_views()
-        assert one.is_success, one.error
-        assert len(one.data) == 1, one.data
-        assert one.data[0] == placed.data["name"]
+    one = await adapter.list_drawing_views()
+    assert one.is_success, one.error
+    assert len(one.data) == 1, one.data
+    assert one.data[0] == placed.data["name"]
 
-        note = await adapter.add_note(
-            {
-                "text": "MATERIAL: AISI 1018",
-                "position_x": 200.0,
-                "position_y": 50.0,
-                "font_size": 12.0,
-            }
-        )
-        assert note.is_success, note.error
-        assert note.data["positioned"] is True, (
-            f"the note was created but SetPosition did not place it: {note.data}"
-        )
+    note = await adapter.add_note(
+        {
+            "text": "MATERIAL: AISI 1018",
+            "position_x": 200.0,
+            "position_y": 50.0,
+            "font_size": 12.0,
+        }
+    )
+    assert note.is_success, note.error
+    assert note.data["positioned"] is True, (
+        f"the note was created but SetPosition did not place it: {note.data}"
+    )
 
-        # Standard views, on a second sheet so the count is unambiguous.
-        second = await adapter.create_drawing()
-        assert second.is_success, second.error
+    # Standard views, on a second sheet so the count is unambiguous.
+    second = await adapter.create_drawing()
+    assert second.is_success, second.error
 
-        standard = await adapter.create_technical_drawing(
-            {"model_file": str(part_path)}
-        )
-        assert standard.is_success, standard.error
-        assert len(standard.data["views"]) == 3, standard.data
+    standard = await adapter.create_technical_drawing({"model_file": str(part_path)})
+    assert standard.is_success, standard.error
+    assert len(standard.data["views"]) == 3, standard.data
 
-        three = await adapter.list_drawing_views()
-        assert three.is_success, three.error
-        assert len(three.data) == 3, three.data
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    three = await adapter.list_drawing_views()
+    assert three.is_success, three.error
+    assert len(three.data) == 3, three.data
 
 
-async def test_check_interference_answers_both_ways(connected_adapter):
+async def test_check_interference_answers_both_ways(connected_adapter, scratch):
     """Interference detection must discriminate, not just return a number.
 
     A method that always reports "no interference" passes any test that only
@@ -2383,6 +2442,7 @@ async def test_check_interference_answers_both_ways(connected_adapter):
 
     adapter = connected_adapter
     part_path = Path(tempfile.mkdtemp(prefix="swmcp_interf_")) / "block.SLDPRT"
+    scratch.written_files.append(str(part_path))
 
     async def build_assembly(offset_mm):
         created = await adapter.create_assembly()
@@ -2396,53 +2456,50 @@ async def test_check_interference_answers_both_ways(connected_adapter):
         assert len(listed.data) == 2, listed.data
         return listed.data
 
-    try:
-        # 80 x 40 x 10 mm = 32000 mm^3
-        await adapter.create_part()
-        await adapter.create_sketch("Top")
-        await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
-        await adapter.exit_sketch()
-        await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
-        props = await adapter.get_mass_properties()
-        assert props.is_success, props.error
-        part_volume = props.data.volume
-        # Measured rather than hardcoded: the assertion that matters is that
-        # the reported overlap equals this part's volume, whatever it is.
-        assert part_volume > 0, part_volume
-        saved = await adapter.save_file(str(part_path))
-        assert saved.is_success, saved.error
+    # 80 x 40 x 10 mm = 32000 mm^3
+    await adapter.create_part()
+    await adapter.create_sketch("Top")
+    await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
+    await adapter.exit_sketch()
+    await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
+    props = await adapter.get_mass_properties()
+    assert props.is_success, props.error
+    part_volume = props.data.volume
+    # Measured rather than hardcoded: the assertion that matters is that
+    # the reported overlap equals this part's volume, whatever it is.
+    assert part_volume > 0, part_volume
+    saved = await adapter.save_file(str(part_path))
+    assert saved.is_success, saved.error
 
-        # A part document is not an assembly: refuse rather than answer.
-        refused = await adapter.check_interference({})
-        assert not refused.is_success
-        assert "assembly" in (refused.error or "").lower()
+    # A part document is not an assembly: refuse rather than answer.
+    refused = await adapter.check_interference({})
+    assert not refused.is_success
+    assert "assembly" in (refused.error or "").lower()
 
-        # ---- coincident: must interfere ----
-        names = await build_assembly(0.0)
-        overlapping = await adapter.check_interference({"coincident": False})
-        assert overlapping.is_success, overlapping.error
-        assert overlapping.data["interference_found"] is True, overlapping.data
-        assert overlapping.data["interference_count"] >= 1, overlapping.data
+    # ---- coincident: must interfere ----
+    names = await build_assembly(0.0)
+    overlapping = await adapter.check_interference({"coincident": False})
+    assert overlapping.is_success, overlapping.error
+    assert overlapping.data["interference_found"] is True, overlapping.data
+    assert overlapping.data["interference_count"] >= 1, overlapping.data
 
-        detail = overlapping.data["interferences"][0]
-        assert set(detail["components"]) == set(names), detail
-        assert detail["volume_mm3"] == pytest.approx(part_volume, rel=1e-6), (
-            f"two exactly coincident blocks must overlap by the whole part "
-            f"volume; got {detail['volume_mm3']} against {part_volume}"
-        )
+    detail = overlapping.data["interferences"][0]
+    assert set(detail["components"]) == set(names), detail
+    assert detail["volume_mm3"] == pytest.approx(part_volume, rel=1e-6), (
+        f"two exactly coincident blocks must overlap by the whole part "
+        f"volume; got {detail['volume_mm3']} against {part_volume}"
+    )
 
-        # ---- 100 mm apart: must not interfere ----
-        await build_assembly(100.0)
-        separated = await adapter.check_interference({"coincident": False})
-        assert separated.is_success, separated.error
-        assert separated.data["interference_found"] is False, separated.data
-        assert separated.data["interference_count"] == 0, separated.data
-        assert separated.data["interferences"] == [], separated.data
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    # ---- 100 mm apart: must not interfere ----
+    await build_assembly(100.0)
+    separated = await adapter.check_interference({"coincident": False})
+    assert separated.is_success, separated.error
+    assert separated.data["interference_found"] is False, separated.data
+    assert separated.data["interference_count"] == 0, separated.data
+    assert separated.data["interferences"] == [], separated.data
 
 
-async def test_feature_editing_changes_the_model(connected_adapter):
+async def test_feature_editing_changes_the_model(connected_adapter, scratch):
     """Suppress, unsuppress, delete and undo, verified by volume and count.
 
     Each of these COM calls reports success without necessarily doing
@@ -2464,87 +2521,84 @@ async def test_feature_editing_changes_the_model(connected_adapter):
         assert result.is_success, result.error
         return result.data.volume
 
-    try:
-        await adapter.create_part()
-        await adapter.create_sketch("Top")
-        await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
-        await adapter.exit_sketch()
-        await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
-        base_volume = await volume()
+    await adapter.create_part()
+    await adapter.create_sketch("Top")
+    await adapter.add_rectangle(-40.0, -20.0, 40.0, 20.0)
+    await adapter.exit_sketch()
+    await adapter.create_extrusion(ExtrusionParameters(depth=10.0))
+    base_volume = await volume()
 
-        # A second boss clear of the first, so it adds material.
-        await adapter.create_sketch("Front")
-        await adapter.add_rectangle(-10.0, 30.0, 10.0, 50.0)
-        await adapter.exit_sketch()
-        boss = await adapter.create_extrusion(ExtrusionParameters(depth=15.0))
-        assert boss.is_success, boss.error
+    # A second boss clear of the first, so it adds material.
+    await adapter.create_sketch("Front")
+    await adapter.add_rectangle(-10.0, 30.0, 10.0, 50.0)
+    await adapter.exit_sketch()
+    boss = await adapter.create_extrusion(ExtrusionParameters(depth=15.0))
+    assert boss.is_success, boss.error
 
-        with_boss = await volume()
-        assert with_boss > base_volume, (with_boss, base_volume)
+    with_boss = await volume()
+    assert with_boss > base_volume, (with_boss, base_volume)
 
-        listed = await adapter.list_features()
-        assert listed.is_success, listed.error
-        names = [
-            (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
-            for f in listed.data or []
-        ]
-        target = next((n for n in names if n and "Extrude" in n), None)
-        assert target, names
+    listed = await adapter.list_features()
+    assert listed.is_success, listed.error
+    names = [
+        (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
+        for f in listed.data or []
+    ]
+    target = next((n for n in names if n and "Extrude" in n), None)
+    assert target, names
 
-        # ---- suppress: state reads back AND geometry goes away ----
-        suppressed = await adapter.suppress_feature(target, True)
-        assert suppressed.is_success, suppressed.error
-        assert suppressed.data["suppressed"] is True, suppressed.data
-        assert await volume() < with_boss
+    # ---- suppress: state reads back AND geometry goes away ----
+    suppressed = await adapter.suppress_feature(target, True)
+    assert suppressed.is_success, suppressed.error
+    assert suppressed.data["suppressed"] is True, suppressed.data
+    assert await volume() < with_boss
 
-        # ---- unsuppress: geometry comes back ----
-        unsuppressed = await adapter.suppress_feature(target, False)
-        assert unsuppressed.is_success, unsuppressed.error
-        assert unsuppressed.data["suppressed"] is False, unsuppressed.data
-        assert await volume() == pytest.approx(with_boss, rel=1e-9)
+    # ---- unsuppress: geometry comes back ----
+    unsuppressed = await adapter.suppress_feature(target, False)
+    assert unsuppressed.is_success, unsuppressed.error
+    assert unsuppressed.data["suppressed"] is False, unsuppressed.data
+    assert await volume() == pytest.approx(with_boss, rel=1e-9)
 
-        # ---- delete: unresolvable by name, and the count drops ----
-        deleted = await adapter.delete_feature(target)
-        assert deleted.is_success, deleted.error
-        assert deleted.data["features_after"] < deleted.data["features_before"], (
-            deleted.data
-        )
+    # ---- delete: unresolvable by name, and the count drops ----
+    deleted = await adapter.delete_feature(target)
+    assert deleted.is_success, deleted.error
+    assert deleted.data["features_after"] < deleted.data["features_before"], (
+        deleted.data
+    )
 
-        after_delete = await adapter.list_features()
-        remaining = [
-            (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
-            for f in (after_delete.data or [])
-        ]
-        assert target not in remaining, remaining
+    after_delete = await adapter.list_features()
+    remaining = [
+        (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
+        for f in (after_delete.data or [])
+    ]
+    assert target not in remaining, remaining
 
-        # ---- undo: the feature comes back ----
-        undone = await adapter.undo(1)
-        assert undone.is_success, undone.error
-        assert undone.data["tree_changed"] is True, undone.data
+    # ---- undo: the feature comes back ----
+    undone = await adapter.undo(1)
+    assert undone.is_success, undone.error
+    assert undone.data["tree_changed"] is True, undone.data
 
-        restored = await adapter.list_features()
-        restored_names = [
-            (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
-            for f in (restored.data or [])
-        ]
-        assert target in restored_names, restored_names
+    restored = await adapter.list_features()
+    restored_names = [
+        (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
+        for f in (restored.data or [])
+    ]
+    assert target in restored_names, restored_names
 
-        # ---- a feature that does not exist is an error, not a no-op ----
-        missing = await adapter.delete_feature("NoSuchFeature")
-        assert not missing.is_success
+    # ---- a feature that does not exist is an error, not a no-op ----
+    missing = await adapter.delete_feature("NoSuchFeature")
+    assert not missing.is_success
 
-        # ---- nothing to undo must not be dressed up as success ----
-        await adapter.create_part()
-        nothing = await adapter.undo(1)
-        assert nothing.is_success, nothing.error
-        assert nothing.data["tree_changed"] is False, (
-            f"undo on a fresh document reported a tree change: {nothing.data}"
-        )
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    # ---- nothing to undo must not be dressed up as success ----
+    await adapter.create_part()
+    nothing = await adapter.undo(1)
+    assert nothing.is_success, nothing.error
+    assert nothing.data["tree_changed"] is False, (
+        f"undo on a fresh document reported a tree change: {nothing.data}"
+    )
 
 
-async def test_reference_plane_can_be_sketched_on(connected_adapter):
+async def test_reference_plane_can_be_sketched_on(connected_adapter, scratch):
     """A created plane must be usable by create_sketch, or it is worthless.
 
     This is the whole point of the capability: sketches could previously only
@@ -2557,122 +2611,115 @@ async def test_reference_plane_can_be_sketched_on(connected_adapter):
     from solidworks_mcp.adapters.base import ExtrusionParameters
 
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
+    await adapter.create_part()
 
-        plane = await adapter.create_reference_plane("Front Plane", offset=76.2)
-        assert plane.is_success, plane.error
-        name = plane.data["name"]
-        assert name, plane.data
-        assert plane.data["features_after"] > plane.data["features_before"], plane.data
+    plane = await adapter.create_reference_plane("Front Plane", offset=76.2)
+    assert plane.is_success, plane.error
+    name = plane.data["name"]
+    assert name, plane.data
+    assert plane.data["features_after"] > plane.data["features_before"], plane.data
 
-        # The name must be one create_sketch accepts.
-        sketch = await adapter.create_sketch(name)
-        assert sketch.is_success, (
-            f"create_sketch({name!r}) failed, so the plane cannot be used: "
-            f"{sketch.error}"
-        )
+    # The name must be one create_sketch accepts.
+    sketch = await adapter.create_sketch(name)
+    assert sketch.is_success, (
+        f"create_sketch({name!r}) failed, so the plane cannot be used: {sketch.error}"
+    )
 
-        await adapter.add_circle(0.0, 0.0, 20.0)
-        await adapter.exit_sketch()
-        extruded = await adapter.create_extrusion(ExtrusionParameters(depth=5.0))
-        assert extruded.is_success, extruded.error
+    await adapter.add_circle(0.0, 0.0, 20.0)
+    await adapter.exit_sketch()
+    extruded = await adapter.create_extrusion(ExtrusionParameters(depth=5.0))
+    assert extruded.is_success, extruded.error
 
-        props = await adapter.get_mass_properties()
-        assert props.is_success, props.error
-        assert props.data.volume == pytest.approx(math.pi * 20.0**2 * 5.0, rel=1e-6), (
-            f"geometry on the new plane measured {props.data.volume} mm3"
-        )
+    props = await adapter.get_mass_properties()
+    assert props.is_success, props.error
+    assert props.data.volume == pytest.approx(math.pi * 20.0**2 * 5.0, rel=1e-6), (
+        f"geometry on the new plane measured {props.data.volume} mm3"
+    )
 
-        # A plane coincident with its reference is refused, not silently made.
-        nothing = await adapter.create_reference_plane("Front Plane")
-        assert not nothing.is_success
+    # A plane coincident with its reference is refused, not silently made.
+    nothing = await adapter.create_reference_plane("Front Plane")
+    assert not nothing.is_success
 
-        # Angle is refused explicitly rather than reporting a plane that was
-        # never added - InsertRefPlane needs a second reference for that.
-        angled = await adapter.create_reference_plane("Right Plane", angle=30.0)
-        assert not angled.is_success
-        assert "angle" in (angled.error or "").lower()
+    # Angle is refused explicitly rather than reporting a plane that was
+    # never added - InsertRefPlane needs a second reference for that.
+    angled = await adapter.create_reference_plane("Right Plane", angle=30.0)
+    assert not angled.is_success
+    assert "angle" in (angled.error or "").lower()
 
-        # Issue #84: a negative offset must land on the opposite side of the
-        # reference, not collapse onto it. InsertRefPlane's Distance
-        # constraint takes a positive magnitude only - the side comes from
-        # OptionFlip - so a naive negative distance gets silently clamped to
-        # 0 by SolidWorks, producing a plane coincident with Front Plane
-        # instead of one 50mm on the far side. A plane *name* existing is not
-        # proof of *position* (InsertRefPlane still adds a tree entry even
-        # when clamped) - measured by loft volume instead, the same
-        # "trust geometry, not return codes" discipline as the rest of this
-        # file: two same-radius circles on planes at offset=+50 and
-        # offset=-50 are 100mm apart if both offsets are honored, or only
-        # 50mm apart if the negative one collapsed to 0.
-        pos_plane = await adapter.create_reference_plane("Front Plane", offset=50.0)
-        assert pos_plane.is_success, pos_plane.error
-        neg_plane = await adapter.create_reference_plane("Front Plane", offset=-50.0)
-        assert neg_plane.is_success, neg_plane.error
+    # Issue #84: a negative offset must land on the opposite side of the
+    # reference, not collapse onto it. InsertRefPlane's Distance
+    # constraint takes a positive magnitude only - the side comes from
+    # OptionFlip - so a naive negative distance gets silently clamped to
+    # 0 by SolidWorks, producing a plane coincident with Front Plane
+    # instead of one 50mm on the far side. A plane *name* existing is not
+    # proof of *position* (InsertRefPlane still adds a tree entry even
+    # when clamped) - measured by loft volume instead, the same
+    # "trust geometry, not return codes" discipline as the rest of this
+    # file: two same-radius circles on planes at offset=+50 and
+    # offset=-50 are 100mm apart if both offsets are honored, or only
+    # 50mm apart if the negative one collapsed to 0.
+    pos_plane = await adapter.create_reference_plane("Front Plane", offset=50.0)
+    assert pos_plane.is_success, pos_plane.error
+    neg_plane = await adapter.create_reference_plane("Front Plane", offset=-50.0)
+    assert neg_plane.is_success, neg_plane.error
 
-        profiles = []
-        for plane_name in (pos_plane.data["name"], neg_plane.data["name"]):
-            prof_sketch = await adapter.create_sketch(plane_name)
-            assert prof_sketch.is_success, prof_sketch.error
-            circle = await adapter.add_circle(0.0, 0.0, 15.0)
-            assert circle.is_success, circle.error
-            exited = await adapter.exit_sketch()
-            assert exited.is_success, exited.error
-            profiles.append(prof_sketch.data)
+    profiles = []
+    for plane_name in (pos_plane.data["name"], neg_plane.data["name"]):
+        prof_sketch = await adapter.create_sketch(plane_name)
+        assert prof_sketch.is_success, prof_sketch.error
+        circle = await adapter.add_circle(0.0, 0.0, 15.0)
+        assert circle.is_success, circle.error
+        exited = await adapter.exit_sketch()
+        assert exited.is_success, exited.error
+        profiles.append(prof_sketch.data)
 
-        loft = await adapter.create_loft(LoftParameters(profiles=profiles))
-        assert loft.is_success, loft.error
+    loft = await adapter.create_loft(LoftParameters(profiles=profiles))
+    assert loft.is_success, loft.error
 
-        loft_props = await adapter.get_mass_properties()
-        assert loft_props.is_success, loft_props.error
-        # A loft between two circles isn't necessarily a perfect right
-        # cylinder (plane-local coordinate systems can differ enough to
-        # taper it slightly), so this doesn't assert an exact predicted
-        # volume - it asserts the measured volume is unambiguously on the
-        # "100mm apart" side, not the "collapsed to 50mm apart" side. The
-        # two scenarios differ by 2x, so the midpoint is a wide, safe
-        # threshold either way:
-        #   collapsed (bug):  pi * 15^2 * 50  ~= 35343 mm3
-        #   correct (fixed):  pi * 15^2 * 100 ~= 70686 mm3
-        collapsed_volume = math.pi * 15.0**2 * 50.0
-        correct_volume = math.pi * 15.0**2 * 100.0
-        threshold = (collapsed_volume + correct_volume) / 2
-        assert loft_props.data.volume > threshold, (
-            f"loft between offset=+50 and offset=-50 measured "
-            f"{loft_props.data.volume} mm3, expected comfortably above "
-            f"{threshold:.0f} mm3 (the midpoint between a correct ~100mm "
-            f"separation and a buggy ~50mm one) - a volume at or below this "
-            f"means the negative offset collapsed onto Front Plane instead "
-            f"of landing on the far side (issue #84)"
-        )
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    loft_props = await adapter.get_mass_properties()
+    assert loft_props.is_success, loft_props.error
+    # A loft between two circles isn't necessarily a perfect right
+    # cylinder (plane-local coordinate systems can differ enough to
+    # taper it slightly), so this doesn't assert an exact predicted
+    # volume - it asserts the measured volume is unambiguously on the
+    # "100mm apart" side, not the "collapsed to 50mm apart" side. The
+    # two scenarios differ by 2x, so the midpoint is a wide, safe
+    # threshold either way:
+    #   collapsed (bug):  pi * 15^2 * 50  ~= 35343 mm3
+    #   correct (fixed):  pi * 15^2 * 100 ~= 70686 mm3
+    collapsed_volume = math.pi * 15.0**2 * 50.0
+    correct_volume = math.pi * 15.0**2 * 100.0
+    threshold = (collapsed_volume + correct_volume) / 2
+    assert loft_props.data.volume > threshold, (
+        f"loft between offset=+50 and offset=-50 measured "
+        f"{loft_props.data.volume} mm3, expected comfortably above "
+        f"{threshold:.0f} mm3 (the midpoint between a correct ~100mm "
+        f"separation and a buggy ~50mm one) - a volume at or below this "
+        f"means the negative offset collapsed onto Front Plane instead "
+        f"of landing on the far side (issue #84)"
+    )
 
 
 @pytest.mark.asyncio
-async def test_create_axis_adds_an_axis(connected_adapter):
+async def test_create_axis_adds_an_axis(connected_adapter, scratch):
     """InsertAxis2 returns only a boolean, so the tree is what is checked."""
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
+    await adapter.create_part()
 
-        for direction in ("x", "y", "z"):
-            result = await adapter.create_axis(direction)
-            assert result.is_success, f"{direction}: {result.error}"
-            assert result.data["features_after"] > result.data["features_before"], (
-                result.data
-            )
-            assert len(result.data["planes"]) == 2
+    for direction in ("x", "y", "z"):
+        result = await adapter.create_axis(direction)
+        assert result.is_success, f"{direction}: {result.error}"
+        assert result.data["features_after"] > result.data["features_before"], (
+            result.data
+        )
+        assert len(result.data["planes"]) == 2
 
-        unknown = await adapter.create_axis("diagonal")
-        assert not unknown.is_success
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    unknown = await adapter.create_axis("diagonal")
+    assert not unknown.is_success
 
 
 @pytest.mark.asyncio
-async def test_mirror_body_doubles_a_lofted_wing(connected_adapter):
+async def test_mirror_body_doubles_a_lofted_wing(connected_adapter, scratch):
     """Mirroring must be proven by volume, not by the returned feature.
 
     ``InsertMirrorFeature`` hands back a Feature object even when it mirrored
@@ -2684,91 +2731,78 @@ async def test_mirror_body_doubles_a_lofted_wing(connected_adapter):
     from solidworks_mcp.adapters.base import LoftParameters
 
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
+    await adapter.create_part()
 
-        profiles = []
-        for offset, radius in ((0.0, 40.0), (300.0, 20.0)):
-            plane = "Right Plane"
-            if offset:
-                made = await adapter.create_reference_plane(
-                    "Right Plane", offset=offset
-                )
-                assert made.is_success, made.error
-                plane = made.data["name"]
-            sketch = await adapter.create_sketch(plane)
-            assert sketch.is_success, sketch.error
-            await adapter.add_circle(0.0, 0.0, radius)
-            await adapter.exit_sketch()
-            profiles.append(sketch.data)
+    profiles = []
+    for offset, radius in ((0.0, 40.0), (300.0, 20.0)):
+        plane = "Right Plane"
+        if offset:
+            made = await adapter.create_reference_plane("Right Plane", offset=offset)
+            assert made.is_success, made.error
+            plane = made.data["name"]
+        sketch = await adapter.create_sketch(plane)
+        assert sketch.is_success, sketch.error
+        await adapter.add_circle(0.0, 0.0, radius)
+        await adapter.exit_sketch()
+        profiles.append(sketch.data)
 
-        loft = await adapter.create_loft(LoftParameters(profiles=profiles))
-        assert loft.is_success, loft.error
-        body = getattr(loft.data, "name", None) or "Loft1"
+    loft = await adapter.create_loft(LoftParameters(profiles=profiles))
+    assert loft.is_success, loft.error
+    body = getattr(loft.data, "name", None) or "Loft1"
 
-        one = await adapter.get_mass_properties()
-        assert one.is_success, one.error
-        assert one.data.volume > 0
+    one = await adapter.get_mass_properties()
+    assert one.is_success, one.error
+    assert one.data.volume > 0
 
-        mirrored = await adapter.mirror_feature([body], "Right Plane")
-        assert mirrored.is_success, mirrored.error
-        assert mirrored.data["volume_ratio"] == pytest.approx(2.0, rel=0.02), (
-            f"mirror did not double the solid: {mirrored.data}"
-        )
-        assert mirrored.data["mirror_bodies"] is True
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    mirrored = await adapter.mirror_feature([body], "Right Plane")
+    assert mirrored.is_success, mirrored.error
+    assert mirrored.data["volume_ratio"] == pytest.approx(2.0, rel=0.02), (
+        f"mirror did not double the solid: {mirrored.data}"
+    )
+    assert mirrored.data["mirror_bodies"] is True
 
 
 @pytest.mark.asyncio
-async def test_mirror_feature_when_the_sketch_is_on_the_plane(connected_adapter):
+async def test_mirror_feature_when_the_sketch_is_on_the_plane(
+    connected_adapter, scratch
+):
     """The feature-mirror path, on the geometry where SolidWorks allows it."""
     from solidworks_mcp.adapters.base import ExtrusionParameters
 
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
-        await adapter.create_sketch("Right Plane")
-        await adapter.add_rectangle(10.0, 0.0, 40.0, 30.0)
-        await adapter.exit_sketch()
-        boss = await adapter.create_extrusion(ExtrusionParameters(depth=20.0))
-        assert boss.is_success, boss.error
-        name = getattr(boss.data, "name", None) or "Boss-Extrude1"
+    await adapter.create_part()
+    await adapter.create_sketch("Right Plane")
+    await adapter.add_rectangle(10.0, 0.0, 40.0, 30.0)
+    await adapter.exit_sketch()
+    boss = await adapter.create_extrusion(ExtrusionParameters(depth=20.0))
+    assert boss.is_success, boss.error
+    name = getattr(boss.data, "name", None) or "Boss-Extrude1"
 
-        mirrored = await adapter.mirror_feature(
-            [name], "Right Plane", mirror_bodies=False
-        )
-        assert mirrored.is_success, mirrored.error
-        assert mirrored.data["volume_ratio"] == pytest.approx(2.0, rel=0.02), (
-            mirrored.data
-        )
-        assert mirrored.data["mirror_bodies"] is False
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    mirrored = await adapter.mirror_feature([name], "Right Plane", mirror_bodies=False)
+    assert mirrored.is_success, mirrored.error
+    assert mirrored.data["volume_ratio"] == pytest.approx(2.0, rel=0.02), mirrored.data
+    assert mirrored.data["mirror_bodies"] is False
 
 
 @pytest.mark.asyncio
-async def test_mirror_refuses_bad_input(connected_adapter):
+async def test_mirror_refuses_bad_input(connected_adapter, scratch):
     """Empty inputs and unknown sources are errors, not silent no-ops."""
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
+    await adapter.create_part()
 
-        no_sources = await adapter.mirror_feature([], "Right Plane")
-        assert not no_sources.is_success
+    no_sources = await adapter.mirror_feature([], "Right Plane")
+    assert not no_sources.is_success
 
-        no_plane = await adapter.mirror_feature(["Boss-Extrude1"], "")
-        assert not no_plane.is_success
+    no_plane = await adapter.mirror_feature(["Boss-Extrude1"], "")
+    assert not no_plane.is_success
 
-        unknown = await adapter.mirror_feature(["NoSuchBody"], "Right Plane")
-        assert not unknown.is_success
-        assert "NoSuchBody" in (unknown.error or "")
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    unknown = await adapter.mirror_feature(["NoSuchBody"], "Right Plane")
+    assert not unknown.is_success
+    assert "NoSuchBody" in (unknown.error or "")
 
 
 @pytest.mark.asyncio
-async def test_circular_pattern_builds_a_propeller(connected_adapter):
+async def test_circular_pattern_builds_a_propeller(connected_adapter, scratch):
     """A pattern must add instances, proven by volume arithmetic.
 
     ``FeatureCircularPattern5`` returns a Feature object whether or not it
@@ -2779,61 +2813,55 @@ async def test_circular_pattern_builds_a_propeller(connected_adapter):
     from solidworks_mcp.adapters.base import ExtrusionParameters
 
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
-        await adapter.create_sketch("Top")
-        await adapter.add_circle(0.0, 0.0, 25.0)
-        await adapter.exit_sketch()
-        await adapter.create_extrusion(ExtrusionParameters(depth=20.0))
-        hub = await adapter.get_mass_properties()
-        assert hub.is_success, hub.error
+    await adapter.create_part()
+    await adapter.create_sketch("Top")
+    await adapter.add_circle(0.0, 0.0, 25.0)
+    await adapter.exit_sketch()
+    await adapter.create_extrusion(ExtrusionParameters(depth=20.0))
+    hub = await adapter.get_mass_properties()
+    assert hub.is_success, hub.error
 
-        await adapter.create_sketch("Top")
-        await adapter.add_rectangle(20.0, -8.0, 120.0, 8.0)
-        await adapter.exit_sketch()
-        blade = await adapter.create_extrusion(ExtrusionParameters(depth=6.0))
-        assert blade.is_success, blade.error
-        blade_name = getattr(blade.data, "name", None) or "Boss-Extrude2"
+    await adapter.create_sketch("Top")
+    await adapter.add_rectangle(20.0, -8.0, 120.0, 8.0)
+    await adapter.exit_sketch()
+    blade = await adapter.create_extrusion(ExtrusionParameters(depth=6.0))
+    assert blade.is_success, blade.error
+    blade_name = getattr(blade.data, "name", None) or "Boss-Extrude2"
 
-        one = await adapter.get_mass_properties()
-        seed = one.data.volume - hub.data.volume
-        assert seed > 0, (one.data.volume, hub.data.volume)
+    one = await adapter.get_mass_properties()
+    seed = one.data.volume - hub.data.volume
+    assert seed > 0, (one.data.volume, hub.data.volume)
 
-        axis = await adapter.create_axis("y")
-        assert axis.is_success, axis.error
-        listed = await adapter.list_features()
-        names = [
-            (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
-            for f in (listed.data or [])
-        ]
-        axis_name = next((n for n in names if n and n.startswith("Axis")), "Axis1")
+    axis = await adapter.create_axis("y")
+    assert axis.is_success, axis.error
+    listed = await adapter.list_features()
+    names = [
+        (f.get("name") if isinstance(f, dict) else getattr(f, "name", None))
+        for f in (listed.data or [])
+    ]
+    axis_name = next((n for n in names if n and n.startswith("Axis")), "Axis1")
 
-        patterned = await adapter.pattern_circular([blade_name], axis_name, count=4)
-        assert patterned.is_success, patterned.error
+    patterned = await adapter.pattern_circular([blade_name], axis_name, count=4)
+    assert patterned.is_success, patterned.error
 
-        added = patterned.data["volume_after"] - patterned.data["volume_before"]
-        assert added / seed == pytest.approx(3.0, rel=0.02), (
-            f"expected three extra blades, got {added / seed:.2f}: {patterned.data}"
-        )
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    added = patterned.data["volume_after"] - patterned.data["volume_before"]
+    assert added / seed == pytest.approx(3.0, rel=0.02), (
+        f"expected three extra blades, got {added / seed:.2f}: {patterned.data}"
+    )
 
 
 @pytest.mark.asyncio
-async def test_circular_pattern_refuses_bad_input(connected_adapter):
+async def test_circular_pattern_refuses_bad_input(connected_adapter, scratch):
     """Empty inputs, a count of one, and an unknown axis are all errors."""
     adapter = connected_adapter
-    try:
-        await adapter.create_part()
+    await adapter.create_part()
 
-        assert not (await adapter.pattern_circular([], "Axis1", 4)).is_success
-        assert not (await adapter.pattern_circular(["Boss-Extrude1"], "", 4)).is_success
-        assert not (
-            await adapter.pattern_circular(["Boss-Extrude1"], "Axis1", 1)
-        ).is_success
+    assert not (await adapter.pattern_circular([], "Axis1", 4)).is_success
+    assert not (await adapter.pattern_circular(["Boss-Extrude1"], "", 4)).is_success
+    assert not (
+        await adapter.pattern_circular(["Boss-Extrude1"], "Axis1", 1)
+    ).is_success
 
-        unknown = await adapter.pattern_circular(["Boss-Extrude1"], "NoSuchAxis", 4)
-        assert not unknown.is_success
-        assert "NoSuchAxis" in (unknown.error or "")
-    finally:
-        adapter._attempt(lambda: adapter.swApp.CloseAllDocuments(True))
+    unknown = await adapter.pattern_circular(["Boss-Extrude1"], "NoSuchAxis", 4)
+    assert not unknown.is_success
+    assert "NoSuchAxis" in (unknown.error or "")

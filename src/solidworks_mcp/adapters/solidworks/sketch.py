@@ -7,8 +7,11 @@ import sys
 import time
 from typing import Any, cast
 
+from loguru import logger
+
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
+from . import limits
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -32,6 +35,15 @@ RELATION_NAME_MAP: dict[str, int] = {
 # Relations that take a third entity (the centerline of symmetry for now).
 # All other relations reject a non-null ``entity3``.
 _THREE_ENTITY_RELATIONS: frozenset[str] = frozenset({"symmetric"})
+
+#: ``ISketchManager.CreateArc``'s ``Direction`` argument: +1 draws the arc
+#: counter-clockwise from its start point to its end point, -1 clockwise.
+ARC_DIRECTION_FLAGS: dict[str, int] = {"ccw": 1, "cw": -1}
+
+#: The most segments one ``add_sketch_outlines`` call draws. A 7 x 7
+#: honeycomb is 294 segments; the cap keeps one call from holding SolidWorks
+#: for minutes.
+MAX_OUTLINE_SEGMENTS = 2000
 
 
 class SolidWorksSketchMixin:
@@ -126,8 +138,45 @@ class SolidWorksSketchMixin:
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
-        return _add_arc_impl(self, center_x, center_y, start_x, start_y, end_x, end_y)
+        return _add_arc_impl(
+            self, center_x, center_y, start_x, start_y, end_x, end_y, direction
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        return _add_sketch_outlines_impl(self, outlines)
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        return _set_sketch_construction_impl(self, entity_ids, construction)
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch for editing (``feature_editing.open_sketch``)."""
+        from .feature_editing import open_sketch
+
+        return _sketch_edit_operation(
+            self, "edit_sketch", lambda: open_sketch(self, name)
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete entities of the open sketch by id."""
+        from .feature_editing import delete_sketch_entities
+
+        if not self._adapter(self).currentSketchManager:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        return _sketch_edit_operation(
+            self,
+            "delete_sketch_entities",
+            lambda: delete_sketch_entities(self, entity_ids),
+        )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:
         return _add_spline_impl(self, points)
@@ -203,14 +252,14 @@ class SolidWorksSketchMixin:
 
 
 def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
-    """Open a new sketch on a named reference plane.
+    """Open a new sketch on a named plane.
 
-    The function resolves English short-hand names (``"Top"``, ``"Front"``,
-    ``"Right"``, ``"XY"``, ``"XZ"``, ``"YZ"``) to their full SolidWorks plane
-    names and also tries Spanish locale aliases (``"Planta"``, ``"Alzado"``,
-    ``"Vista lateral"``).  If named lookup fails, ``Extension.SelectByID2``
-    with entity type ``"PLANE"`` is attempted with three different callout
-    variants.
+    Short names (``"Front"``, ``"Top"``, ``"Right"``, ``"XY"``, ``"XZ"``,
+    ``"YZ"``) and the English tree names resolve to the three default planes,
+    whose localized names (``"Alzado"``, ``"Planta"``, ...) are tried too. Any
+    other name must be a plane in the part. If no candidate can be selected
+    by name, ``Extension.SelectByID2`` with entity type ``"PLANE"`` is tried;
+    when that fails too, the call fails. It never falls back to another plane.
 
     When the sketch is successfully opened, ``adapter.currentSketchManager``,
     ``adapter.currentSketch``, ``adapter._sketch_count``, and
@@ -221,14 +270,14 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
     Args:
         adapter: A fully connected ``PyWin32Adapter`` with a non-``None``
             ``currentModel``.
-        plane: Reference-plane identifier.  Accepts short English names
-            (``"Top"``, ``"Front"``, ``"Right"``, ``"XY"``, ``"XZ"``,
-            ``"YZ"``) or the exact SolidWorks plane name as it appears in
-            the FeatureManager tree.
+        plane: A default plane's short or tree name, or the exact name of
+            another plane in the FeatureManager tree.
 
     Returns:
-        AdapterResult[str]: On success, ``data`` is the sketch name string
-        (e.g. ``"Sketch1"``).  On failure, ``status`` is ``ERROR``.
+        AdapterResult[str]: On success, ``data`` is the sketch name, and
+        ``metadata`` has ``plane`` (the tree name of the plane used) and
+        ``axes`` (where sketch x and y point in the model; None when it can't
+        be read for a plane other than the default three).
 
     Raises:
         Exception: Propagated through ``_handle_com_operation`` when no plane
@@ -236,10 +285,9 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
 
     Example::
 
-        from solidworks_mcp.adapters import pywin32_sketch_ops
-
-        result = pywin32_sketch_ops.create_sketch(adapter, "Front")
-        print(result.data)  # "Sketch1"
+        result = _create_sketch_impl(adapter, "Top")
+        print(result.metadata["axes"]["summary"])
+        # sketch x = model +X, sketch y = model -Z, normal = model +Y
     """
     if not adapter.currentModel:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
@@ -247,57 +295,25 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
     def _sketch_operation() -> str:
         """Inner COM closure that selects the plane and opens the sketch.
 
-        Iterates through all locale aliases and ``SelectByID2`` fallbacks.
-        Updates adapter sketch state on success.
+        Tries the plane's names, then ``SelectByID2``. Updates adapter sketch
+        state on success, and records the plane used and the axes in
+        ``found``.
 
         Returns:
-            str: The resolved SolidWorks sketch name.
+            str: The sketch name.
 
         Raises:
             Exception: If no plane candidate could be selected.
         """
-        plane_name_map = {
-            "Top": "Top Plane",
-            "Front": "Front Plane",
-            "Right": "Right Plane",
-            "XY": "Top Plane",
-            "XZ": "Front Plane",
-            "YZ": "Right Plane",
-        }
-
-        semantic_plane_aliases = {
-            "Top": ["Top Plane", "Planta", "上视基准面", "上視基準面"],
-            "Front": ["Front Plane", "Alzado", "前视基准面", "前視基準面"],
-            "Right": ["Right Plane", "Vista lateral", "右视基准面", "右視基準面"],
-            "XY": ["Top Plane", "Planta", "上视基准面"],
-            "XZ": ["Front Plane", "Alzado", "前视基准面"],
-            "YZ": ["Right Plane", "Vista lateral", "右视基准面"],
-        }
-
-        actual_plane = plane_name_map.get(plane, plane)
+        default_key, plane_candidates = plane_candidates_for(plane)
         selected = False
         selection_error = None
+        plane_used = plane_candidates[0]
 
-        plane_candidates = [
-            *semantic_plane_aliases.get(plane, []),
-            actual_plane,
-            plane,
-            "Top Plane",
-            "Front Plane",
-            "Right Plane",
-            "Planta",
-            "Alzado",
-            "Vista lateral",
-            "上视基准面",
-            "前视基准面",
-            "右视基准面",
-            "上視基準面",
-            "前視基準面",
-            "右視基準面",
-        ]
+        # Only the names that mean this plane are tried. A plane that isn't
+        # in the part is an error: falling back to another plane would put
+        # the sketch somewhere the caller didn't ask for.
         for candidate in plane_candidates:
-            if not candidate:
-                continue
             plane_feature, selection_error_candidate = adapter._attempt_with_error(
                 lambda c=candidate: adapter.currentModel.FeatureByName(c)
             )
@@ -311,13 +327,14 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
                 )
             )
             if selected:
+                plane_used = candidate
                 break
 
         if not selected:
             # SW 2022: callout must be None (empty string causes type mismatch)
             selected, selection_error_candidate = adapter._attempt_with_error(
                 lambda: adapter.currentModel.Extension.SelectByID2(
-                    actual_plane,
+                    plane_candidates[0],
                     "PLANE",
                     0,
                     0,
@@ -330,15 +347,18 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
             )
             if selection_error_candidate:
                 selection_error = selection_error_candidate
-            elif selected:
-                pass
 
         if not selected:
+            # The last select's error is the SW 2022 form's "Type mismatch"
+            # on SW 2026, not anything about the plane; in the message its
+            # HRESULT made the error com_type_mismatch, not not_found.
             if selection_error:
-                raise Exception(
-                    f"Failed to select plane: {actual_plane} ({selection_error})"
-                )
-            raise Exception(f"Failed to select plane: {actual_plane}")
+                logger.debug("Selecting plane {!r} failed: {}", plane, selection_error)
+            raise Exception(
+                f"Plane '{plane}' not found in the part. Use Front, Top "
+                "or Right, or a plane made by create_reference_plane "
+                "(list_features names them)"
+            )
 
         adapter.currentSketchManager = adapter.currentModel.SketchManager
         adapter._attempt(
@@ -380,17 +400,175 @@ def _create_sketch_impl(adapter: Any, plane: str) -> AdapterResult[str]:
 
         if adapter.currentSketch and hasattr(adapter.currentSketch, "Name"):
             sketch_name = str(adapter.currentSketch.Name)
-            adapter._last_sketch_name = sketch_name
-            return sketch_name
-
-        sketch_name = f"Sketch_{adapter._sketch_count}"
+        else:
+            sketch_name = f"Sketch_{adapter._sketch_count}"
         adapter._last_sketch_name = sketch_name
+        found["plane"] = plane_used
+        found["axes"] = _read_sketch_axes(adapter, default_key)
         return sketch_name
 
-    return cast(
+    found: dict[str, Any] = {}
+    result = cast(
         AdapterResult[str],
         adapter._handle_com_operation("create_sketch", _sketch_operation),
     )
+    if result.is_success:
+        result.metadata = {**(result.metadata or {}), **found}
+    return result
+
+
+#: The three planes every part starts with, by key: the English tree name
+#: first, then the names other language installs give them.
+_DEFAULT_PLANE_NAMES: dict[str, tuple[str, ...]] = {
+    "front": ("Front Plane", "Alzado", "前视基准面", "前視基準面"),
+    "top": ("Top Plane", "Planta", "上视基准面", "上視基準面"),
+    "right": ("Right Plane", "Vista lateral", "右视基准面", "右視基準面"),
+}
+
+#: What callers may call each default plane. XY, XZ and YZ name the plane
+#: that holds those two axes: in SolidWorks the Front Plane is XY, the Top
+#: Plane XZ and the Right Plane YZ.
+_DEFAULT_PLANE_KEYS: dict[str, str] = {
+    "front": "front",
+    "front plane": "front",
+    "xy": "front",
+    "top": "top",
+    "top plane": "top",
+    "xz": "top",
+    "right": "right",
+    "right plane": "right",
+    "yz": "right",
+}
+
+#: Sketch x, sketch y and the plane's normal in model coordinates, for the
+#: default planes. Used when the sketch's own transform can't be read.
+_DEFAULT_PLANE_AXES: dict[str, tuple[tuple[float, float, float], ...]] = {
+    "front": ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+    "top": ((1.0, 0.0, 0.0), (0.0, 0.0, -1.0), (0.0, 1.0, 0.0)),
+    "right": ((0.0, 0.0, -1.0), (0.0, 1.0, 0.0), (1.0, 0.0, 0.0)),
+}
+
+
+def plane_candidates_for(plane: str) -> tuple[str | None, list[str]]:
+    """The tree names to try for ``plane``, and its default-plane key.
+
+    Args:
+        plane: What the caller asked for: ``Front``, ``Top``, ``Right``,
+            ``XY``, ``XZ``, ``YZ``, a default plane's English tree name, or
+            the name of any other plane in the part.
+
+    Returns:
+        tuple[str | None, list[str]]: ``("top", ["Top Plane", "Planta",
+        ...])`` for a default plane; ``(None, [plane])`` for any other.
+    """
+    name = plane.strip()
+    key = _DEFAULT_PLANE_KEYS.get(name.lower())
+    if key is None:
+        return None, [name]
+    return key, list(_DEFAULT_PLANE_NAMES[key])
+
+
+def _axis_label(vector: list[float]) -> str:
+    """``+X``, ``-Z`` and so on for an axis-aligned vector, else the numbers."""
+    for index, letter in enumerate("XYZ"):
+        if abs(abs(vector[index]) - 1.0) < 1e-6:
+            return ("+" if vector[index] > 0 else "-") + letter
+    return "(" + ", ".join(f"{value:g}" for value in vector) + ")"
+
+
+def describe_sketch_axes(
+    x_axis: tuple[float, ...] | list[float],
+    y_axis: tuple[float, ...] | list[float],
+    normal: tuple[float, ...] | list[float],
+    origin_mm: tuple[float, ...] | list[float],
+) -> dict[str, Any]:
+    """The reply's ``axes``: where the sketch's x and y point in the model.
+
+    Args:
+        x_axis: Sketch x as a unit vector in model coordinates.
+        y_axis: Sketch y as a unit vector in model coordinates.
+        normal: The sketch plane's normal in model coordinates.
+        origin_mm: The sketch origin in model coordinates, mm.
+
+    Returns:
+        dict[str, Any]: ``x``, ``y``, ``normal``, ``origin_mm`` (rounded) and
+        ``summary``, e.g. ``"sketch x = model +X, sketch y = model -Z"``.
+    """
+
+    def _rounded(values: tuple[float, ...] | list[float]) -> list[float]:
+        return [round(float(v), 6) + 0.0 for v in values]
+
+    x, y, n = _rounded(x_axis), _rounded(y_axis), _rounded(normal)
+    return {
+        "x": x,
+        "y": y,
+        "normal": n,
+        "origin_mm": _rounded(origin_mm),
+        "summary": (
+            f"sketch x = model {_axis_label(x)}, sketch y = model "
+            f"{_axis_label(y)}, normal = model {_axis_label(n)}"
+        ),
+    }
+
+
+def axes_from_transform(data: Any) -> dict[str, Any] | None:
+    """Read the sketch axes from a sketch-to-model ``IMathTransform.ArrayData``.
+
+    SolidWorks transforms apply to row vectors, so the first three rows of
+    the rotation block are where the sketch's x, y and z axes land in the
+    model; elements 9 to 11 are the translation in metres.
+
+    Args:
+        data: ``ArrayData`` of the inverse of ``ISketch.ModelToSketchTransform``
+            (16 numbers), or anything else when it couldn't be read.
+
+    Returns:
+        dict[str, Any] | None: The axes, or None when ``data`` isn't a
+        rotation plus translation.
+    """
+    try:
+        values = [float(v) for v in data]
+    except (TypeError, ValueError):
+        return None
+    if len(values) < 12:
+        return None
+    x_axis, y_axis, normal = values[0:3], values[3:6], values[6:9]
+    for axis in (x_axis, y_axis, normal):
+        if abs(math.sqrt(sum(c * c for c in axis)) - 1.0) > 1e-6:
+            return None
+    origin_mm = [v * 1000.0 for v in values[9:12]]
+    return describe_sketch_axes(x_axis, y_axis, normal, origin_mm)
+
+
+def default_plane_axes(key: str) -> dict[str, Any]:
+    """The axes of a default plane, with its origin at the model origin."""
+    x_axis, y_axis, normal = _DEFAULT_PLANE_AXES[key]
+    return describe_sketch_axes(x_axis, y_axis, normal, (0.0, 0.0, 0.0))
+
+
+def _read_sketch_axes(adapter: Any, default_key: str | None) -> dict[str, Any] | None:
+    """The open sketch's axes in model coordinates.
+
+    Read from the sketch itself (``ModelToSketchTransform``, inverted), so a
+    sketch on any plane gets its true axes. A default plane falls back to
+    the known table when the transform can't be read; any other plane then
+    has none (None), rather than a guess.
+    """
+    sketch = adapter.currentSketch
+    data = None
+    if sketch is not None:
+        transform = adapter._attempt(lambda: sketch.ModelToSketchTransform)
+        if transform is not None:
+            # Inverse() takes no arguments: unflagged, late binding reads it
+            # as a property (CLAUDE.md, "Method flagging via sw_type_info").
+            adapter._attempt(lambda: _sw_type_info.flagged(transform, "IMathTransform"))
+            inverse = adapter._attempt(lambda: transform.Inverse())
+            if inverse is not None:
+                data = adapter._attempt(lambda: inverse.ArrayData)
+    axes = axes_from_transform(data)
+    if axes is None and default_key is not None:
+        axes = default_plane_axes(default_key)
+    return axes
 
 
 def _add_line_impl(
@@ -574,12 +752,14 @@ def _add_arc_impl(
     start_y: float,
     end_x: float,
     end_y: float,
+    direction: str = "ccw",
 ) -> AdapterResult[str]:
     """Add a circular arc to the active sketch.
 
-    Calls ``SketchManager.CreateArc`` with a counter-clockwise direction
-    flag (``1``).  All coordinates must lie in the sketch plane; the Z
-    component is always forced to ``0``.
+    Calls ``SketchManager.CreateArc`` with its direction flag: ``1`` draws
+    counter-clockwise from start to end, ``-1`` clockwise (as seen looking
+    at the sketch, x right and y up). All coordinates must lie in the sketch
+    plane; the Z component is always forced to ``0``.
 
     Args:
         adapter: A ``PyWin32Adapter`` with an open sketch.
@@ -589,6 +769,7 @@ def _add_arc_impl(
         start_y: Arc start point Y in **millimetres**.
         end_x: Arc end point X in **millimetres**.
         end_y: Arc end point Y in **millimetres**.
+        direction: ``"ccw"`` (the default) or ``"cw"``.
 
     Returns:
         AdapterResult[str]: On success, ``data`` is the registered entity ID
@@ -610,6 +791,12 @@ def _add_arc_impl(
     """
     if not adapter.currentSketchManager:
         return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
+    flag = ARC_DIRECTION_FLAGS.get(direction)
+    if flag is None:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=f"direction must be 'ccw' or 'cw', not {direction!r}",
+        )
 
     def _arc_operation() -> str:
         """Inner COM closure that calls CreateArc and registers the entity.
@@ -630,14 +817,258 @@ def _add_arc_impl(
             end_x / 1000.0,
             end_y / 1000.0,
             0,
-            1,
+            flag,
         )
         if not arc:
             raise Exception("Failed to create arc")
-        return adapter._register_sketch_entity("Arc", arc)  # type: ignore[no-any-return]
+        entity_id: str = adapter._register_sketch_entity("Arc", arc)
+        adapter._sketch_entity_centers[entity_id] = (center_x, center_y)
+        return entity_id
 
     return cast(
         AdapterResult[str], adapter._handle_com_operation("add_arc", _arc_operation)
+    )
+
+
+def _sketch_edit_operation(
+    adapter: Any, operation_name: str, operation: Any
+) -> AdapterResult[dict[str, Any]]:
+    """Run a sketch-editing closure; its errors read as plain sentences."""
+    from .com_utils import strip_op_prefix
+
+    if not adapter.currentModel:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
+    result = cast(
+        AdapterResult[dict[str, Any]],
+        adapter._handle_com_operation(operation_name, operation),
+    )
+    if not result.is_success:
+        result.error = strip_op_prefix(result.error, operation_name)
+    return result
+
+
+def _make_construction(adapter: Any, segment: Any, construction: bool) -> bool:
+    """Set ``ISketchSegment.ConstructionGeometry`` and read it back.
+
+    Returns:
+        bool: True when the segment now has the requested state.
+    """
+    adapter._attempt(lambda: setattr(segment, "ConstructionGeometry", construction))
+    return bool(adapter._attempt(lambda: segment.ConstructionGeometry)) == construction
+
+
+def _segments_of(entity: Any) -> list[Any]:
+    """The segment handles a registered entity holds.
+
+    A rectangle or polygon registers the tuple ``CreateCornerRectangle`` /
+    ``CreatePolygon`` returned; every other entity is one segment.
+    """
+    if isinstance(entity, (list, tuple)):
+        return [part for part in entity if part is not None]
+    return [entity]
+
+
+def _add_sketch_outlines_impl(
+    adapter: Any, outlines: list[dict[str, Any]]
+) -> AdapterResult[dict[str, Any]]:
+    """Draw whole outlines of lines and arcs in one COM operation.
+
+    Each outline is a chain of segments the tool already resolved: a line
+    ``{"type": "line", "start": [x, y], "end": [x, y]}`` or an arc ``{"type":
+    "arc", "center": [x, y], "start": [x, y], "end": [x, y], "direction":
+    "ccw"}``, in mm, each starting where the last ended. One call is one
+    ``_handle_com_operation``, so it pays the settle pause once instead of
+    once per segment.
+
+    If SolidWorks refuses a segment, the segments this call drew are deleted
+    again (selected, then ``EditDelete``), so a failed call leaves the sketch
+    as it was; the error says whether that worked.
+
+    Args:
+        adapter: A ``PyWin32Adapter`` with an open sketch.
+        outlines: The outlines, each ``{"segments": [...], "construction":
+            bool}``.
+
+    Returns:
+        AdapterResult[dict[str, Any]]: ``outlines`` (each with its segment
+        ``ids``), ``segment_count``, ``line_count`` and ``arc_count``.
+    """
+    if not adapter.currentSketchManager:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
+    total = sum(len(outline.get("segments") or []) for outline in outlines)
+    if total == 0:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR, error="outlines contain no segments"
+        )
+    if total > MAX_OUTLINE_SEGMENTS:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(
+                f"{total} segments in one call; the most is "
+                f"{MAX_OUTLINE_SEGMENTS}. Split the outlines over several calls"
+            ),
+        )
+
+    def _create(segment: dict[str, Any]) -> Any:
+        start, end = segment["start"], segment["end"]
+        if segment["type"] == "arc":
+            center = segment["center"]
+            return adapter.currentSketchManager.CreateArc(
+                center[0] / 1000.0,
+                center[1] / 1000.0,
+                0,
+                start[0] / 1000.0,
+                start[1] / 1000.0,
+                0,
+                end[0] / 1000.0,
+                end[1] / 1000.0,
+                0,
+                ARC_DIRECTION_FLAGS[segment.get("direction", "ccw")],
+            )
+        return adapter.currentSketchManager.CreateLine(
+            start[0] / 1000.0, start[1] / 1000.0, 0, end[0] / 1000.0, end[1] / 1000.0, 0
+        )
+
+    def _undo(drawn: list[tuple[str, Any]]) -> bool:
+        """Delete this call's segments again; True when SolidWorks did."""
+        if not drawn:
+            return True  # nothing drawn, and nothing selected to delete
+        selected = all(
+            adapter._select_sketch_entity(handle, index > 0)
+            for index, (_, handle) in enumerate(drawn)
+        )
+        if not selected:
+            return False
+        # EditDelete returns nothing; only an exception means it failed.
+        if (
+            adapter._attempt(lambda: adapter.currentModel.EditDelete(), default=False)
+            is False
+        ):
+            return False
+        for entity_id, _ in drawn:
+            adapter._sketch_entities.pop(entity_id, None)
+            adapter._sketch_entity_centers.pop(entity_id, None)
+        return True
+
+    def _cleanup(drawn: list[tuple[str, Any]]) -> str:
+        if _undo(drawn):
+            return "the segments this call drew were removed again"
+        return (
+            f"{len(drawn)} segments this call drew stay in the sketch; undo or "
+            "delete them"
+        )
+
+    def _outlines_operation() -> dict[str, Any]:
+        drawn: list[tuple[str, Any]] = []
+        replies: list[dict[str, Any]] = []
+        counts = {"line": 0, "arc": 0}
+        for outline_index, outline in enumerate(outlines, start=1):
+            construction = bool(outline.get("construction", False))
+            ids: list[str] = []
+            for segment_index, segment in enumerate(outline["segments"], start=1):
+                try:
+                    limits.check(
+                        f"drawing outline {outline_index}, segment {segment_index}"
+                    )
+                except limits.OperationStopped as stopped:
+                    raise Exception(f"{stopped}; {_cleanup(drawn)}") from stopped
+                handle, create_error = adapter._attempt_with_error(
+                    lambda s=segment: _create(s)
+                )
+                made = bool(handle) and (
+                    not construction or _make_construction(adapter, handle, True)
+                )
+                if not made:
+                    if handle:
+                        what = "was drawn but could not be made construction geometry"
+                    elif create_error is not None:
+                        what = f"was not created ({create_error})"
+                    else:
+                        what = "was not created"
+                    if handle:
+                        drawn.append(("", handle))
+                    raise Exception(
+                        f"Outline {outline_index}, segment {segment_index} "
+                        f"({segment['type']} from {segment['start']} to "
+                        f"{segment['end']}) {what}; {_cleanup(drawn)}"
+                    )
+                prefix = "Arc" if segment["type"] == "arc" else "Line"
+                entity_id: str = adapter._register_sketch_entity(prefix, handle)
+                if segment["type"] == "arc":
+                    center = segment["center"]
+                    adapter._sketch_entity_centers[entity_id] = (center[0], center[1])
+                else:
+                    start, end = segment["start"], segment["end"]
+                    adapter._sketch_entity_centers[entity_id] = (
+                        (start[0] + end[0]) / 2.0,
+                        (start[1] + end[1]) / 2.0,
+                    )
+                drawn.append((entity_id, handle))
+                ids.append(entity_id)
+                counts[segment["type"]] += 1
+            replies.append({"ids": ids, "construction": construction})
+        return {
+            "outlines": replies,
+            "segment_count": counts["line"] + counts["arc"],
+            "line_count": counts["line"],
+            "arc_count": counts["arc"],
+        }
+
+    return cast(
+        AdapterResult[dict[str, Any]],
+        adapter._handle_com_operation("add_sketch_outlines", _outlines_operation),
+    )
+
+
+def _set_sketch_construction_impl(
+    adapter: Any, entity_ids: list[str], construction: bool = True
+) -> AdapterResult[dict[str, Any]]:
+    """Make sketch entities drawn in the open sketch construction geometry.
+
+    ``add_line``, ``add_circle`` and ``add_rectangle`` draw with ``CreateLine``
+    and friends, which have no construction flag; this sets
+    ``ISketchSegment.ConstructionGeometry`` on each segment afterwards (all
+    four lines of a rectangle) and reads it back.
+
+    Args:
+        adapter: A ``PyWin32Adapter`` with an open sketch.
+        entity_ids: Ids the ``add_*`` calls returned, e.g. ``"Line_3"``.
+        construction: True for construction geometry, False for normal.
+
+    Returns:
+        AdapterResult[dict[str, Any]]: ``entity_ids``, ``segment_count`` and
+        ``construction``.
+    """
+    if not adapter.currentSketchManager:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error="No active sketch")
+    missing = [i for i in entity_ids if i not in adapter._sketch_entities]
+    if missing:
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(f"Sketch entity {', '.join(missing)} not found in the open sketch"),
+        )
+
+    def _construction_operation() -> dict[str, Any]:
+        segment_count = 0
+        for entity_id in entity_ids:
+            for segment in _segments_of(adapter._sketch_entities[entity_id]):
+                if not _make_construction(adapter, segment, construction):
+                    raise Exception(
+                        f"SolidWorks did not make {entity_id} "
+                        f"{'construction' if construction else 'normal'} geometry"
+                    )
+                segment_count += 1
+        return {
+            "entity_ids": list(entity_ids),
+            "segment_count": segment_count,
+            "construction": construction,
+        }
+
+    return cast(
+        AdapterResult[dict[str, Any]],
+        adapter._handle_com_operation(
+            "set_sketch_construction", _construction_operation
+        ),
     )
 
 

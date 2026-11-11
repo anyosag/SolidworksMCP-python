@@ -15,25 +15,35 @@ Points in mm, for contrast: `select_face_edges` `point`,
 the sketch tools. `get_selected_entities` reports in mm (`center_mm`,
 `length_mm`).
 
-`set_dimension` takes millimetres and is for lengths; don't use it on an
-angle dimension. `set_units` changes what the document shows, not what the
-tools take.
+`set_dimension` takes each dimension in its own unit: millimetres for a
+length, degrees for an angle, a whole number for a count (a pattern's
+instances). `list_model_dimensions` gives each one's `units`. `set_units`
+changes what the document shows, not what the tools take.
 
 Mass is in kg, volume in mm³. `calculate_mass_properties` returns moments
 of inertia in kg·mm², about the centre of mass.
 
 ## Planes and model axes
 
-| Sketch plane | Extrudes along | `select_face_edges` side facing that way |
-| --- | --- | --- |
-| Front | z | front (+Z) / back (-Z) |
-| Top | y | top (+Y) / bottom (-Y) |
-| Right | x | right (+X) / left (-X) |
+| Sketch plane | Also called | Sketch x, sketch y in the model | Extrudes along | `select_face_edges` side facing that way |
+| --- | --- | --- | --- | --- |
+| Front | XY | +X, +Y | z | front (+Z) / back (-Z) |
+| Top | XZ | +X, **-Z** | y | top (+Y) / bottom (-Y) |
+| Right | YZ | **-Z**, +Y | x | right (+X) / left (-X) |
 
 `verify_model`'s `bounding_box_mm` is [x, y, z] in these axes, so a
-100 x 60 rectangle on the Top plane extruded 10 mm is [100, 10, 60].
+100 x 60 rectangle on the Top plane extruded 10 mm is [100, 10, 60], and a
+point at sketch (10, 20) on Top is model (10, 0, -20).
 
-Any plane name `create_reference_plane` returned works in `create_sketch`.
+`create_sketch` returns `sketch.axes` for the plane it used: `x`, `y` and
+`normal` as model vectors, the sketch origin in mm, and a `summary` such as
+"sketch x = model +X, sketch y = model -Z, normal = model +Y". It is read
+from the sketch itself, so it is right for a plane made by
+`create_reference_plane` too.
+
+Any plane name `create_reference_plane` returned works in `create_sketch`. A
+name that isn't in the part is a `not_found` error; it is never swapped for
+another plane.
 
 ## Picking faces and edges
 
@@ -46,9 +56,16 @@ In order of reliability:
    flat face that way), a `point` on the face in mm, or a `plane` the face
    lies on. `edge_type: "circular"` picks hole rims, `"linear"` the straight
    edges. Then fillet or chamfer with empty `edge_names`.
-3. **A face spec.** `"face:x,y,z"` (metres) in `edge_names` treats every edge
+3. **`select_edges`.** Edges by rule. Take them from a `feature` (the
+   edges of the faces it made), one face (`face_point` in mm, `side` or
+   `plane`) or the whole part, then keep those that pass every filter given:
+   `edge_type`, `parallel_to` ("x", "y", "z" or a direction; straight edges
+   only), `inside_box` (two corners in model mm) and `min_length` /
+   `max_length` (mm). `data.matched` counts what each rule left. Then fillet
+   or chamfer with empty `edge_names`.
+4. **A face spec.** `"face:x,y,z"` (metres) in `edge_names` treats every edge
    of the face containing that point.
-4. **An edge point.** `"x,y,z"` (metres) picks the nearest edge. Avoid it
+5. **An edge point.** `"x,y,z"` (metres) picks the nearest edge. Avoid it
    where two faces meet at the point (a hole rim on a flat face): it can
    pick a different edge.
 
@@ -61,7 +78,12 @@ the tools that act on a selection.
 
 ## Sketch entities
 
-Each sketch tool returns an `id` (e.g. "Line_1"). `add_sketch_constraint`,
-`add_sketch_dimension`, `sketch_mirror`, `sketch_offset` and the sketch
-patterns take these ids. `check_sketch_fully_defined` says whether the
-sketch still has free geometry.
+Each sketch tool returns an `id` (e.g. "Line_1"); `add_outlines` returns one
+per segment. `add_sketch_constraint`, `add_sketch_dimension`,
+`sketch_mirror`, `sketch_offset` and the sketch patterns take these ids.
+`check_sketch_fully_defined` says whether the sketch still has free geometry.
+
+Arcs run counter-clockwise from start to end, looking at the sketch with x
+right and y up; give `direction: "cw"` for the other way round.
+`construction: true` on `add_line`, `add_circle`, `add_rectangle` or an
+outline draws construction geometry, which a feature ignores.

@@ -15,6 +15,11 @@ checking the result, and what doesn't work yet.
 - Call `get_model_info` first. It says which document is active (it follows
   a switch the user made in the SolidWorks window). `list_open_documents`
   lists every open document; `activate_document` switches.
+- Every tool that works on a document takes `document`: the title, file name
+  or path of an open one. Give it when more than one document is open, or
+  when someone else may be using SolidWorks; the server activates it first.
+  A `warning` saying another MCP server is on the same document means two
+  clients are editing it: tell the user.
 - Call tools one at a time and wait for each result. The server pauses
   after every SolidWorks call on purpose: driving SolidWorks back-to-back
   crashes it.
@@ -28,22 +33,33 @@ A solid feature always comes from a closed sketch:
    `create_reference_plane`. Pass `sketch_name` to name it; the name is
    given when `exit_sketch` closes it, and that reply has the final name.
 3. Draw: `add_rectangle`, `add_circle`, `add_line`, `add_arc`, `add_polygon`,
-   and so on. For a revolve, add the axis with `add_centerline` in this
-   sketch, or make a reference axis with `create_axis`.
+   and so on; `add_outlines` draws whole outlines, or dozens of holes, in
+   one call. `create_sketch`'s reply says where sketch x and y point in the
+   model (on Top, sketch y is model -Z). For a revolve, add the axis with
+   `add_centerline` in this sketch, or make a reference axis with
+   `create_axis`.
 4. `exit_sketch`.
 5. The feature: `create_extrusion` (add material), `create_cut_extrude`
    (remove it), `create_revolve`, `create_sweep`, `create_loft`.
    Each takes `sketch_name`; without it, the sketch you closed last is
    used. `create_revolve` turns about the sketch's centreline, or about
    the reference axis `axis_entity` names.
-6. Then edge treatments: `select_face_edges`, then `add_fillet` or
-   `add_chamfer` with empty `edge_names`.
+6. Then edge treatments: `select_face_edges` or `select_edges`, then
+   `add_fillet` or `add_chamfer` with empty `edge_names`.
 7. Finish with `verify_model` (see "Check the result").
 8. `set_material`, then `save_part` with a `file_path`.
 
 Repeat 2-5 for each feature. For holes in a ring or a row, draw every
 circle in one sketch (`sketch_circular_pattern`, `sketch_linear_pattern`)
-and cut once: `pattern_circular` and `mirror_feature` can't repeat a cut yet.
+and cut once, or repeat the cut with `pattern_circular` (`step_angle` for
+the degrees between instances) or `mirror_feature`.
+
+When you know the whole sequence, `execute_workflow` runs it in one call:
+`steps` is a list of `{"tool": ..., "arguments": ...}`, run in order and
+stopped at the first failure; `rollback_on_error` then deletes what the
+earlier steps added. To change a model that exists, edit in place
+(`edit_feature`, `edit_sketch`, `set_rollback`) rather than deleting and
+re-creating, which takes dependents with it.
 
 Worked sequences for parts, assemblies and drawings:
 [references/workflows.md](references/workflows.md).
@@ -63,6 +79,10 @@ Details and the model axes: [references/selection-and-units.md](references/selec
   `edge_names`. Do it right before the fillet: anything that rebuilds or
   selects in between (including `calculate_mass_properties`) clears the
   selection.
+- For edges by rule, use `select_edges`: the edges a `feature` made (a cut's
+  rims and walls), then only the `linear` ones `parallel_to` an axis, those
+  `inside_box`, or a length range. When nothing matches, the error says
+  which rule removed them.
 - If the user says "this face" or "these edges", call
   `get_selected_entities` to read what they clicked rather than guessing.
 - A point on an edge where two faces meet can pick the wrong edge; give a
@@ -98,7 +118,7 @@ ones, and `rebuild_model`, `undo` and what to tell the user:
   description opens with "Beta: ..." or "Experimental: ...", and a successful
   result carries the same sentence as `warning`. Read it, and check the
   result (`verify_model`, `list_features`) before building on it.
-- 40 tools are planned: registered, but nothing implements them. Their
+- 39 tools are planned: registered, but nothing implements them. Their
   description says "Not available yet" and every call returns
   `not_supported`. Use the tool their description names instead.
 - Some tools ignore some of their inputs, and a few behave in ways you must

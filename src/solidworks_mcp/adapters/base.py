@@ -409,22 +409,39 @@ class SolidWorksAdapter(ABC):
         pass
 
     @abstractmethod
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close the current model.
 
         Args:
-            save (bool): The save value. Defaults to False.
+            save (bool): Save it first, without a dialog. Defaults to False.
+            overwrite_modified_references (bool): Let that save overwrite the
+                user's modified files an assembly uses; without it such a
+                save fails with a ``confirmation_required`` error listing
+                them in ``data.files``. Defaults to False.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         pass
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[Any]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save the active model to the existing path or the provided path.
+
+        Saves never show a SolidWorks dialog. An assembly's modified parts are
+        saved with it when they are new or this session wrote them; the user's
+        own modified files need ``overwrite_modified_references``, and without
+        it the save writes nothing and returns a ``confirmation_required``
+        error listing them in ``data.files``.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See above. Defaults to False.
 
         Returns:
             AdapterResult[Any]: The result produced by the operation.
@@ -663,6 +680,7 @@ class SolidWorksAdapter(ABC):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Add an arc to the current sketch.
 
@@ -673,6 +691,8 @@ class SolidWorksAdapter(ABC):
             start_y (float): The start y value.
             end_x (float): The end x value.
             end_y (float): The end y value.
+            direction (str): ``"ccw"`` (default) or ``"cw"``, from start to end
+                as seen looking at the sketch.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -680,6 +700,45 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="add_arc is not implemented by this adapter",
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw whole outlines of lines and arcs in the open sketch, in one call.
+
+        Args:
+            outlines (list[dict[str, Any]]): Each ``{"segments": [...],
+                "construction": bool}``. A segment is ``{"type": "line",
+                "start": [x, y], "end": [x, y]}`` or ``{"type": "arc",
+                "center": [x, y], "start": [x, y], "end": [x, y],
+                "direction": "ccw" | "cw"}``, in mm.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``outlines`` (each with the segment
+            ``ids``), ``segment_count``, ``line_count`` and ``arc_count``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_sketch_outlines is not implemented by this adapter",
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make entities in the open sketch construction (or normal) geometry.
+
+        Args:
+            entity_ids (list[str]): Ids returned by the ``add_*`` calls.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``entity_ids``, ``segment_count``
+            and ``construction``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_sketch_construction is not implemented by this adapter",
         )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:
@@ -1098,6 +1157,142 @@ class SolidWorksAdapter(ABC):
             error="rebuild_model is not implemented by this adapter",
         )
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select the active part's edges that match a rule.
+
+        Args:
+            query (dict[str, Any]): At most one source - ``feature`` (the
+                edges of the faces it made), ``face_point`` (mm), ``side`` or
+                ``plane``; none means every edge - and the filters
+                ``edge_type``, ``parallel_to`` (``"x"``/``"y"``/``"z"`` or a
+                direction), ``parallel_tolerance_deg``, ``inside_box`` (two
+                corners, mm), ``min_length`` and ``max_length`` (mm).
+            append (bool): Add to the current selection instead of replacing it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``source``, ``matched`` (the count
+            left after each rule), ``edges`` (up to 50 described),
+            ``selected_edges`` and ``selection_count``. ERROR when no edge
+            matches, naming the rule that removed them.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="select_edges is not implemented by this adapter",
+        )
+
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide reference geometry and sketches in the active document.
+
+        Args:
+            names (list[str] | None): Planes, axes, points, coordinate systems
+                and sketches by their tree names.
+            types (list[str] | None): Every entity of these types: ``planes``,
+                ``axes``, ``temporary_axes``, ``origins``,
+                ``coordinate_systems``, ``points``, ``sketches``.
+            visible (bool): Show (True) or hide (False).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``visible``, ``features`` (name,
+            type and state per name) and ``types`` (each type's ``before`` and
+            ``after``, so it can be put back).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_visibility is not implemented by this adapter",
+        )
+
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the active part's wall thickness, for 3D printing.
+
+        Args:
+            min_wall_mm (float): The thinnest wall the printer can make.
+            max_rays (int): The most rays to cast.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``min_thickness_mm``, ``at_mm``,
+            ``normal``, ``below_minimum``, ``thin_spots``, ``ok``,
+            ``samples``, ``measured``, ``bodies`` and ``faces``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="check_wall_thickness is not implemented by this adapter",
+        )
+
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Change an existing feature's parameters in place.
+
+        Args:
+            name (str): The feature's tree name.
+            changes (dict[str, Any]): ``depth`` (mm), ``end_condition``,
+                ``reverse_direction``, ``angle`` (degrees) or ``radius`` (mm).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``type``, ``before`` and
+            ``after``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="edit_feature is not implemented by this adapter",
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar before or after a feature, or (neither) to the end.
+
+        Args:
+            before (str | None): Put the bar just above this feature.
+            after (str | None): Put the bar just below this feature.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``position`` and ``rolled_back``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_rollback is not implemented by this adapter",
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch for editing, with an id for each segment.
+
+        Args:
+            name (str): The sketch's tree name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``sketch`` and ``segments``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="edit_sketch is not implemented by this adapter",
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete entities of the open sketch by id.
+
+        Args:
+            entity_ids (list[str]): Ids from the ``add_*`` tools or ``edit_sketch``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``deleted`` and ``remaining``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_sketch_entities is not implemented by this adapter",
+        )
+
     async def create_reference_plane(
         self,
         reference: str,
@@ -1200,6 +1395,7 @@ class SolidWorksAdapter(ABC):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis.
 
@@ -1207,8 +1403,10 @@ class SolidWorksAdapter(ABC):
             features (list[str]): Names of the features to pattern.
             axis (str): Name of the axis to rotate about.
             count (int): Total number of instances including the original.
-            angle (float): Total angle in degrees to spread them over. Defaults to 360.0.
-            equal_spacing (bool): Space instances evenly across ``angle``. Defaults to True.
+            angle (float): Degrees: the total spread with ``equal_spacing``
+                (360 by default), else the angle between neighbours.
+            equal_spacing (bool): Whether ``angle`` is the total. Defaults to True.
+            reverse_direction (bool): Pattern the other way round the axis.
 
         Returns:
             AdapterResult[dict[str, Any]]: What was patterned and the volume
@@ -1265,6 +1463,22 @@ class SolidWorksAdapter(ABC):
             AdapterResult[dict[str, list[str]]]: ``reset``, the operations that were paused.
         """
         return AdapterResult(status=AdapterResultStatus.SUCCESS, data={"reset": []})
+
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore the SolidWorks window.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards
+            (``minimized``, ``normal``, ``maximized``, ``hidden`` or
+            ``unknown``).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_window_state is not available with this adapter",
+        )
 
     async def get_model_geometry_summary(self) -> AdapterResult[dict[str, Any]]:
         """Summarise the active part or assembly without changing it.
@@ -1503,14 +1717,18 @@ class SolidWorksAdapter(ABC):
         )
 
     # Feature Editing
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a named feature or sketch from the active model.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
-            AdapterResult[dict[str, Any]]: What was deleted, or error.
+            AdapterResult[dict[str, Any]]: What was deleted, with
+            ``absorbed_sketches`` and ``absorbed_sketches_left``, or error.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
@@ -1608,6 +1826,30 @@ class SolidWorksAdapter(ABC):
             error="activate_document is not implemented by this adapter",
         )
 
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Make an open document the one this session works on.
+
+        The tool boundary calls it for a tool's ``document`` argument. This
+        default activates it every time; an adapter that can tell it is
+        already active skips that.
+
+        Args:
+            title_or_path (str): Title, full path, or file name of an open
+                document.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: As ``activate_document``.
+        """
+        return await self.activate_document(title_or_path)
+
+    def take_document_notice(self) -> str | None:
+        """A warning about another MCP server on this session's document, once.
+
+        Returns:
+            str | None: The warning, or None (this default: never one).
+        """
+        return None
+
     @abstractmethod
     async def exit_sketch(self) -> AdapterResult[None]:
         """Exit sketch editing mode.
@@ -1659,21 +1901,45 @@ class SolidWorksAdapter(ABC):
         """
         pass
 
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export the active document to STL with these mesh settings for this file.
+
+        SolidWorks keeps the STL options as the user's preferences; they are
+        changed for the export and put back afterwards.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): Any of ``resolution``, ``deviation_mm``,
+                ``angle_deg``, ``units`` and ``binary``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="export_stl_with_settings is not implemented by this adapter",
+        )
+
     # Dimension Operations
     @abstractmethod
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
         """Get the value of a dimension.
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         pass
 
     @abstractmethod
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
         """Set the value of a dimension.
 
         Args:
@@ -1681,7 +1947,8 @@ class SolidWorksAdapter(ABC):
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``, ``units``
+            and ``kind``.
         """
         pass
 

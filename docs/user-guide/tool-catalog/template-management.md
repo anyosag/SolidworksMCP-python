@@ -1,6 +1,6 @@
 # Template Management Tools
 
-Create, extract, apply, compare, and library-manage SolidWorks document templates (.prtdot, .asmdot, .drwdot) and sheet formats. Enables standardised document creation across teams and projects.
+Create, extract, apply, compare, and library-manage SolidWorks document templates (.prtdot, .asmdot, .drwdot) and sheet formats. Enables standardized document creation across teams and projects.
 
 > **Prerequisite:** Valid template file paths. Library operations require a configured template library path.
 

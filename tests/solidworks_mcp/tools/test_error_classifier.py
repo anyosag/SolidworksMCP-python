@@ -95,6 +95,79 @@ def classifier() -> ErrorClassifier:
         ("No entity found for 'Edge<9>'; check the name", "not_found"),
         ("No .sldmat libraries found in: C:/x", "not_found"),
         ("The active part has no sheet-metal body", "not_found"),
+        (
+            "SolidWorks showed a dialog during open_model, 'SOLIDWORKS': File "
+            "not found; the server cancelled it.",
+            "solidworks_dialog",
+        ),
+        (
+            "Failed to save assembly: Saving would overwrite 2 modified files "
+            "that existed before this session: C:/a.SLDPRT, C:/b.SLDPRT. "
+            "Nothing was saved.",
+            "confirmation_required",
+        ),
+        (
+            "Saving would overwrite 1 modified file that existed before this "
+            "session: C:/a.SLDPRT. Nothing was saved.",
+            "confirmation_required",
+        ),
+        (
+            "The SolidWorks this server was connected to has exited (it was "
+            "closed or crashed), so add_line was not run. The server has "
+            "reconnected to the SolidWorks running now; documents that were "
+            "open before are open in it only if they were reopened.",
+            "solidworks_reconnected",
+        ),
+        (
+            "The SolidWorks this server was connected to has exited (it was "
+            "closed or crashed), so add_line failed, and SolidWorks is not "
+            "running now. Start SolidWorks; the next call reconnects to it.",
+            "solidworks_unavailable",
+        ),
+        (
+            "The SolidWorks this server was connected to has exited (it was "
+            "closed or crashed), so add_line was not run, and the SolidWorks "
+            "running now is not answering yet (it may still be starting). "
+            "Retry in a few seconds.",
+            "solidworks_unavailable",
+        ),
+        (
+            "SolidWorks' active document changed between calls (it is now "
+            "'DishRack_SideBar.SLDPRT'), so add_fillet was not run: the user or "
+            "another program switched it, and this session was working on "
+            "'Part14'. Call activate_document with 'Part14' to go on with it, "
+            "or with the other document if that is the one to work on.",
+            "active_document_changed",
+        ),
+        (
+            "SolidWorks' active document changed between calls (no document is "
+            "active now), so add_line was not run: the user or another program "
+            "switched it, and this session was working on 'Part14'.",
+            "active_document_changed",
+        ),
+        (
+            "SolidWorks is busy: it has not answered for 30 s "
+            "(SOLIDWORKS_MCP_BUSY_WAIT_SECONDS), so rename_feature was not run. "
+            "It may be finishing a long operation.",
+            "solidworks_busy",
+        ),
+        (
+            "Stopped selecting edge 88 of 133 after 901 s: add_fillet ran past "
+            "its 900 s limit (SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS). Do it "
+            "in smaller pieces, or raise the limit.",
+            "operation_stopped",
+        ),
+        (
+            "Stopped reading edges: the MCP client disconnected (its end of the "
+            "stdio pipe closed), so nothing would read the result.",
+            "operation_stopped",
+        ),
+        (
+            "Stopped drawing outline 2, segment 7: the MCP client disconnected "
+            "(test), so nothing would read the result.; 6 segments this call "
+            "drew stay in the sketch; undo or delete them",
+            "operation_stopped",
+        ),
     ],
 )
 def test_known_messages_are_categorised(

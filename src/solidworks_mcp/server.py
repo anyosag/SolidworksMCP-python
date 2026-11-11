@@ -386,6 +386,13 @@ class SolidWorksMCPServer:
             )
             return
 
+        # While a long SolidWorks call blocks the event loop nothing reads
+        # stdin, so a client that quits goes unnoticed; this thread notices
+        # (Windows pipes only) and the server's loops stop at their next check.
+        from .adapters.solidworks import limits
+
+        limits.watch_stdin()
+
         run_stdio = getattr(self.server, "run_stdio", None)
         if callable(run_stdio):
             result = run_stdio()

@@ -232,7 +232,7 @@ def test_create_sketch_reports_plane_selection_failure() -> None:
 
     result = sketch._create_sketch_impl(adapter, "Missing")
     assert result.status == AdapterResultStatus.ERROR
-    assert "Failed to select plane" in (result.error or "")
+    assert "Plane 'Missing' not found in the part" in (result.error or "")
 
 
 def test_basic_entity_functions_require_active_sketch() -> None:
@@ -2033,7 +2033,7 @@ class TestPyWin32AdapterBranches:
             call.args
             for call in extension.SelectByID2.call_args_list
             if len(call.args) >= 9
-            and call.args[0] == "Top Plane"
+            and call.args[0] == "Front Plane"  # XY is SolidWorks' Front Plane
             and call.args[1] == "PLANE"
         ]
         assert plane_select_calls, "Expected plane selection call for sketch creation"
@@ -2161,13 +2161,16 @@ class TestPyWin32AdapterBranches:
         )
         failed = await adapter.create_sketch("Top")
         assert failed.is_error
-        assert "Failed to select plane" in (failed.error or "")
+        assert "Plane 'Top' not found in the part" in (failed.error or "")
+        # SolidWorks' select error stays out of the message: on SW 2026 it
+        # is a "Type mismatch" HRESULT, which made it com_type_mismatch.
+        assert "select failed" not in (failed.error or "")
 
     @pytest.mark.asyncio
     async def test_create_sketch_empty_plane_and_total_select_failure(
         self, monkeypatch
     ) -> None:
-        """create_sketch should skip empty candidates and surface explicit plane selection failure."""
+        """An empty plane name is a plane that is not in the part."""
         adapter = self._build_adapter(monkeypatch)
         adapter.currentModel = SimpleNamespace(
             FeatureByName=Mock(return_value=None),
@@ -2178,7 +2181,7 @@ class TestPyWin32AdapterBranches:
 
         failed = await adapter.create_sketch("")
         assert failed.is_error
-        assert "Failed to select plane" in (failed.error or "")
+        assert "Plane '' not found in the part" in (failed.error or "")
 
     @pytest.mark.asyncio
     async def test_sketch_and_mass_property_guard_and_fallback_errors(

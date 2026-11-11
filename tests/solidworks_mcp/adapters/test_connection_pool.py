@@ -810,7 +810,13 @@ class TestConnectionPoolAdapterExtras:
                 return _ok("mirrored")
 
             async def pattern_circular(
-                self, features, axis, count, angle=360.0, equal_spacing=True
+                self,
+                features,
+                axis,
+                count,
+                angle=360.0,
+                equal_spacing=True,
+                reverse_direction=False,
             ):
                 return _ok("patterned")
 
@@ -855,7 +861,7 @@ class TestConnectionPoolAdapterExtras:
             async def check_interference(self, params=None):
                 return _ok("interference")
 
-            async def delete_feature(self, name):
+            async def delete_feature(self, name, delete_absorbed=False):
                 return _ok({"deleted": name})
 
             async def suppress_feature(self, name, suppress=True):
@@ -1777,6 +1783,9 @@ _SKETCH_PASSTHROUGHS = [
     ("sketch_circular_pattern", (["Arc1"], 360.0, 4)),
     ("sketch_mirror", (["Arc1"], "Line1")),
     ("sketch_offset", (["Arc1"], 2.0, False)),
+    ("set_window_state", ("minimize",)),
+    ("save_file", ("C:/a.SLDASM", True)),
+    ("close_model", (True, True)),
 ]
 
 

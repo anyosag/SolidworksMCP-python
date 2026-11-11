@@ -397,6 +397,19 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS, data={"reset": sorted(was_open)}
         )
 
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore SolidWorks through a pooled adapter.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        return await self._execute_with_pool(
+            "set_window_state", lambda adapter: adapter.set_window_state(state)
+        )
+
     # Adapter interface implementation
 
     async def connect(self) -> None:
@@ -509,30 +522,40 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "open_model", lambda adapter: adapter.open_model(file_path)
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close model using pool.
 
         Args:
             save (bool): The save value. Defaults to False.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.close_model``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "close_model", lambda adapter: adapter.close_model(save)
+            "close_model",
+            lambda adapter: adapter.close_model(save, overwrite_modified_references),
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save model using pool.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.save_file``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "save_file", lambda adapter: adapter.save_file(file_path)
+            "save_file",
+            lambda adapter: adapter.save_file(file_path, overwrite_modified_references),
         )
 
     async def create_part(
@@ -700,6 +723,66 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             ),
         )
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select edges by rule using pool."""
+        return await self._execute_with_pool(
+            "select_edges", lambda adapter: adapter.select_edges(query, append)
+        )
+
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide reference geometry and sketches using pool."""
+        return await self._execute_with_pool(
+            "set_visibility",
+            lambda adapter: adapter.set_visibility(names, types, visible),
+        )
+
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure wall thickness using pool."""
+        return await self._execute_with_pool(
+            "check_wall_thickness",
+            lambda adapter: adapter.check_wall_thickness(min_wall_mm, max_rays),
+        )
+
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Edit a feature's parameters using pool."""
+        return await self._execute_with_pool(
+            "edit_feature", lambda adapter: adapter.edit_feature(name, changes)
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar using pool."""
+        return await self._execute_with_pool(
+            "set_rollback", lambda adapter: adapter.set_rollback(before, after)
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch using pool."""
+        return await self._execute_with_pool(
+            "edit_sketch", lambda adapter: adapter.edit_sketch(name)
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete sketch entities using pool."""
+        return await self._execute_with_pool(
+            "delete_sketch_entities",
+            lambda adapter: adapter.delete_sketch_entities(entity_ids),
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:
@@ -770,12 +853,13 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis using pool."""
         return await self._execute_with_pool(
             "pattern_circular",
             lambda adapter: adapter.pattern_circular(
-                features, axis, count, angle, equal_spacing
+                features, axis, count, angle, equal_spacing, reverse_direction
             ),
         )
 
@@ -919,6 +1003,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Add arc using pool.
 
@@ -929,6 +1014,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             start_y (float): Arc start Y coordinate.
             end_x (float): Arc end X coordinate.
             end_y (float): Arc end Y coordinate.
+            direction (str): ``"ccw"`` (default) or ``"cw"``.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -942,7 +1028,41 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
                 start_y,
                 end_x,
                 end_y,
+                direction,
             ),
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw outlines in the open sketch using pool.
+
+        Args:
+            outlines (list[dict[str, Any]]): The resolved outlines.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "add_sketch_outlines",
+            lambda adapter: adapter.add_sketch_outlines(outlines),
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set sketch entities' construction state using pool.
+
+        Args:
+            entity_ids (list[str]): The sketch entity ids.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "set_sketch_construction",
+            lambda adapter: adapter.set_sketch_construction(entity_ids, construction),
         )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:
@@ -1243,22 +1363,41 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "export_file", lambda adapter: adapter.export_file(file_path, format_type)
         )
 
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export STL with mesh settings using pool.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): The mesh settings.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "export_stl_with_settings",
+            lambda adapter: adapter.export_stl_with_settings(file_path, settings),
+        )
+
     # Dimension operations
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
         """Get dimension using pool.
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         return await self._execute_with_pool(
             "get_dimension", lambda adapter: adapter.get_dimension(name)
         )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
         """Set dimension using pool.
 
         Args:
@@ -1266,7 +1405,8 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``, ``units``
+            and ``kind``.
         """
         return await self._execute_with_pool(
             "set_dimension", lambda adapter: adapter.set_dimension(name, value)
@@ -1312,6 +1452,29 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "activate_document",
             lambda adapter: adapter.activate_document(title_or_path),
         )
+
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Use an open document through the pool.
+
+        Args:
+            title_or_path (str): Title, full path, or file name of an open
+                document.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "use_document", lambda adapter: adapter.use_document(title_or_path)
+        )
+
+    def take_document_notice(self) -> str | None:
+        """The first pooled adapter's shared-document warning, if any.
+
+        Returns:
+            str | None: The warning, or None.
+        """
+        notices = [adapter.take_document_notice() for adapter in self.pool]
+        return next((notice for notice in notices if notice), None)
 
     # Assembly operations
 
@@ -1474,17 +1637,21 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "check_interference", lambda adapter: adapter.check_interference(params)
         )
 
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a feature using pool.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "delete_feature", lambda adapter: adapter.delete_feature(name)
+            "delete_feature",
+            lambda adapter: adapter.delete_feature(name, delete_absorbed),
         )
 
     async def suppress_feature(

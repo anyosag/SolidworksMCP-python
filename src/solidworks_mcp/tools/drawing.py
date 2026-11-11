@@ -375,7 +375,7 @@ async def register_drawing_tools(
                         print(f"Registered {tool_count} drawing tools")
                         ```
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()

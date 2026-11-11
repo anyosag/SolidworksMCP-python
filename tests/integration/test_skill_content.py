@@ -30,6 +30,7 @@ _LIMITS_FILE = "references/errors-and-limits.md"
 _NAME = re.compile(r"`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`")
 #: Response keys the skill quotes; they are not input fields or tools.
 _RESPONSE_KEYS = {
+    "absorbed_sketches_left",
     "area_m2",
     "center_mm",
     "direction_flipped",
@@ -39,6 +40,7 @@ _RESPONSE_KEYS = {
     "length_mm",
     "measured_change",
     "system_value",
+    "thin_spots",
     "usage_instructions",
     "vba_code",
 }

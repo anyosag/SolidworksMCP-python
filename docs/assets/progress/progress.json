@@ -1,11 +1,11 @@
 {
  "tools": {
-  "total": 156,
+  "total": 165,
   "by_level": {
-   "stable": 106,
+   "stable": 107,
    "beta": 0,
-   "experimental": 10,
-   "planned": 40
+   "experimental": 19,
+   "planned": 39
   },
   "list": [
    {
@@ -112,6 +112,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Place a text note on the active drawing sheet at a position in millimetres."
+   },
+   {
+    "name": "add_outlines",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Draw whole outlines of lines and arcs in the open sketch in one call, in mm."
    },
    {
     "name": "add_polygon",
@@ -303,6 +310,13 @@
     "summary": "Check whether a sketch is fully defined, under-defined or over-defined."
    },
    {
+    "name": "check_wall_thickness",
+    "family": "analysis",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Measure the active part's thinnest walls before 3D printing it."
+   },
+   {
     "name": "classify_feature_tree",
     "family": "file_management",
     "level": "experimental",
@@ -471,11 +485,32 @@
     "summary": "Delete a feature or sketch from the active model, along with the features that depend on it."
    },
    {
+    "name": "delete_sketch_entities",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Delete lines, arcs and other entities of the open sketch by id."
+   },
+   {
     "name": "discover_solidworks_docs",
     "family": "docs_discovery",
     "level": "stable",
     "reason": "",
     "summary": "Rebuild the SolidWorks API index on purpose. The lookups don't need it."
+   },
+   {
+    "name": "edit_feature",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius."
+   },
+   {
+    "name": "edit_sketch",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Open an existing sketch for editing, listing its segments with ids."
    },
    {
     "name": "execute_macro",
@@ -487,9 +522,9 @@
    {
     "name": "execute_workflow",
     "family": "automation",
-    "level": "planned",
-    "reason": "no adapter implements it yet.",
-    "summary": "Run a named sequence of tool steps, in order or in parallel, with an error policy."
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Run a list of tool steps in order in one call, stopping at the first that fails."
    },
    {
     "name": "exit_sketch",
@@ -524,7 +559,7 @@
     "family": "export",
     "level": "stable",
     "reason": "",
-    "summary": "Save a picture of the active model in a standard view, as PNG or JPG, at a chosen size."
+    "summary": "Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG."
    },
    {
     "name": "export_pdf",
@@ -947,6 +982,13 @@
     "summary": "Search SolidWorks API interface and member names by keyword."
    },
    {
+    "name": "select_edges",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Select the edges of the active part that match rules, ready for `add_fillet` or `add_chamfer` with no edge names."
+   },
+   {
     "name": "select_face_edges",
     "family": "modeling",
     "level": "stable",
@@ -979,7 +1021,7 @@
     "family": "modeling",
     "level": "stable",
     "reason": "",
-    "summary": "Change one length dimension of the active model, in mm, and rebuild."
+    "summary": "Change one dimension of the active model and rebuild."
    },
    {
     "name": "set_material",
@@ -989,6 +1031,13 @@
     "summary": "Assign a library material to the active part, e.g. \"AISI 1020\" or \"6061-T6 (SS)\"."
    },
    {
+    "name": "set_rollback",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Move the rollback bar before or after a feature, so new features go in there, or back to the end."
+   },
+   {
     "name": "set_sheet_scale",
     "family": "drawing_automation",
     "level": "stable",
@@ -996,11 +1045,25 @@
     "summary": "Set the active drawing sheet's scale, e.g. 1:2; views that use the sheet scale follow it."
    },
    {
+    "name": "set_solidworks_window",
+    "family": "server_admin",
+    "level": "stable",
+    "reason": "",
+    "summary": "Minimize or restore the SolidWorks window, so the user can work in other apps while you model."
+   },
+   {
     "name": "set_units",
     "family": "modeling",
     "level": "stable",
     "reason": "",
     "summary": "Set the active document's length units: mm, cm, m, in or ft."
+   },
+   {
+    "name": "set_visibility",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Show or hide planes, axes, points, origins and sketches in the active document."
    },
    {
     "name": "sketch_circular_pattern",
@@ -1105,11 +1168,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 215,
+   "covered": 239,
    "total": 2838
   },
   "api": {
-   "covered": 238,
+   "covered": 265,
    "total": 5985
   },
   "interfaces": [
@@ -1127,6 +1190,8 @@
      "GetExportFileData",
      "GetMassProperties",
      "GetOpenDocumentByName",
+     "GetUserPreferenceDoubleValue",
+     "GetUserPreferenceIntegerValue",
      "GetUserPreferenceStringValue",
      "GetUserPreferenceToggle",
      "NewAssembly",
@@ -1136,6 +1201,7 @@
      "OpenDoc6",
      "RevisionNumber",
      "RunMacro2",
+     "SetUserPreferenceDoubleValue",
      "SetUserPreferenceIntegerValue",
      "SetUserPreferenceToggle"
     ],
@@ -1149,6 +1215,8 @@
      "AddDimension2",
      "AddRadialDimension2",
      "AddRelation",
+     "BlankRefGeom",
+     "BlankSketch",
      "ClearSelection2",
      "CreateArc",
      "CreateCenterLine",
@@ -1157,7 +1225,10 @@
      "CreateEllipse",
      "CreateLine",
      "CreateLinearSketchStepAndRepeat",
+     "EditDelete",
      "EditRebuild3",
+     "EditRollback",
+     "EditSketch",
      "EditSuppress2",
      "EditUndo",
      "EditUndo2",
@@ -1178,9 +1249,12 @@
      "GetMassProperties",
      "GetNext",
      "GetPathName",
+     "GetRayIntersectionsPoints",
      "GetSaveFlag",
      "GetTitle",
      "GetType",
+     "GetUserPreferenceDoubleValue",
+     "GetUserPreferenceIntegerValue",
      "GetUserPreferenceStringValue",
      "GetUserPreferenceToggle",
      "GraphicsRedraw2",
@@ -1193,20 +1267,23 @@
      "InsertSketch",
      "Lock",
      "Parameter",
-     "Save",
+     "RayIntersections",
      "Save3",
-     "SaveAs",
      "SaveAs2",
      "SaveAs3",
      "SaveBMP",
      "Select",
      "SetSaveFlag",
+     "SetUserPreferenceDoubleValue",
      "SetUserPreferenceIntegerValue",
      "SetUserPreferenceToggle",
      "ShowNamedView2",
      "SketchAddConstraints",
      "SketchMirror",
      "SketchOffset2",
+     "UnBlankRefGeom",
+     "UnblankSketch",
+     "ViewZoomTo2",
      "ViewZoomtofit",
      "ViewZoomtofit2"
     ],
@@ -1228,7 +1305,7 @@
      "GetWhatsWrong",
      "GetWhatsWrongCount",
      "InsertBomTable4",
-     "SaveAs",
+     "RayIntersections",
      "SaveAs2",
      "SaveAs3",
      "SavePackAndGo",
@@ -1241,6 +1318,7 @@
    {
     "name": "IPartDoc",
     "covered": [
+     "EditRollback",
      "ExportToDWG2",
      "FeatureByName",
      "FeatureExtrusion2",
@@ -1251,6 +1329,8 @@
      "GetBodies2",
      "GetMaterialPropertyName2",
      "GetPartBox",
+     "GetTessNorms",
+     "GetTessTriangles",
      "InsertMirrorFeature",
      "SetMaterialPropertyName2"
     ],
@@ -1282,6 +1362,7 @@
      "Create3rdAngleViews2",
      "CreateDrawViewFromModelView3",
      "EditSheet",
+     "EditSketch",
      "EditTemplate",
      "FeatureByName",
      "GetCurrentSheet",
@@ -1296,6 +1377,7 @@
     "name": "IFeatureManager",
     "covered": [
      "CreateSaveBodyFeature",
+     "EditRollback",
      "FeatureCircularPattern5",
      "FeatureCut3",
      "FeatureCut4",
@@ -1356,6 +1438,8 @@
      "GetModelDoc2",
      "GetPathName",
      "GetSuppression2",
+     "GetTessNorms",
+     "GetTessTriangles",
      "GetType",
      "IsEnvelope",
      "IsFixed",
@@ -1371,6 +1455,7 @@
     "covered": [
      "GetBox",
      "GetChildren",
+     "GetDefinition",
      "GetErrorCode2",
      "GetFaces",
      "GetFirstDisplayDimension",
@@ -1383,8 +1468,10 @@
      "GetParents",
      "GetSpecificFeature2",
      "GetTypeName2",
+     "IsRolledBack",
      "IsSuppressed",
      "IsSuppressed2",
+     "ModifyDefinition",
      "Parameter",
      "Select",
      "Select2"

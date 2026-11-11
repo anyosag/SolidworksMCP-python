@@ -12,6 +12,245 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`add_outlines`** draws whole outlines in the open sketch in one call:
+  polygons from `points`, or chains of lines and arcs from `start` and
+  `segments`, closed by default, any number per call (up to 2,000
+  segments). A honeycomb deck of 25 hexagons was about 150 `add_line`
+  calls; it is now one, with one settle pause instead of 150. Each segment
+  starts exactly where the last ended, so the loop is connected, and a call
+  SolidWorks refuses partway removes what it drew. Experimental until its
+  live test runs.
+- **`add_arc` takes `direction`** (`"ccw"`, the default, or `"cw"`), and its
+  reply gives the `radius` and `sweep_deg`.
+- **`create_sketch` reports the sketch's axes**: `sketch.axes` has sketch x,
+  sketch y and the normal as model vectors, the origin in mm, and a summary
+  ("sketch x = model +X, sketch y = model -Z" on Top). It is read from the
+  sketch, so it holds for reference planes too.
+- **`select_edges`** selects edges by rule, ready for `add_fillet` or
+  `add_chamfer`: the edges of the faces a `feature` made (each once,
+  though two faces share it), of one face, or of the whole part, filtered
+  by `edge_type`, `parallel_to` an axis or direction, `inside_box` and a
+  length range. The reply counts what each rule left, and when nothing
+  matches the `not_found` error names the rule that removed them.
+  Experimental until its live test runs.
+- **`set_visibility`** shows or hides planes, axes, points, coordinate
+  systems and sketches: by name, as the tree's Hide and Show do, or every
+  one of a type, as View > Hide/Show does. The reply gives each type's
+  previous state so it can be put back. Experimental until its live test
+  runs.
+- **`pattern_circular` takes `step_angle` and `reverse_direction`**:
+  `step_angle` is the degrees between neighbouring instances (3 holes 60
+  degrees apart is `count: 3`, `step_angle: 60`), `angle` stays the total
+  spread, and `reverse_direction` patterns the other way round the axis.
+  The reply gives `step_angle` and `total_angle`.
+- **`execute_workflow` runs**, where it was a planned tool: a list of
+  `{tool, arguments}` steps, in order through the same tools and error
+  boundary, stopped at the first step that fails, with every step's result.
+  With `rollback_on_error`, a failure deletes the features and sketches the
+  earlier steps added to the document that was open at the start. A step
+  that renames or deletes features, undoes, or moves the rollback bar can't
+  be combined with a rollback. Experimental until its live test runs.
+- **Editing an existing model in place**, instead of deleting and
+  re-creating a feature, which took its dependents (two fillets on the dish
+  rack) with it. Experimental until their live tests run:
+  - `edit_feature` changes an extrude's or cut's `depth`, `end_condition`
+    and `reverse_direction`, a revolve's `angle` and a fillet's `radius`
+    through the feature's definition (`GetDefinition`, `ModifyDefinition`),
+    and reads the values back after the rebuild.
+  - `set_rollback` moves the rollback bar before or after a feature, so a
+    new feature goes in mid-tree, and back to the end.
+  - `edit_sketch` opens an existing sketch for editing with an id for each
+    segment; `delete_sketch_entities` removes segments by id, and the `add_*`
+    tools draw the new ones.
+- **`check_wall_thickness`** measures the active part's thinnest walls
+  before 3D printing: points sampled on every face, a ray cast inward from
+  each (`RayIntersections`), the distance to where it leaves the solid. The
+  reply gives the thinnest wall and where, and every spot under
+  `min_wall_mm` (0.8 by default). Experimental until its live test runs.
+- **`delete_feature` takes `delete_absorbed`** and reports
+  `absorbed_sketches_left`: deleting a cut or boss leaves its own sketch, as
+  SolidWorks does, and the reply now names it; `delete_absorbed: true`
+  removes it too.
+- **SolidWorks can stay minimized while tools run** (OpenSpec change
+  `keep-solidworks-minimized`). If it is minimized when a tool starts, the
+  server minimizes it again after any call that restored it and gives the
+  keyboard focus back to the user's window. Screenshots (`export_image`) work
+  while minimized and report `window_state`. Turn it off with
+  `SOLIDWORKS_MCP_KEEP_MINIMIZED=0`. A background keeper undoes restores
+  caused by any SolidWorks call, and while SolidWorks is minimized each call
+  stops its window being activated, so it can't take the foreground even for
+  an instant (`SOLIDWORKS_MCP_BLOCK_ACTIVATION=0` turns that off).
+- **`set_solidworks_window`** minimizes or restores the SolidWorks window.
+- **Dialog watchdog.** A modal SolidWorks dialog that stays open during a
+  call is cancelled after `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5)
+  and reported as `error_type: solidworks_dialog`, with its text, instead of
+  hanging the server. It never answers Save or Don't Save.
+- **The assembly save guard knows this session's own saved edits.** A
+  user's part that this session has already saved, and that nobody has saved
+  since (its file's modified time is unchanged), counts as this session's
+  work: later assembly saves write it without asking again. A part saved
+  elsewhere in the meantime asks, as before.
+- **A blind cut that mostly missed the part says so.** `create_cut_extrude`
+  measures the cut's floor (its planar faces facing along the sketch normal)
+  and reports `cut_extrude.floor_area_mm2`. When it removed less than half
+  of floor area times depth, the reply carries a `warning`: most of the
+  depth was outside the part, as with the dish rack's cut from an offset
+  plane that took 1.13 mm³ of 9.05 mm³.
+- **`export_stl` takes mesh settings for one file**: `resolution` (coarse,
+  fine or custom), `deviation_mm` and `angle_deg` (which make it custom),
+  `units` and `binary`. SolidWorks keeps these as the user's STL options;
+  they are set for the export, read back, and put back afterwards, and the
+  reply's `export.mesh` says what was applied and whether the user's options
+  were restored. Left out, the user's options are used as before. SolidWorks
+  derives the resolution from the tolerances (custom is ignored until one is
+  written, measured on 2026), so custom needs `deviation_mm` or `angle_deg`.
+- **`export_image` takes `hide` and `zoom_box_mm`.** `hide` hides planes,
+  sketches, axes, origins, points or coordinate systems for that picture
+  only and shows them again afterwards, even when the picture fails.
+  `zoom_box_mm` zooms to a box of the model (two corners, mm) instead of
+  fitting the whole model. The reply gives `hidden` and `zoom_box_mm`.
+- **Every document tool takes `document`**: the title, file name or path of
+  an open document. The server makes it the active document before the tool
+  runs, and refuses the call (`not_found`) when it isn't open; nothing is
+  activated when it already is this session's active document. Two clients
+  on one SolidWorks no longer need `activate_document` before each call.
+  Tools that open, create or list documents, or work on files on disk, don't
+  take it.
+- **A warning when another MCP server works on the same document.** Each
+  server records the document it works on in
+  `%LOCALAPPDATA%\solidworks_mcp\sessions` (`SOLIDWORKS_MCP_SESSION_DIR`
+  overrides). When this session starts on a document another live server on
+  the same SolidWorks is using, that reply carries a `warning` naming the
+  other server's process.
+- **Long operations can't hang the next call or outlive their client.** On
+  the dish rack, a client killed during `add_fillet`'s edge walk left
+  SolidWorks at 100% CPU, and the next two calls each waited 1800 s. A COM
+  call already made can't be abandoned (pywin32 has no `CoCancelCall`), so:
+  - each call first asks SolidWorks' window, through Win32 only, whether it
+    answers. A SolidWorks still busy is given
+    `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS` (default 30) to finish; then the call
+    returns `error_type: solidworks_busy` at once, without running;
+  - the server's own loops (picking fillet and chamfer edges, `select_edges`,
+    `add_outlines`, `check_wall_thickness`) stop between COM calls once the
+    call has run `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS` (default 900;
+    `0` means no limit), with `error_type: operation_stopped`. A stopped
+    `add_outlines` removes what it drew;
+  - a thread watches the stdio pipe, reading nothing; once the client has
+    gone, those loops and `execute_workflow` stop at their next step
+    (`SOLIDWORKS_MCP_WATCH_CLIENT=0` turns it off);
+  - `execute_workflow` reports progress before each step, which keeps a
+    client's timeout from expiring on a long workflow and lets it cancel
+    between steps.
+
+### Changed
+
+- **BREAKING: `pattern_circular` no longer takes `equal_spacing`.** With it
+  off, SolidWorks read `angle` as the step between instances, not the total
+  the description promised, so 60-degree steps needed `angle: 300`. Give
+  `angle` for the total or `step_angle` for the step; a call that still
+  sends `equal_spacing` gets `invalid_input` saying so.
+- **BREAKING: `execute_workflow`'s `steps` are `{tool, arguments}` pairs**,
+  and it no longer takes `parallel_execution` (SolidWorks takes one call at
+  a time) or `error_handling` (it stops at the first failure). It never ran
+  before, so no working call changes.
+
+### Fixed
+
+- **`add_fillet` on the current selection fillets it.** With `edge_names`
+  empty (after `select_edges`, `select_face_edges` or a pick in SolidWorks),
+  it built nothing: the volume check before the fillet read mass
+  properties, which rebuilds the part, and a rebuild clears the selection.
+  The volume is now read without a rebuild. Found by the first live run of
+  this branch's tests.
+- **`add_fillet` names the fillet it made.** On SolidWorks 2025 and later
+  `FeatureFillet3` returns a number, not the feature, so the reply said
+  "Fillet" and `edit_feature` then found no such feature; the name now comes
+  from the feature tree ("Fillet1").
+- **`create_sketch` on a missing plane is `not_found`.** SolidWorks' "Type
+  mismatch" from a last selection attempt was copied into the message, and
+  its HRESULT made the error `com_type_mismatch`.
+- **`set_dimension` writes angles and counts in their own units.** It took
+  every value as millimetres, so a circular pattern's instance count of 2
+  was written as 0.002 and its 180-degree spacing as 0.18 rad, and the
+  pattern failed to rebuild. The unit now follows what the dimension
+  measures (`IDimension.GetType`): millimetres for a length, degrees for an
+  angle, a whole number for a count. The value is read back after the
+  rebuild, and one SolidWorks keeps (a driven dimension, or one set by an
+  equation) is an error instead of a success. `get_dimension`,
+  `set_dimension` and `list_model_dimensions` report `units` and `kind`.
+- **`create_sketch` on a plane the part doesn't have** sketched on the Top
+  Plane and reported success. It is now a `not_found` error, and the reply's
+  `plane` is the plane actually used.
+- **`create_sketch` with `"XY"` or `"XZ"`** opened the wrong plane: XY gave
+  the Top Plane and XZ the Front. In SolidWorks, and now here, XY is the
+  Front Plane and XZ the Top Plane (YZ was already the Right Plane).
+- **`construction: true` on `add_line`, `add_circle` and `add_rectangle`**
+  was ignored on SolidWorks: the reply said construction, but the geometry
+  was normal and split the profile. The tools now set
+  `ISketchSegment.ConstructionGeometry` on what they drew, and fail if
+  SolidWorks won't take it.
+- **The server reconnects after SolidWorks restarts.** Before, once
+  SolidWorks was closed or crashed, every call failed with
+  `RPC_S_SERVER_UNAVAILABLE` until the MCP server was restarted. Now each call
+  first checks, without COM, that the SolidWorks it connected to is still
+  running. If it has exited, the server binds to the running SolidWorks with
+  `GetActiveObject`; it never starts one. That one call returns
+  `error_type: solidworks_reconnected` without running, since the documents it
+  worked on are gone, and the next call works. With no SolidWorks running,
+  calls return `solidworks_unavailable` until the user starts it.
+- **A tool no longer changes a document someone else made active.** If the
+  user, or another program driving the same SolidWorks (such as a second MCP
+  client), switches the active document between this session's calls, the
+  next call doesn't run. It returns `error_type: active_document_changed`,
+  naming both documents, until the session calls `activate_document`; before,
+  it acted on the other document. Opening, creating, activating, closing and
+  listing documents always run, and a session with no document of its own
+  still takes whatever is active.
+- **`export_image` with `view_orientation: "current"` keeps the view.** It
+  no longer zooms to fit, so a close-up can be exported; named views still
+  turn the model and zoom to fit. A new optional `zoom_to_fit` input
+  overrides the zoom either way (the dashboard preview asks for it), and the
+  result reports `zoomed_to_fit`. The `orientation` alias is now applied: it
+  was ignored, so `orientation: "current"` exported an isometric view.
+- **A cut with no direction given keeps the side that removes more.** On
+  the same plane, `create_cut_extrude` used to cut the opposite side from
+  `create_extrusion`: `FeatureCut4`'s `Dir=False` goes against the sketch
+  normal, and a boss's goes along it. It flipped only when nothing was built,
+  so from an offset plane it took a 1.13 mm³ sliver where 9.05 mm³ was meant.
+  Now, with `reverse_direction` left out, it cuts along the normal (the
+  extrusion's side), measures, tries the other side, and keeps the one that
+  removed more (a tie keeps the extrusion's side). That costs up to two more
+  cuts and a delete. A `reverse_direction` you set cuts exactly as before
+  (true: along the normal, false: against it), flipping once only if it
+  finds no material. The result adds `direction_choice` and
+  `volume_removed_mm3`.
+- **`add_fillet` and `add_chamfer` pick many coordinate edges in one pass.**
+  Each edge's bounding box is read once, every point is matched in Python,
+  and only edges near a point are measured. 133 points no longer cost 133
+  walks over every edge (over 30 minutes). The same edge is chosen as before.
+  The model is rebuilt once, before anything is selected, and `add_chamfer`
+  no longer re-reads the body for every point.
+- **Saving an assembly no longer shows "Save Modified Documents".** Saves
+  are silent and write the assembly's modified parts too. If that would
+  overwrite the user's own modified part files, nothing is written and the
+  tool returns `confirmation_required` with the files; call again with
+  `overwrite_modified_references: true` once the user agrees. Saves no
+  longer fall back to the dialog-prone legacy `Save()`, and saving a
+  never-saved document in place is refused with a message instead of
+  opening Save As.
+- **Exports pass the right save options.** They passed `2` believing it
+  was `swSaveAsOptions_Silent`; it is `Copy`. They now pass `Silent | Copy`.
+- **Activating an assembly whose parts changed no longer asks to rebuild
+  it.** Every `ActivateDoc3` call passed `swUserDecision`, which shows "Models
+  contained within the assembly have changed. Would you like to rebuild the
+  assembly now?". The box took the foreground and held the call for 5 s.
+  Documents are now activated without a rebuild and then rebuilt with
+  `EditRebuild3` when they need it, which shows no SolidWorks window at all
+  (`swRebuildActiveDoc` avoided the box but showed a "Loading..." dialog that
+  took the foreground). Your own rebuild preference is unchanged.
+
 ## [2.0.0] - 2026-11-09
 
 ### Added

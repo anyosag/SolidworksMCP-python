@@ -15,7 +15,13 @@ and a `hint`; some carry `data` with details. Act on `error_type`:
 | `feature_not_built` | SolidWorks accepted the call but built nothing: the sketch isn't closed, the cut misses the body, the depth is wrong. Change the input, don't repeat the call. |
 | `not_supported` | The tool can't run yet. Use the one its description names. |
 | `circuit_open` | Calls are paused after repeated failures. Fix the cause (for example, close and draw the sketch again), then call `reset_circuit_breaker` with the operation, or wait out the timeout, and retry. |
-| `solidworks_unavailable` | SolidWorks closed or crashed. Tell the user; they restart it. |
+| `solidworks_unavailable` | SolidWorks closed or crashed. Tell the user; once they start it, the next call reconnects. |
+| `active_document_changed` | Nothing was done: since your last call, the user or another program switched SolidWorks to another document. If the user didn't say which document to work on, ask; then retry with `document` set to it (the message names both), or call `activate_document` first. |
+| `solidworks_reconnected` | SolidWorks restarted and the server reconnected to it; the call did nothing. Your documents and sketches are gone unless the user reopened them: check `list_open_documents`, reopen or recreate what you need, then retry. |
+| `confirmation_required` | Nothing was saved: saving the assembly would overwrite the user's own modified part files, listed in `data.files`. Ask the user; if they agree, call the same tool again with `overwrite_modified_references: true`. |
+| `solidworks_busy` | Nothing was run: SolidWorks didn't answer for `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS` (30 s by default), busy with a long operation (an earlier call, another program or the user). Wait a minute and retry; if it stays busy, tell the user. |
+| `operation_stopped` | The server stopped the call part-way: it ran past `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS`, or the client went away. Check what it did (`list_features`), then do the work in smaller pieces: fewer edges or outlines per call. |
+| `solidworks_dialog` | SolidWorks opened a dialog during the call; `data.dialog` has its title, text and buttons. The server cancelled it (it never answers Save or Don't Save), so the call may not have finished. Tell the user what it asked if it needs a decision; otherwise fix the cause and retry. |
 | `com_member_not_found`, `com_type_mismatch`, `com_wrong_thread` | A server problem, not a modelling one. Stop and tell the user the tool, the arguments and the message. |
 
 Don't retry the same call unchanged: if it failed once with the same input,
@@ -35,7 +41,7 @@ it will again.
 
 ## Tools that can't run yet
 
-40 tools are registered but nothing implements them (support level
+39 tools are registered but nothing implements them (support level
 `planned`). Their description says "Not available yet"; every call returns
 `not_supported`. They are
 mostly batch, template, macro-recording and drawing-analysis tools, plus

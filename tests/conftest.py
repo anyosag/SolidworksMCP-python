@@ -24,6 +24,8 @@ from solidworks_mcp.server import SolidWorksMCPServer
 
 # Test configuration
 os.environ["USE_MOCK_SOLIDWORKS"] = "true"
+# No thread watching the test runner's own stdin pipe (limits.watch_stdin).
+os.environ["SOLIDWORKS_MCP_WATCH_CLIENT"] = "0"
 
 _REAL_INTEGRATION = os.getenv(
     "SOLIDWORKS_MCP_RUN_REAL_INTEGRATION", ""
@@ -143,6 +145,30 @@ def _no_solidworks_launch() -> Generator[None]:
             + ", ".join(attempts)
             + ". Attach with GetActiveObject or go through the adapter."
         )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _session_register_dir(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[None]:
+    """Keep the adapters' session files (``sessions.py``) out of LOCALAPPDATA."""
+    previous = os.environ.get("SOLIDWORKS_MCP_SESSION_DIR")
+    os.environ["SOLIDWORKS_MCP_SESSION_DIR"] = str(tmp_path_factory.mktemp("sessions"))
+    yield
+    if previous is None:
+        os.environ.pop("SOLIDWORKS_MCP_SESSION_DIR", None)
+    else:
+        os.environ["SOLIDWORKS_MCP_SESSION_DIR"] = previous
+
+
+@pytest.fixture(autouse=True)
+def _fresh_operation_limits() -> Generator[None]:
+    """Start and end every test with no operation budget and the client present."""
+    from solidworks_mcp.adapters.solidworks import limits
+
+    limits.reset()
+    yield
+    limits.reset()
 
 
 @pytest.fixture(autouse=True)

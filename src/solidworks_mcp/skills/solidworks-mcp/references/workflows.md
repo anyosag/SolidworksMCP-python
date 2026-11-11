@@ -15,9 +15,11 @@ step. Values are examples; sizes are millimetres.
    `radius: 5`, then `exit_sketch`. The reply names the sketch, e.g.
    "Sketch2".
 7. `create_cut_extrude` with `sketch_name: "Sketch2"`,
-   `end_condition: "ThroughAll"`, `depth: 10`. A sketch under the body is
-   cut the other way automatically (`direction_flipped: true`). Check that
-   the volume dropped by about π·5²·10 ≈ 785 mm³.
+   `end_condition: "ThroughAll"`, `depth: 10`. Leave out
+   `reverse_direction`: the cut then tries both sides of the sketch plane and
+   keeps the one that removes more. Here that is up into the block, the
+   side the extrusion grew (`direction_flipped: false`). Check that the
+   volume dropped by about π·5²·10 ≈ 785 mm³.
 8. `select_face_edges` with `side: "top"` and `edge_type: "linear"`, then
    `add_fillet` with `radius: 2` and `edge_names: []`.
 9. `verify_model` with `bounding_box_mm: [100, 10, 60]`,
@@ -35,6 +37,40 @@ a plane 10 mm up; its name (e.g. "Plane1") goes into `create_sketch`.
   then `reference`, `angle` (degrees) and `axis`.
 - On or off a face, sloped or not: `face_point`, a point on the face in mm,
   with `offset` (0 puts the plane on the face).
+
+## Many holes or a whole outline in one call (a honeycomb deck)
+
+`add_outlines` draws any number of outlines in one call, so a deck of 25
+hexagonal holes is one call, not 150 `add_line` calls.
+
+1. Extrude the plate first (`create_sketch` on "Top", `add_rectangle`,
+   `exit_sketch`, `create_extrusion`).
+2. `create_sketch` on "Top" again. Its reply's `sketch.axes.summary` says
+   sketch y is model -Z there: work out the hole centres in sketch x and y.
+3. `add_outlines` with one `{"points": [[x, y], ...]}` per hexagon (six
+   corners; it closes them). For a shape with curves, give `start` and
+   `segments` instead, e.g. a slot: `{"start": [0, -5], "segments": [{"to":
+   [20, -5]}, {"type": "arc", "center": [20, 0], "to": [20, 5]}, {"to": [0,
+   5]}, {"type": "arc", "center": [0, 0], "to": [0, -5]}]}`.
+4. `exit_sketch`, then `create_cut_extrude` with `end_condition: "ThroughAll"`.
+   Check the volume fell by the holes' total area times the thickness.
+
+A blind cut's reply gives `cut_extrude.floor_area_mm2`. A `warning` that it
+removed far less than floor area times depth means most of the depth was
+outside the part (a sketch on an offset plane, or the wrong side): don't
+build on it; `undo`, then fix the plane or depth, or use `"UpToNext"` or
+`"ThroughAll"`.
+
+## Before a 3D print
+
+1. `verify_model` with the size and volume you expect.
+2. `check_wall_thickness` with your printer's thinnest wall as
+   `min_wall_mm` (0.8 mm is two 0.4 mm nozzle lines). Its `thin_spots` say
+   where each wall is too thin; check a doubtful one with `measure_entities`.
+3. `export_stl`. For a smoother mesh than the user's STL options give, pass
+   `deviation_mm` (0.01 is fine for most prints) and `angle_deg`; `units`
+   and `binary` set the file's units and format. They apply to this file
+   only, and the user's options are put back.
 
 ## A bent plate or other wall from an open outline
 
@@ -60,19 +96,37 @@ plane; the reply's `end_condition` says `MidPlane`.
    centre is always the sketch origin.
 3. `exit_sketch`, then one `create_cut_extrude`.
 
-Don't use `pattern_circular` on a cut: it reports an error unless the
-volume grows.
+Or cut one hole and repeat the feature: `create_axis`, then
+`pattern_circular` with the cut, the axis and `count`. Give `angle` to
+spread them evenly (360 by default), or `step_angle` for the degrees between
+holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
+`reverse_direction` goes the other way round.
 
 ## Changing an existing model
 
 1. `open_model`, then `list_features` and `list_model_dimensions`.
-2. `set_dimension` with the full name (e.g. "D1@Boss-Extrude1") and the new
-   value in mm.
+2. Change it where it stands; don't delete and re-create a feature, which
+   takes its dependents (fillets, patterns) with it:
+   - an extrude's or cut's depth, end condition or direction, a revolve's
+     angle, a fillet's radius: `edit_feature` with `name` and the change;
+   - any other dimension: `set_dimension` with the full name (e.g.
+     "D1@Boss-Extrude1") and the new value in its `units` (mm, degrees, or
+     a count);
+   - a profile: `edit_sketch`, `delete_sketch_entities` with the ids it
+     lists, the `add_*` tools for the new shape, then `exit_sketch`;
+   - a new feature mid-tree: `set_rollback` with `after` the feature it
+     builds on, add it, then `set_rollback` with no input.
 3. `rebuild_model`: an error names each failing feature and how to fix it.
 4. `verify_model` with the new expected size.
 
 To turn a feature off without deleting it, `suppress_feature`. After
 `delete_feature`, call `list_features`: dependents may have gone too.
+Deleting a cut or boss leaves its own sketch (the reply's
+`absorbed_sketches_left` names it); `delete_absorbed: true` removes it too.
+
+To hide planes, axes or sketches (before a screenshot, say), use
+`set_visibility` with `types`; its reply gives each type's `before`, so a
+second call can put them back.
 
 ## An assembly
 

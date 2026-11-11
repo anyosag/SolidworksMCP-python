@@ -4,13 +4,14 @@ Provides tools for exporting SolidWorks models to various formats including STEP
 STL, PDF, DWG, and image formats.
 """
 
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
+from .modeling import DisplayType
 from .tool_boundary import (
     UnsupportedOperationError,
     normalize_input,
@@ -43,6 +44,75 @@ class ExportFileInput(CompatInput):
     )
 
 
+class ExportStlInput(ExportFileInput):
+    """Input schema for STL exports, with optional mesh settings for this file.
+
+    Attributes:
+        resolution (str | None): coarse, fine or custom.
+        deviation_mm (float | None): Largest gap to the true surface, mm.
+        angle_deg (float | None): Largest angle between facets, degrees.
+        units (str | None): The units written in the file.
+        binary (bool | None): Binary (True) or ASCII (False) STL.
+    """
+
+    resolution: Literal["coarse", "fine", "custom"] | None = Field(
+        default=None,
+        description=(
+            "Mesh resolution for this file: coarse, fine, or custom with "
+            "deviation_mm and angle_deg. Left out: the user's STL setting"
+        ),
+    )
+    deviation_mm: float | None = Field(
+        default=None,
+        gt=0,
+        le=100,
+        description=(
+            "Largest distance between the mesh and the true surface, in mm. "
+            "Smaller is finer; it makes the resolution custom"
+        ),
+    )
+    angle_deg: float | None = Field(
+        default=None,
+        gt=0,
+        le=90,
+        description=(
+            "Largest angle between neighbouring facets, in degrees. Smaller "
+            "is finer on small curved details; it makes the resolution custom"
+        ),
+    )
+    units: Literal["mm", "cm", "m", "in", "ft"] | None = Field(
+        default=None,
+        description="Units written in the file. Left out: the user's STL setting",
+    )
+    binary: bool | None = Field(
+        default=None,
+        description="Binary STL (true) or ASCII (false). Left out: the user's setting",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse a deviation or angle with coarse or fine resolution."""
+        tolerances = [
+            name
+            for name in ("deviation_mm", "angle_deg")
+            if getattr(self, name) is not None
+        ]
+        if tolerances and self.resolution in ("coarse", "fine"):
+            raise ValueError(
+                f"{' and '.join(tolerances)} need resolution 'custom', not "
+                f"{self.resolution!r}"
+            )
+        if self.resolution == "custom" and not tolerances:
+            raise ValueError(
+                "resolution 'custom' needs deviation_mm or angle_deg: SolidWorks "
+                "takes custom only with its own tolerances"
+            )
+
+    def mesh_settings(self) -> dict[str, Any]:
+        """The mesh settings given, by name (empty: keep the user's)."""
+        names = ("resolution", "deviation_mm", "angle_deg", "units", "binary")
+        return {n: getattr(self, n) for n in names if getattr(self, n) is not None}
+
+
 class ExportImageInput(CompatInput):
     """Input schema for exporting images.
 
@@ -58,6 +128,9 @@ class ExportImageInput(CompatInput):
         resolution (str | None): The resolution value.
         view_orientation (str): The view orientation value.
         width (int): The width value.
+        zoom_to_fit (bool | None): Whether to zoom so the model fills the view.
+        zoom_box_mm (list[float] | None): Two corners of a box to zoom to, mm.
+        hide (list[str] | None): Display types hidden for the picture only.
     """
 
     file_path: str | None = Field(
@@ -75,10 +148,37 @@ class ExportImageInput(CompatInput):
     resolution: str | None = Field(default=None, description="Resolution alias")
     view_orientation: str = Field(
         default="isometric",
-        description="View orientation (front, top, right, isometric, current)",
+        description=(
+            "View to turn the model to (front, back, left, right, top, bottom, "
+            "isometric, dimetric, trimetric), or current to keep the view on "
+            "screen exactly as it is, zoom included"
+        ),
     )
     orientation: str | None = Field(
-        default=None, description="Alternative orientation field"
+        default=None, description="Alias of view_orientation"
+    )
+    zoom_to_fit: bool | None = Field(
+        default=None,
+        description=(
+            "Zoom so the whole model fills the picture. Left out: yes for a "
+            "named view, no for current, so a close-up stays a close-up"
+        ),
+    )
+    zoom_box_mm: list[float] | None = Field(
+        default=None,
+        min_length=6,
+        max_length=6,
+        description=(
+            "Zoom to this part of the model: two opposite corners of a box in "
+            "model coordinates, mm, as [x1, y1, z1, x2, y2, z2]"
+        ),
+    )
+    hide: list[DisplayType] | None = Field(
+        default=None,
+        description=(
+            'Hide these for the picture only, e.g. ["planes", "sketches"]; '
+            "they are shown again afterwards as they were"
+        ),
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -92,12 +192,23 @@ class ExportImageInput(CompatInput):
         """
         if self.file_path is None:
             self.file_path = self.output_path
+        if (
+            self.orientation is not None
+            and "view_orientation" not in self.model_fields_set
+        ):
+            self.view_orientation = self.orientation
         if self.image_format is not None:
             self.format_type = self.image_format.lower()
         if self.resolution and "x" in self.resolution.lower():
             width, height = self.resolution.lower().split("x", 1)
             self.width = int(width)
             self.height = int(height)
+        if self.zoom_box_mm is not None:
+            if self.zoom_to_fit:
+                raise ValueError("zoom_box_mm and zoom_to_fit: true can't both apply")
+            first, second = self.zoom_box_mm[:3], self.zoom_box_mm[3:]
+            if first == second:
+                raise ValueError("zoom_box_mm needs two different corners")
 
 
 class BatchExportInput(CompatInput):
@@ -185,7 +296,7 @@ async def register_export_tools(
                         print(f"Registered {tool_count} export tools")
                         ```
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     @mcp.tool()
@@ -277,25 +388,57 @@ async def register_export_tools(
         }
 
     @mcp.tool()
-    async def export_stl(input_data: ExportFileInput) -> dict[str, Any]:
+    async def export_stl(input_data: ExportStlInput) -> dict[str, Any]:
         """Export the active document to STL, like File > Save As with the STL type.
 
         Use it for 3D printing. An assembly is exported whole, with lightweight
         components resolved first. SolidWorks picks the format from the file's
-        extension, so end `file_path` in .stl. Needs: an open, active part or assembly.
-        Changes: writes the file, creating its folder and replacing a file already
-        there; the open document is unchanged. Returns: `export` with `file_path` and
-        `format`.
+        extension, so end `file_path` in .stl. The mesh follows the user's STL
+        options unless this call gives `resolution`, `deviation_mm`, `angle_deg`,
+        `units` or `binary`; those apply to this file only, and the user's options
+        are put back afterwards. Needs: an open, active part or assembly. Changes:
+        writes the file, creating its folder and replacing a file already there; the
+        open document is unchanged. Returns: `export` with `file_path`, `format` and,
+        with mesh settings, `mesh` (`applied`, `restored`).
 
         Args:
             input_data: The export. `file_path` (ending in .stl) is required;
                 `format_type` is not needed: the file extension decides the
-                format.
+                format. The mesh settings are optional.
 
         Returns:
             dict[str, Any]: The file written.
         """
-        input_data = _file_input(input_data, "stl")
+        input_data = _file_input(normalize_input(input_data, ExportStlInput), "stl")
+        settings = input_data.mesh_settings()
+        if settings:
+            require_capability(
+                adapter,
+                "export_stl_with_settings",
+                "The active adapter cannot set STL mesh options; nothing was "
+                "exported. Export without them, or set them in SolidWorks.",
+            )
+            result = await adapter.export_stl_with_settings(
+                input_data.file_path, settings
+            )
+            require_success(result, context="Failed to export STL")
+            mesh = (result.data or {}).get("mesh", {})
+            reply: dict[str, Any] = {
+                "status": "success",
+                "message": f"Exported to STL format: {input_data.file_path}",
+                "export": {
+                    "file_path": input_data.file_path,
+                    "format": "STL",
+                    "mesh": mesh,
+                },
+                "execution_time": result.execution_time,
+            }
+            if mesh.get("restored") is False:
+                reply["warning"] = (
+                    "The file was written, but the user's STL options could not "
+                    "all be put back; check Tools > Options > Export > STL."
+                )
+            return reply
         if hasattr(adapter, "export_stl"):
             result = await adapter.export_stl(input_data.model_dump())
         else:
@@ -412,19 +555,26 @@ async def register_export_tools(
 
     @mcp.tool()
     async def export_image(input_data: ExportImageInput) -> dict[str, Any]:
-        """Save a picture of the active model in a standard view, as PNG or JPG, at a chosen size.
+        """Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG.
 
-        Use it to show a result, or to check a model's shape after a change. The view is
-        set first (front, back, left, right, top, bottom, isometric, dimetric,
-        trimetric, or current to keep the user's view). Needs: an open, active document.
-        Changes: writes the image file, and turns the model to the view asked for.
-        Returns: `data` with `file_path`, `format`, `dimensions` (the size written),
-        `requested_dimensions` and `view`.
+        Use it to show a result, or to check a model's shape after a change. A standard
+        view (front, back, left, right, top, bottom, isometric, dimetric, trimetric)
+        turns the model to it and zooms so the whole model fits. `current` keeps the
+        view exactly as it is, zoom included: set up a close-up first (or with an
+        earlier call) and it comes out as that close-up. `zoom_to_fit` overrides the
+        zoom either way, and `zoom_box_mm` zooms to a box of the model instead. `hide`
+        hides planes, sketches and the like for this picture only. The picture keeps
+        the graphics area's shape, padded out to `width` x `height`. Needs: an open,
+        active document. Changes: writes the image file; a standard view or a zoom
+        also turns or zooms the model on screen. Returns: `data` with `file_path`,
+        `format`, `dimensions` (the size written), `requested_dimensions`, `view`,
+        `zoomed_to_fit`, `zoom_box_mm`, `hidden` and `window_state`.
 
         Args:
             input_data: The image. `file_path` (or `output_path`) is needed; the
                 format follows its extension. `width`/`height` (or `resolution` as
-                "1920x1080") and `view_orientation` (isometric) have defaults.
+                "1920x1080") and `view_orientation` (isometric) have defaults;
+                `zoom_to_fit` defaults to yes except for `current`.
 
         Returns:
             dict[str, Any]: The image written.

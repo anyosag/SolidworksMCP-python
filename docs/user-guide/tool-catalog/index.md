@@ -1,28 +1,26 @@
-# Tool Catalog — All 152 Tools
+# Tool Catalog — All 101 Tools
 
-This reference documents all **152 MCP tools** registered by the SolidWorks MCP server.
+This reference documents all **165 MCP tools** registered by the SolidWorks MCP server.
 Each section covers one functional category with parameter tables and copy-paste sample calls.
-
-![Tool categories overview — 109 tools across 12 functional areas](../../assets/images/tool-categories-overview.svg)
 
 ## Quick Navigation
 
 | Category | Count | Description |
 |----------|-------|-------------|
-| [Modeling Tools](modeling.md) | 30 | Create and manipulate SolidWorks parts, assemblies, and drawings — sketches, extrusions, revolves, dimensions, feature renaming, chamfers/fillets, and the document unit system. |
-| [Sketching Tools](sketching.md) | 19 | Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply geometric constraints and dimensions. |
-| [Drawing Tools](drawing.md) | 14 | Create and edit 2-D technical drawings: add projected, section, and detail views, place annotations, and auto-dimension layouts. |
-| [Drawing Analysis Tools](drawing-analysis.md) | 8 | Quality-gate your drawings by analyzing dimensions, annotations, view coverage, standards compliance, and completeness. |
-| [Drawing Automation Tools](drawing-automation.md) | 5 | Model dimensions laid out without overlaps, BOM tables, sheet scale and complete A3 drawings. |
-| [Engineering Data Tools](engineering-data.md) | 8 | Read and edit the data drawings and BOMs are built from: model dimensions by name, measurements, materials, custom properties and sheet-metal flat patterns. |
-| [Analysis Tools](analysis.md) | 6 | Check a finished part or assembly against expected values, and extract mass, volume, center of mass, inertia, interference and material metadata. |
-| [Export Tools](export.md) | 7 | Convert SolidWorks models to industry-standard interchange and manufacturing formats such as STEP, IGES, STL, DWG, PDF, and images. |
-| [File Management Tools](file-management.md) | 19 | Open, save, and manage SolidWorks documents; load parts and assemblies, switch the active document, enumerate what's open, inspect model metadata, classify model families, and read the live UI selection. |
-| [Automation Tools](automation.md) | 8 | Orchestrate multi-step workflows, run batch file processing, manage design tables, and tune performance settings. |
-| [VBA Generation Tools](vba-generation.md) | 10 | Generate and execute VBA macro code for operations that exceed direct COM call complexity or require procedural automation. |
-| [Template Management Tools](template-management.md) | 6 | Create, extract, apply, compare, and manage SolidWorks document templates in a reusable library workflow. |
-| [Macro Recording Tools](macro-recording.md) | 7 | Record, replay, analyze, and optimize SolidWorks VBA macros, including macro libraries and batch execution workflows. |
-| [Docs Discovery Tools](docs-discovery.md) | 5 | Look up SolidWorks API interfaces and member signatures, read from the installed SolidWorks type library. |
+| [Modeling Tools](modeling.md) | 35 | Create and manipulate SolidWorks parts, assemblies, and drawings. These are the … |
+| [Sketching Tools](sketching.md) | 22 | Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge… |
+| [Drawing Tools](drawing.md) | 14 | Create and edit 2-D technical drawings: add projected/section/detail views, plac… |
+| [Drawing Analysis Tools](drawing-analysis.md) | 8 | Quality-gate your drawings. Analyse dimensions, annotations, view coverage, and … |
+| [Drawing Automation Tools](drawing-automation.md) | 7 | Put the model's dimensions on a drawing and lay them out so nothing overlaps, ad… |
+| [Engineering Data Tools](engineering-data.md) | 8 | Read and edit the data drawings, BOMs and analyses are built from: every model d… |
+| [Analysis Tools](analysis.md) | 7 | Extract engineering properties from models: mass, volume, centre of mass, moment… |
+| [Export Tools](export.md) | 7 | Convert SolidWorks models to industry-standard interchange and manufacturing for… |
+| [File Management Tools](file-management.md) | 19 | Open, save, and manage SolidWorks documents. Load parts and assemblies, save-as … |
+| [Automation Tools](automation.md) | 8 | Orchestrate multi-step workflows, run batch file processing, manage design table… |
+| [VBA Generation Tools](vba-generation.md) | 10 | Generate and execute VBA macro code for operations that exceed the COM direct-ca… |
+| [Template Management Tools](template-management.md) | 6 | Create, extract, apply, compare, and library-manage SolidWorks document template… |
+| [Macro Recording Tools](macro-recording.md) | 7 | Record, replay, analyse, and optimize SolidWorks VBA macros. Create macro librar… |
+| [Docs Discovery Tools](docs-discovery.md) | 5 | Look up SolidWorks API interfaces, methods and properties, with each member's pa… |
 
 ## Standard Response Envelope
 
@@ -62,32 +60,17 @@ says what kind of failure it was; `hint` is the next step to take:
 | `no_active_sketch` | The tool needs an open sketch and there is none |
 | `wrong_document_type` | The active document is the wrong kind (e.g. a part where a drawing is needed) |
 | `not_found` | A named feature, document, view, file, face or edge does not exist |
-| `solidworks_unavailable` | SolidWorks was closed or crashed (RPC disconnect) |
+| `solidworks_unavailable` | SolidWorks was closed or crashed (RPC disconnect); the next call after it is started reconnects |
+| `solidworks_reconnected` | SolidWorks restarted and the server reconnected to it; the call did nothing and earlier documents are gone |
+| `active_document_changed` | Someone else switched the active document since the last call; nothing was done until `activate_document` picks one |
+| `solidworks_busy` | SolidWorks didn't answer for `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS`; nothing was run, retry once it is free |
+| `operation_stopped` | The call stopped part-way: past `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS`, or the client went away |
 | `circuit_open` | Calls are paused after repeated failures; retry after the breaker timeout |
 | `com_wrong_thread` | A SolidWorks call ran off the thread that connected (a server bug; restart the server) |
-| `com_member_not_found` | SolidWorks could not resolve an API member: usually a method the server forgot to flag (a server bug; report the tool), or a stale `gen_py` cache after a SolidWorks upgrade |
+| `com_member_not_found` | SolidWorks could not resolve an API member (usually a stale `gen_py` cache) |
 | `com_type_mismatch` | SolidWorks rejected an argument's COM type (a server bug; report it) |
-| `feature_not_built` | SolidWorks accepted the call but the geometry gave it nothing to build (e.g. a cut whose profile misses the body in both directions); change the inputs, don't retry as is |
 | `operation_failed` | SolidWorks refused or failed the operation; read `message` |
 | `internal` | An unexpected server error (a bug; report the tool and arguments) |
-
-## Request → Response Flow
-
-```mermaid
-sequenceDiagram
-    participant LLM
-    participant MCP as MCP Server
-    participant COM as SolidWorks COM
-    participant SW as SolidWorks
-
-    LLM->>MCP: tool call + JSON payload
-    MCP->>MCP: Pydantic input validation
-    MCP->>COM: COM API call (pywin32)
-    COM->>SW: Windows COM dispatch
-    SW-->>COM: return value / results
-    COM-->>MCP: Python object
-    MCP-->>LLM: success response payload
-```
 
 ## Calling Tools from an LLM
 

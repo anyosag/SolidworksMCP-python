@@ -50,7 +50,7 @@ class TestCompleteWorkflows:
             )
         )
 
-        server.state.adapter.add_sketch_circle = AsyncMock(
+        server.state.adapter.add_circle = AsyncMock(
             return_value=Mock(
                 is_success=True, data={"entity_id": "Circle1"}, execution_time=0.2
             )

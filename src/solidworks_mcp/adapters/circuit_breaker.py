@@ -382,6 +382,20 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS, data={"reset": self.reset(operation)}
         )
 
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore SolidWorks; not counted by the breaker.
+
+        It changes the window, not the model, so a failure says nothing about
+        whether SolidWorks operations should be paused.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        return await self.adapter.set_window_state(state)
+
     async def connect(self) -> None:
         """Connect through circuit breaker.
 
@@ -483,34 +497,48 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"file_path": file_path},
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close model through circuit breaker.
 
         Args:
             save (bool): The save value. Defaults to False.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.close_model``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "close_model",
-            lambda: self.adapter.close_model(save),
-            input_dict={"save": save},
+            lambda: self.adapter.close_model(save, overwrite_modified_references),
+            input_dict={
+                "save": save,
+                "overwrite_modified_references": overwrite_modified_references,
+            },
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save model through circuit breaker.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.save_file``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "save_file",
-            lambda: self.adapter.save_file(file_path),
-            input_dict={"file_path": file_path},
+            lambda: self.adapter.save_file(file_path, overwrite_modified_references),
+            input_dict={
+                "file_path": file_path,
+                "overwrite_modified_references": overwrite_modified_references,
+            },
         )
 
     async def execute_macro(
@@ -748,6 +776,82 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             error_results_are_failures=False,
         )
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select edges by rule through circuit breaker.
+
+        Like ``select_face_edges``, "no edge matches" is an answer, not a
+        fault, so it doesn't count against the breaker.
+        """
+        return await self._execute_with_circuit_breaker(
+            "select_edges",
+            lambda: self.adapter.select_edges(query, append),
+            input_dict={"query": query, "append": append},
+            error_results_are_failures=False,
+        )
+
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Show or hide reference geometry and sketches through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_visibility",
+            lambda: self.adapter.set_visibility(names, types, visible),
+            input_dict={"names": names, "types": types, "visible": visible},
+        )
+
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure wall thickness through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "check_wall_thickness",
+            lambda: self.adapter.check_wall_thickness(min_wall_mm, max_rays),
+            input_dict={"min_wall_mm": min_wall_mm, "max_rays": max_rays},
+        )
+
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Edit a feature's parameters through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "edit_feature",
+            lambda: self.adapter.edit_feature(name, changes),
+            input_dict={"name": name, "changes": changes},
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_rollback",
+            lambda: self.adapter.set_rollback(before, after),
+            input_dict={"before": before, "after": after},
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "edit_sketch",
+            lambda: self.adapter.edit_sketch(name),
+            input_dict={"name": name},
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete sketch entities through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "delete_sketch_entities",
+            lambda: self.adapter.delete_sketch_entities(entity_ids),
+            input_dict={"entity_ids": entity_ids},
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:
@@ -845,12 +949,13 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Pattern features around an axis through circuit breaker."""
         return await self._execute_with_circuit_breaker(
             "pattern_circular",
             lambda: self.adapter.pattern_circular(
-                features, axis, count, angle, equal_spacing
+                features, axis, count, angle, equal_spacing, reverse_direction
             ),
             input_dict={
                 "features": features,
@@ -858,6 +963,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "count": count,
                 "angle": angle,
                 "equal_spacing": equal_spacing,
+                "reverse_direction": reverse_direction,
             },
         )
 
@@ -1016,6 +1122,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Add arc through circuit breaker.
 
@@ -1026,6 +1133,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             start_y (float): Arc start Y coordinate.
             end_x (float): Arc end X coordinate.
             end_y (float): Arc end Y coordinate.
+            direction (str): ``"ccw"`` (default) or ``"cw"``.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1039,6 +1147,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 start_y,
                 end_x,
                 end_y,
+                direction,
             ),
             input_dict={
                 "center_x": center_x,
@@ -1047,7 +1156,43 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "start_y": start_y,
                 "end_x": end_x,
                 "end_y": end_y,
+                "direction": direction,
             },
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw outlines in the open sketch through circuit breaker.
+
+        Args:
+            outlines (list[dict[str, Any]]): The resolved outlines.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "add_sketch_outlines",
+            lambda: self.adapter.add_sketch_outlines(outlines),
+            input_dict={"outlines": outlines},
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set sketch entities' construction state through circuit breaker.
+
+        Args:
+            entity_ids (list[str]): The sketch entity ids.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "set_sketch_construction",
+            lambda: self.adapter.set_sketch_construction(entity_ids, construction),
+            input_dict={"entity_ids": entity_ids, "construction": construction},
         )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:
@@ -1323,16 +1468,34 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"file_path": file_path, "format_type": format_type},
         )
 
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export STL with mesh settings through circuit breaker.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): The mesh settings.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "export_stl_with_settings",
+            lambda: self.adapter.export_stl_with_settings(file_path, settings),
+            input_dict={"file_path": file_path, "settings": settings},
+        )
+
     # Dimension operations
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
         """Get dimension through circuit breaker.
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         return await self._execute_with_circuit_breaker(
             "get_dimension",
@@ -1340,7 +1503,9 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"name": name},
         )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
         """Set dimension through circuit breaker.
 
         Args:
@@ -1348,7 +1513,8 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``, ``units``
+            and ``kind``.
         """
         return await self._execute_with_circuit_breaker(
             "set_dimension",
@@ -1401,6 +1567,30 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             lambda: self.adapter.activate_document(title_or_path),
             input_dict={"title_or_path": title_or_path},
         )
+
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Use an open document through circuit breaker.
+
+        Args:
+            title_or_path (str): Title, full path, or file name of an open
+                document.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "use_document",
+            lambda: self.adapter.use_document(title_or_path),
+            input_dict={"title_or_path": title_or_path},
+        )
+
+    def take_document_notice(self) -> str | None:
+        """The wrapped adapter's shared-document warning (no breaker: no COM).
+
+        Returns:
+            str | None: The warning, or None.
+        """
+        return self.adapter.take_document_notice()
 
     # Assembly operations
 
@@ -1586,19 +1776,22 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict=params if isinstance(params, dict) else {},
         )
 
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Delete a feature through circuit breaker.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "delete_feature",
-            lambda: self.adapter.delete_feature(name),
-            input_dict={"name": name},
+            lambda: self.adapter.delete_feature(name, delete_absorbed),
+            input_dict={"name": name, "delete_absorbed": delete_absorbed},
         )
 
     async def suppress_feature(

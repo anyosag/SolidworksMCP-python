@@ -27,6 +27,7 @@ from .io import (
     _resolve_drawing_view,
     _sw_type_info,
     _view_names,
+    dimension_kind,
 )
 
 if TYPE_CHECKING:
@@ -395,8 +396,9 @@ class SolidWorksDocumentationMixin:
 
         Returns:
             AdapterResult[list[dict[str, Any]]]: ``full_name``, ``feature``,
-            ``value`` (document units), ``system_value`` (metres / radians)
-            and ``read_only`` per dimension.
+            ``value`` (document units), ``system_value`` (metres / radians),
+            ``kind`` (length, angle or count), ``units`` (what
+            ``set_dimension`` takes for it) and ``read_only`` per dimension.
         """
         guard = self._require_doc_type({1, 2}, "list_model_dimensions")
         if guard is not None:
@@ -423,6 +425,7 @@ class SolidWorksDocumentationMixin:
                         )
                         if dim is not None:
                             dim = _sw_type_info.flagged(dim, "IDimension")
+                            kind, unit, _factor = dimension_kind(self, dim)
                             dims.append(
                                 {
                                     "full_name": _strip_document_suffix(
@@ -437,6 +440,8 @@ class SolidWorksDocumentationMixin:
                                     "system_value": self._attempt(
                                         lambda d=dim: d.SystemValue, default=None
                                     ),
+                                    "kind": kind,
+                                    "units": unit,
                                     "read_only": bool(
                                         self._attempt(
                                             lambda d=dim: d.ReadOnly, default=False
@@ -554,6 +559,36 @@ class SolidWorksDocumentationMixin:
         return cast(
             "AdapterResult[dict[str, Any]]",
             self._handle_com_operation("measure_entities", _measure),
+        )
+
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the active part's wall thickness by casting rays inward.
+
+        See ``thickness.measure_wall_thickness``: points sampled on every face,
+        one ray each against the outward normal, the distance to where it
+        leaves the solid.
+
+        Args:
+            min_wall_mm: The thinnest wall the printer can make.
+            max_rays: The most rays to cast (samples are thinned evenly).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``min_thickness_mm`` and where,
+            ``below_minimum``, ``thin_spots``, ``ok``, and the counts.
+        """
+        from .thickness import measure_wall_thickness
+
+        guard = self._require_doc_type({1}, "check_wall_thickness")
+        if guard is not None:
+            return cast("AdapterResult[dict[str, Any]]", guard)
+        return cast(
+            "AdapterResult[dict[str, Any]]",
+            self._handle_com_operation(
+                "check_wall_thickness",
+                lambda: measure_wall_thickness(self, min_wall_mm, max_rays),
+            ),
         )
 
     async def get_material(

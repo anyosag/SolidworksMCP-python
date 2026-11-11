@@ -13,7 +13,7 @@ import random
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from ..exceptions import SolidWorksOperationError
 from .base import (
@@ -32,7 +32,16 @@ from .base import (
 from .solidworks.drawing_standard import gtol_problem
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
-from .solidworks.sketch import RELATION_NAME_MAP
+from .solidworks.saving import confirmation_result
+from .solidworks.sketch import (
+    ARC_DIRECTION_FLAGS,
+    MAX_OUTLINE_SEGMENTS,
+    RELATION_NAME_MAP,
+    default_plane_axes,
+    plane_candidates_for,
+)
+from .solidworks.stl_settings import preference_changes as _stl_changes
+from .solidworks.visibility import unknown_types as _unknown_display_types
 
 #: Orientations the mock accepts for a drawing view. Kept in step with
 #: ``_NAMED_VIEWS`` in ``adapters/solidworks/io.py`` by a test — the two lists
@@ -238,6 +247,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # self-consistent without a real geometry engine.
         self._pattern_volume: float = 48431.5
         self._operation_count = 0
+        # Simulated SolidWorks window (set_window_state, export_image) and the
+        # user's modified files an assembly save would overwrite (tests set
+        # these to exercise the confirmation flow).
+        self._window_state = "normal"
+        self._modified_user_files: list[str] = []
 
         # Configurable simulation delays (in seconds)
         self._delays = {
@@ -413,19 +427,66 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["model_operation"],
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Mock minimize/restore: changes the simulated window state.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        states = {"minimize": "minimized", "restore": "normal"}
+        if state not in states:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Unknown window state {state!r}; use minimize or restore",
+            )
+        self._window_state = states[state]
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"window_state": self._window_state},
+        )
+
+    def _needs_confirmation(
+        self, overwrite_modified_references: bool
+    ) -> AdapterResult[Any] | None:
+        """Mirror the real adapter: an assembly save that would overwrite the
+        user's modified files (``_modified_user_files``) needs confirming."""
+        if (
+            self._modified_user_files
+            and not overwrite_modified_references
+            and self._current_model is not None
+            and self._current_model.type == "Assembly"
+        ):
+            return confirmation_result(list(self._modified_user_files))
+        return None
+
+    def _saved_references(self) -> list[str]:
+        """The user's files a confirmed save wrote; they are saved now."""
+        saved = list(self._modified_user_files)
+        self._modified_user_files = []
+        return saved
+
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Mock closing the current model.
 
         Args:
             save (bool): The save value. Defaults to False.
+            overwrite_modified_references (bool): See
+                ``SolidWorksAdapter.close_model``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         if not self._current_model:
             return AdapterResult(
                 status=AdapterResultStatus.WARNING, error="No active model to close"
             )
+        if save and (needs := self._needs_confirmation(overwrite_modified_references)):
+            return needs
 
         await asyncio.sleep(self._delays["model_operation"] / 2)
         self._operation_count += 1
@@ -433,6 +494,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if save:
             # Simulate save operation
             await asyncio.sleep(self._delays["model_operation"])
+            self._saved_references()
 
         self._current_model = None
 
@@ -873,6 +935,401 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "selected_edges": len(edges),
                 "selection_count": len(self._selection),
             },
+            execution_time=self._delays["feature_operation"] / 4,
+        )
+
+    def _mock_block_edges(self) -> list[dict[str, Any]]:
+        """The canned 10 mm block's edges, described as the live adapter does.
+
+        Twelve straight edges, plus a 2 mm hole rim on each Z face once any
+        circle has been sketched (the block ``select_face_edges`` uses).
+        """
+        edges: list[dict[str, Any]] = []
+        for axis in range(3):
+            others = [i for i in range(3) if i != axis]
+            for a in (0.0, 10.0):
+                for b in (0.0, 10.0):
+                    start = [0.0, 0.0, 0.0]
+                    start[others[0]], start[others[1]] = a, b
+                    end = list(start)
+                    end[axis] = 10.0
+                    edges.append(
+                        {
+                            "curve": "linear",
+                            "start_mm": start,
+                            "end_mm": end,
+                            "length_mm": 10.0,
+                        }
+                    )
+        if any(e.startswith("Circle") for e in self._sketch_entity_ids):
+            edges += [
+                {
+                    "curve": "circular",
+                    "center_mm": [5.0, 5.0, z],
+                    "axis": [0.0, 0.0, 1.0],
+                    "radius_mm": 2.0,
+                }
+                for z in (0.0, 10.0)
+            ]
+        return edges
+
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock rule-based edge selection on the canned 10 mm block.
+
+        The same validation, rules (``edge_rules.filter_edges``), messages
+        and payload as the live adapter. Any feature in the mock tree made
+        the whole block; a face source keeps the edges lying on that face.
+        """
+        from .solidworks.edge_rules import (
+            MAX_DESCRIBED_EDGES,
+            describe_source,
+            filter_edges,
+            no_match_message,
+            validate_edge_query,
+        )
+        from .solidworks.face_selection import side_vector
+
+        problem = validate_edge_query(query)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if getattr(self._current_model, "type", "Part") != "Part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="select_edges requires an active part document.",
+            )
+        await asyncio.sleep(self._delays["feature_operation"] / 4)
+
+        normal: tuple[float, float, float] | None = None
+        if query.get("feature"):
+            name = str(query["feature"])
+            if not any(f.name == name for f in self._features.values()):
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"Feature {name!r} not found; list_features names the features.",
+                )
+        elif query.get("face_point") is not None:
+            normal = self._mock_face_at(query["face_point"])
+            if normal is None:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"No face found at point {list(query['face_point'])} mm.",
+                )
+        elif query.get("side"):
+            normal = side_vector(str(query["side"]))
+        elif query.get("plane"):
+            if query["plane"] != "Front Plane":
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"No body face lies on {query['plane']!r}.",
+                )
+            normal = (0.0, 0.0, -1.0)
+
+        edges = self._mock_block_edges()
+        if normal is not None:
+            axis = next(i for i in range(3) if normal[i] != 0)
+            level = 10.0 if normal[axis] > 0 else 0.0
+            edges = [
+                e
+                for e in edges
+                if all(
+                    abs(p[axis] - level) < 1e-9
+                    for p in (e.get("start_mm"), e.get("end_mm"), e.get("center_mm"))
+                    if p is not None
+                )
+            ]
+        kept, counts = filter_edges([(None, e) for e in edges], query)
+        if not kept:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=no_match_message(query, counts)
+            )
+        if not append:
+            self._selection.clear()
+        self._selection.extend(f"Edge{i}" for i in range(len(kept)))
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "source": describe_source(query),
+                "matched": counts,
+                "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
+                "selected_edges": len(kept),
+                "selection_count": len(self._selection),
+            },
+            execution_time=self._delays["feature_operation"] / 4,
+        )
+
+    def _mock_feature_kind(self, name: str) -> str | None:
+        """``IFeature.GetTypeName2`` of a mock tree name, or None when absent."""
+        if name in self._BUILTIN_PLANES or name in self._reference_planes:
+            return "RefPlane"
+        if name in self._axes:
+            return "RefAxis"
+        if name in self._sketches:
+            return "ProfileFeature"
+        if any(f.name == name for f in self._features.values()):
+            return "Feature"
+        return None
+
+    async def set_visibility(
+        self,
+        names: list[str] | None = None,
+        types: list[str] | None = None,
+        visible: bool = False,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock showing or hiding reference geometry and sketches.
+
+        Keeps the document's display toggles (all shown at first) and the
+        names hidden one by one, and refuses what the live adapter refuses,
+        with its wording.
+        """
+        from .solidworks.visibility import (
+            DISPLAY_TOGGLES,
+            REFERENCE_TYPES,
+            SKETCH_TYPES,
+            unknown_types,
+        )
+
+        names, types = list(names or []), list(types or [])
+        if not names and not types:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="Give names, types or both to show or hide.",
+            )
+        unknown = unknown_types(types)
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Unknown type(s) {', '.join(unknown)}; use "
+                    f"{', '.join(DISPLAY_TOGGLES)}."
+                ),
+            )
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        toggles: dict[str, bool] = self.__dict__.setdefault(
+            "_display_toggles", dict.fromkeys(DISPLAY_TOGGLES, True)
+        )
+        hidden: set[str] = self.__dict__.setdefault("_hidden_features", set())
+
+        features = []
+        for name in names:
+            kind = self._mock_feature_kind(name)
+            if kind is None:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"Feature {name!r} not found; list_features names them.",
+                )
+            if kind not in SKETCH_TYPES | REFERENCE_TYPES:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        f"{name!r} is a {kind}, not a plane, axis, point, "
+                        "coordinate system or sketch; use suppress_feature to "
+                        "turn a feature off"
+                    ),
+                )
+            (hidden.discard if visible else hidden.add)(name)
+            features.append({"name": name, "type": kind, "visible": bool(visible)})
+        changed = {}
+        for name in types:
+            changed[name] = {"before": toggles[name], "after": bool(visible)}
+            toggles[name] = bool(visible)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"visible": bool(visible), "features": features, "types": changed},
+            execution_time=0.0,
+        )
+
+    #: The mock's feature types as SolidWorks' ``GetTypeName2`` names them.
+    _MOCK_TYPE_NAMES = {
+        "Extrusion": "Extrusion",
+        "Cut": "Cut",
+        "Revolve": "Revolution",
+        "Fillet": "Fillet",
+    }
+    #: ``edit_feature``'s change names -> the mock feature's parameter keys.
+    _MOCK_EDIT_KEYS = {
+        "depth": "depth",
+        "end_condition": "end_condition",
+        "reverse_direction": "reverse_direction",
+        "angle": "angle",
+        "radius": "size",
+    }
+
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock editing a feature's parameters, with the live adapter's rules.
+
+        The change rules (which feature takes which change) are the live
+        ones (``feature_editing.check_changes``); the values are kept in the
+        feature's ``parameters``.
+        """
+        from .solidworks.feature_editing import check_changes, end_condition_value
+
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        feature = next((f for f in self._features.values() if f.name == name), None)
+        if feature is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Feature {name!r} not found; list_features names them.",
+            )
+        kind = self._MOCK_TYPE_NAMES.get(feature.type, feature.type)
+        problem = check_changes(kind, changes, name)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        parameters = feature.parameters if feature.parameters is not None else {}
+        feature.parameters = parameters
+        before = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in changes}
+        for key, value in changes.items():
+            if key == "end_condition":
+                value = end_condition_value(str(value))[0]
+            parameters[self._MOCK_EDIT_KEYS[key]] = value
+        after = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in changes}
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"feature": name, "type": kind, "before": before, "after": after},
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving the rollback bar over the mock feature tree."""
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        names = [f.name for f in self._features.values()]
+        target = before or after
+        if target and target not in names:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Feature {target!r} not found; list_features names them.",
+            )
+        if before:
+            index = names.index(before)
+            position = f"before {before}"
+        elif after:
+            index = names.index(after) + 1
+            position = f"after {after}"
+        else:
+            index, position = len(names), "the end"
+        self.__dict__["_rollback_index"] = index
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"position": position, "rolled_back": names[index:]},
+            execution_time=self._delays["model_operation"],
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock opening an existing sketch for editing.
+
+        The mock keeps no sketch geometry, so the sketch opens with no
+        listed segments; new ``add_*`` calls draw into it as usual.
+        """
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if name not in self._sketches:
+            kind = self._mock_feature_kind(name)
+            error = (
+                f"Feature {name!r} not found; list_features names them."
+                if kind is None
+                else f"{name!r} is a {kind}, not a sketch."
+            )
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
+        self._current_sketch = name
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"sketch": name, "segments": []},
+            execution_time=self._delays["sketch_operation"],
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock deleting entities of the open sketch by id."""
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        missing = [i for i in entity_ids if i not in self._sketch_entity_ids]
+        if missing:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Sketch entity {', '.join(missing)} not found in the open sketch."
+                ),
+            )
+        for entity_id in entity_ids:
+            self._sketch_entity_ids.discard(entity_id)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "deleted": list(entity_ids),
+                "remaining": sorted(self._sketch_entity_ids),
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    async def check_wall_thickness(
+        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock wall thickness of the canned 10 mm block: 10 mm everywhere.
+
+        One sample at the centre of each of the block's six faces, summarized
+        by the live adapter's own ``thickness.summarize``, so the reply has
+        the live shape and ``min_wall_mm`` above 10 finds every sample thin.
+        """
+        from .solidworks.thickness import summarize
+
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        kind = str(getattr(self._current_model, "type", "Part")).lower()
+        if kind != "part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "check_wall_thickness needs an active part document "
+                    f"(active document is {kind})."
+                ),
+            )
+        samples = []
+        for axis in range(3):
+            for sign in (1.0, -1.0):
+                normal = [0.0, 0.0, 0.0]
+                normal[axis] = sign
+                point = [0.005, 0.005, 0.005]
+                point[axis] = 0.01 if sign > 0 else 0.0
+                samples.append((point, normal))
+        samples = samples[: max(1, int(max_rays))]
+        reply = summarize(
+            samples, dict.fromkeys(range(len(samples)), 0.01), min_wall_mm
+        )
+        reply.update({"bodies": 1, "faces": 6})
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data=reply,
             execution_time=self._delays["feature_operation"] / 4,
         )
 
@@ -1433,6 +1890,20 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             # Legacy tests start sketching immediately after connect.
             await self.create_part()
 
+        # Like the live adapter: a default plane by any of its names, or a
+        # plane create_reference_plane made - never a fallback to another.
+        default_key, candidates = plane_candidates_for(plane)
+        plane_used = candidates[0]
+        if default_key is None and plane_used not in self._reference_planes:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Plane '{plane}' not found in the part. Use Front, Top "
+                    "or Right, or a plane made by create_reference_plane "
+                    "(list_features names them)"
+                ),
+            )
+
         await asyncio.sleep(self._delays["sketch_operation"])
         self._operation_count += 1
 
@@ -1449,6 +1920,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "plane": plane,
             },
             execution_time=self._delays["sketch_operation"],
+            metadata={
+                "plane": plane_used,
+                # The mock knows the default planes' axes; a reference
+                # plane's would need its geometry, which it doesn't keep.
+                "axes": default_plane_axes(default_key) if default_key else None,
+            },
         )
 
     async def add_sketch_line(
@@ -1490,12 +1967,16 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def save_file(
-        self, file_path: str | None = None
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
-        """Legacy compatibility save operation for tests.
+        """Mock save, with the real adapter's overwrite confirmation.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See
+                ``SolidWorksAdapter.save_file``.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -1505,12 +1986,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error="No active model",
             )
+        if needs := self._needs_confirmation(overwrite_modified_references):
+            return needs
         await asyncio.sleep(0.02)
         self._operation_count += 1
         resolved_path = file_path or self._current_model.path
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"file_path": resolved_path, "saved": True},
+            data={
+                "file_path": resolved_path,
+                "saved": True,
+                "saved_references": self._saved_references(),
+                "warnings": [],
+            },
             execution_time=0.02,
         )
 
@@ -1659,6 +2147,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Mock adding a circular arc to sketch.
 
@@ -1669,6 +2158,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             start_y (float): Arc start point Y.
             end_x (float): Arc end point X.
             end_y (float): Arc end point Y.
+            direction (str): ``"ccw"`` (default) or ``"cw"``.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1676,6 +2166,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if not self._current_sketch:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        if direction not in ARC_DIRECTION_FLAGS:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"direction must be 'ccw' or 'cw', not {direction!r}",
             )
 
         await asyncio.sleep(self._delays["sketch_operation"] / 2)
@@ -1688,6 +2183,112 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS,
             data=arc_id,
             execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    def _new_sketch_entity_id(self, prefix: str) -> str:
+        """A ``<prefix>_<n>`` id no entity in the mock sketch has yet."""
+        number = len(self._sketch_entity_ids) + 1
+        while f"{prefix}_{number}" in self._sketch_entity_ids:
+            number += 1
+        entity_id = f"{prefix}_{number}"
+        self._sketch_entity_ids.add(entity_id)
+        return entity_id
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock drawing whole outlines of lines and arcs in one call.
+
+        Refuses what the live adapter refuses (no open sketch, no segments,
+        more than ``MAX_OUTLINE_SEGMENTS``) with the same messages, and gives
+        each segment an id the way the live adapter does (``Line_N``,
+        ``Arc_N``).
+
+        Args:
+            outlines (list[dict[str, Any]]): The resolved outlines.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``outlines`` with segment ``ids``,
+            ``segment_count``, ``line_count`` and ``arc_count``.
+        """
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        total = sum(len(outline.get("segments") or []) for outline in outlines)
+        if total == 0:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="outlines contain no segments"
+            )
+        if total > MAX_OUTLINE_SEGMENTS:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"{total} segments in one call; the most is "
+                    f"{MAX_OUTLINE_SEGMENTS}. Split the outlines over several calls"
+                ),
+            )
+
+        await asyncio.sleep(self._delays["sketch_operation"] / 2)
+        self._operation_count += 1
+
+        replies = []
+        counts = {"line": 0, "arc": 0}
+        for outline in outlines:
+            ids = []
+            for segment in outline["segments"]:
+                prefix = "Arc" if segment["type"] == "arc" else "Line"
+                ids.append(self._new_sketch_entity_id(prefix))
+                counts[segment["type"]] += 1
+            replies.append(
+                {"ids": ids, "construction": bool(outline.get("construction", False))}
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "outlines": replies,
+                "segment_count": total,
+                "line_count": counts["line"],
+                "arc_count": counts["arc"],
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock making sketch entities construction (or normal) geometry.
+
+        Args:
+            entity_ids (list[str]): Ids the ``add_*`` calls returned.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``entity_ids``, ``segment_count``
+            (four for a rectangle) and ``construction``.
+        """
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        missing = [i for i in entity_ids if i not in self._sketch_entity_ids]
+        if missing:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Sketch entity {', '.join(missing)} not found in the open sketch"
+                ),
+            )
+        self._operation_count += 1
+        segment_count = sum(4 if i.startswith("Rectangle") else 1 for i in entity_ids)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "entity_ids": list(entity_ids),
+                "segment_count": segment_count,
+                "construction": construction,
+            },
+            execution_time=0.0,
         )
 
     async def add_rectangle(
@@ -2221,6 +2822,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
     async def export_image(self, payload: dict) -> AdapterResult[dict]:
         """Mock export of a PNG/JPG viewport screenshot.
 
+        Reports the zoom like the real adapter: ``zoom_to_fit`` left out (or
+        ``None``) zooms for every orientation but ``current``, which keeps the
+        view as it is.
+
         Args:
             payload (dict): The payload value.
 
@@ -2237,7 +2842,21 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         file_path = payload.get("file_path", "")
         width = int(payload.get("width", 1280))
         height = int(payload.get("height", 720))
-        orientation = str(payload.get("view_orientation", "current"))
+        orientation = str(payload.get("view_orientation", "current")).lower()
+        zoom = payload.get("zoom_to_fit")
+        zoom_box = payload.get("zoom_box_mm")
+        zoom_to_fit = (
+            False
+            if zoom_box is not None
+            else (orientation != "current" if zoom is None else bool(zoom))
+        )
+        hide = list(payload.get("hide") or [])
+        unknown = _unknown_display_types(hide)
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Unknown display type(s) to hide: {', '.join(unknown)}",
+            )
 
         await asyncio.sleep(0.3)
         self._operation_count += 1
@@ -2263,6 +2882,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "format": "PNG",
                 "dimensions": f"{width}x{height}",
                 "view": orientation,
+                "zoomed_to_fit": zoom_to_fit,
+                "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
+                "hidden": sorted(hide),
+                "window_state": self._window_state,
             },
             execution_time=0.3,
             metadata={"mock": True, "orientation": orientation},
@@ -2306,6 +2929,42 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             },
             execution_time=0.05,
             metadata={"mock": True},
+        )
+
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock exporting the active document to STL with mesh settings.
+
+        SolidWorks keeps the STL options as the user's preferences; they are
+        changed for the export and put back afterwards.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): Any of ``resolution``, ``deviation_mm``,
+                ``angle_deg``, ``units`` and ``binary``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``).
+        """
+        try:
+            changes = _stl_changes(settings)
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        exported = await self.export_file(file_path, "stl")
+        if not exported.is_success:
+            return cast(AdapterResult[dict[str, Any]], exported)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "file_path": file_path,
+                "mesh": {
+                    "applied": [label for *_rest, label in changes],
+                    "restored": True,
+                },
+            },
+            execution_time=exported.execution_time,
         )
 
     async def export_file(
@@ -2376,14 +3035,14 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             metadata={"exported_format": format_type, "file_path": file_path},
         )
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
-        """Mock getting a dimension value.
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock getting a dimension value (every mock dimension is a length).
 
         Args:
             name (str): The name value.
 
         Returns:
-            AdapterResult[float]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` and ``kind``.
         """
         await asyncio.sleep(0.05)  # Very fast operation
         self._operation_count += 1
@@ -2391,7 +3050,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if name in self._dimensions:
             return AdapterResult(
                 status=AdapterResultStatus.SUCCESS,
-                data=self._dimensions[name],
+                data={"value": self._dimensions[name], "units": "mm", "kind": "length"},
                 execution_time=0.05,
             )
         else:
@@ -2399,23 +3058,34 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR, error=f"Dimension '{name}' not found"
             )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
-        """Mock setting a dimension value.
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock setting a dimension value (every mock dimension is a length).
 
         Args:
             name (str): The name value.
             value (float): The value value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value``,
+            ``units`` and ``kind``.
         """
         await asyncio.sleep(0.1)  # Fast operation
         self._operation_count += 1
 
+        old_value = self._dimensions.get(name)
         self._dimensions[name] = value
 
         return AdapterResult(
-            status=AdapterResultStatus.SUCCESS, data=None, execution_time=0.1
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "old_value": old_value,
+                "new_value": value,
+                "units": "mm",
+                "kind": "length",
+            },
+            execution_time=0.1,
         )
 
     async def set_units(self, unit_system: str) -> AdapterResult[dict[str, Any]]:
@@ -2978,11 +3648,18 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     # Feature Editing
-    async def delete_feature(self, name: str) -> AdapterResult[dict[str, Any]]:
+    async def delete_feature(
+        self, name: str, delete_absorbed: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
         """Mock deleting a named feature from the active model.
+
+        A feature's absorbed sketch is the one its parameters name
+        (``sketch_name``, which the mock's extrusions and cuts record); like
+        SolidWorks, it stays unless ``delete_absorbed``.
 
         Args:
             name (str): Feature or sketch name.
+            delete_absorbed (bool): Delete the feature's own sketch with it.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -3001,18 +3678,30 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 ),
             )
 
+        sketch = (self._features[key].parameters or {}).get("sketch_name")
+        absorbed = (
+            [sketch] if isinstance(sketch, str) and sketch in self._sketches else []
+        )
         del self._features[key]
         self._suppressed_features.discard(name)
+        if delete_absorbed:
+            for sketch_name in absorbed:
+                del self._sketches[sketch_name]
         self._operation_count += 1
         after = [f.name for f in self._features.values()]
+        removed = [n for n in before if n not in after]
+        if delete_absorbed:
+            removed += absorbed
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
                 "deleted": name,
-                "removed_features": [n for n in before if n not in after],
+                "removed_features": removed,
                 "features_before": len(before),
                 "features_after": len(after),
+                "absorbed_sketches": absorbed,
+                "absorbed_sketches_left": [] if delete_absorbed else absorbed,
             },
             execution_time=self._delays["model_operation"],
         )
@@ -3576,6 +4265,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         count: int,
         angle: float = 360.0,
         equal_spacing: bool = True,
+        reverse_direction: bool = False,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock patterning features around an axis.
 
@@ -3599,8 +4289,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             features (list[str]): Names of the features to pattern.
             axis (str): Name of the axis to rotate about.
             count (int): Total number of instances including the original.
-            angle (float): Total angle in degrees to spread them over. Defaults to 360.0.
-            equal_spacing (bool): Space instances evenly across ``angle``. Defaults to True.
+            angle (float): Degrees: the total with ``equal_spacing``, else the step.
+            equal_spacing (bool): Whether ``angle`` is the total. Defaults to True.
+            reverse_direction (bool): Pattern the other way round the axis.
 
         Returns:
             AdapterResult[dict[str, Any]]: The pattern's name, inputs and
@@ -3655,6 +4346,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "count": int(count),
                 "angle": float(angle),
                 "equal_spacing": bool(equal_spacing),
+                "reverse_direction": bool(reverse_direction),
                 "volume_before": volume_before,
                 "volume_after": volume_after,
                 "volume_change": volume_after - volume_before,

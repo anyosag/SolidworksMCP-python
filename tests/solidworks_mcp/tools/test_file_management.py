@@ -2298,7 +2298,41 @@ async def test_save_as_keeps_an_existing_file_unless_overwrite(
     assert "left untouched" in kept["message"] and "overwrite" in kept["message"]
     assert target.read_bytes() == b"original"
     assert replaced["status"] == "success"
-    mock_adapter.save_file.assert_awaited_once_with(str(target))
+    mock_adapter.save_file.assert_awaited_once_with(str(target), False)
+
+
+@pytest.mark.asyncio
+async def test_save_assembly_asks_before_overwriting_the_users_parts(
+    mcp_server, mock_adapter, mock_config
+) -> None:
+    """keep-solidworks-minimized: the confirmation reaches the agent, then saves."""
+    save_assembly = await _tool(mcp_server, mock_adapter, mock_config, "save_assembly")
+    await mock_adapter.create_assembly()
+    mock_adapter._modified_user_files = ["C:/work/rail.SLDPRT"]
+
+    asked = await save_assembly(input_data={})
+    saved = await save_assembly(input_data={"overwrite_modified_references": True})
+
+    assert asked["status"] == "error"
+    assert asked["error_type"] == "confirmation_required"
+    assert asked["data"]["files"] == ["C:/work/rail.SLDPRT"]
+    assert "overwrite_modified_references" in asked["hint"]
+    assert saved["status"] == "success"
+    assert saved["saved_references"] == ["C:/work/rail.SLDPRT"]
+
+
+@pytest.mark.asyncio
+async def test_save_file_passes_the_confirmation(
+    mcp_server, mock_adapter, mock_config
+) -> None:
+    save_file = await _tool(mcp_server, mock_adapter, mock_config, "save_file")
+    mock_adapter.save_file = AsyncMock(
+        return_value=Mock(is_success=True, data={}, execution_time=0.1)
+    )
+
+    await save_file(input_data={"overwrite_modified_references": True})
+
+    mock_adapter.save_file.assert_awaited_once_with(None, True)
 
 
 @pytest.mark.asyncio

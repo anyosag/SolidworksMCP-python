@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import math
 import os
 import re
 import shutil
@@ -14,6 +15,7 @@ from typing import Any, cast
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
+from . import saving
 from .face_selection import mate_entity_label
 
 try:
@@ -97,6 +99,45 @@ _MATE_ALIGNMENTS: dict[str, int] = {
 
 
 #: ``swDwgTemplates_e`` / ``swDwgPaperSizes_e`` values (read from swconst.tlb).
+#: ``IDimension.GetType()`` (swDimensionParamType_e, read from swconst.tlb):
+#: what a dimension measures, the unit the tools use for it, and the factor
+#: from that unit to ``SystemValue`` (metres, radians, or the count itself).
+#: An unknown type is treated as a length, as every dimension was before.
+DIMENSION_KINDS: dict[int, tuple[str, str, float]] = {
+    0: ("length", "mm", 0.001),
+    1: ("angle", "deg", math.pi / 180.0),
+    2: ("count", "count", 1.0),
+}
+
+
+def dimension_kind(adapter: Any, dimension: Any) -> tuple[str, str, float]:
+    """``(kind, unit, factor)`` for an ``IDimension``, from its ``GetType()``."""
+    dimension = _sw_type_info.flagged(dimension, "IDimension")
+    code = adapter._attempt(lambda: dimension.GetType(), default=None)
+    try:
+        return DIMENSION_KINDS[int(code)]
+    except (TypeError, ValueError, KeyError):
+        return DIMENSION_KINDS[0]
+
+
+def document_names(title: Any, path: Any) -> set[str]:
+    """The names a document answers to, lower case: title, path, file name."""
+    names = {
+        str(title).lower() if title else "",
+        str(path).lower() if path else "",
+        Path(str(path)).name.lower() if path else "",
+    }
+    names.discard("")
+    return names
+
+
+def from_system_value(system_value: float, kind: str, factor: float) -> float:
+    """A ``SystemValue`` in the tools' unit: mm, degrees, or a whole count."""
+    if kind == "count":
+        return float(round(system_value))
+    return round(float(system_value) / factor, 9)
+
+
 _SW_DWG_TEMPLATE_NONE = 13
 _SW_DWG_PAPER_A_SIZE = 0
 _SW_DWG_PAPERS_USER_DEFINED = 12
@@ -421,6 +462,55 @@ def _byref_int() -> Any:
     return variant_ctor(
         int(getattr(pythoncom, "VT_BYREF", 0)) | int(getattr(pythoncom, "VT_I4", 0)), 0
     )
+
+
+#: swRebuildOnActivationOptions_e.swDontRebuildActiveDoc (SW 2026 swconst.tlb).
+_DONT_REBUILD_ACTIVE_DOC = 1
+
+
+def activate_doc(adapter: Any, app: Any, title: str) -> Any:
+    """``ISldWorks.ActivateDoc3(title)``, then rebuild, with no SolidWorks window.
+
+    ``ActivateDoc3(Name, UseUserPreferences, Option, Errors)``: with
+    ``UseUserPreferences`` false, ``Option`` (``swRebuildOnActivationOptions_e``)
+    says what to do when an assembly's parts changed since it was last
+    active. Live probes on SW 2026 SP4.1 (2026-11-10, keep-solidworks-minimized
+    design D4d), activating such an assembly:
+
+    - ``0`` (``swUserDecision``), which every call here used to pass: "Models
+      contained within the assembly have changed. Would you like to rebuild
+      the assembly now?", a box that took the foreground and held the call
+      until it dismissed itself 5 s later.
+    - ``2`` (``swRebuildActiveDoc``): no box, but a "Loading..." progress
+      dialog that took the foreground for about half a second.
+    - ``1`` (``swDontRebuildActiveDoc``) and then a rebuild of the document:
+      no window at all, and the assembly is rebuilt.
+
+    So it activates with ``1`` and then rebuilds what changed
+    (``EditRebuild3``), unless ``NeedsRebuild2`` says the document is up to
+    date. The user's own preference (``swRebuildOnActivation``) is neither
+    read nor changed.
+
+    Args:
+        adapter: The connected adapter.
+        app: The ``SldWorks.Application`` dispatch.
+        title: The document's title-bar name.
+
+    Returns:
+        Any: What ``ActivateDoc3`` returned, or ``None`` when it failed.
+    """
+    activated = adapter._attempt(
+        lambda: app.ActivateDoc3(title, False, _DONT_REBUILD_ACTIVE_DOC, _byref_int()),
+        default=None,
+    )
+    if activated is not None:
+        # swModelRebuildStatus_e: 0 = fully rebuilt.
+        status = adapter._attempt(lambda: activated.Extension.NeedsRebuild2)
+        if status != 0:
+            adapter._attempt(
+                lambda: adapter._get_attr_or_call(activated, "EditRebuild3")
+            )
+    return activated
 
 
 def _byref_variant() -> Any:
@@ -1217,6 +1307,13 @@ def _assembly_mate_count(adapter: Any, model: Any) -> int | None:
     return 0
 
 
+def _confirmation_or(result: AdapterResult[Any]) -> AdapterResult[Any]:
+    """Turn a save that needs the user's confirmation into its error result."""
+    if result.is_success and isinstance(result.data, saving.NeedsConfirmation):
+        return saving.confirmation_result(result.data.files, result.execution_time)
+    return result
+
+
 class SolidWorksIOMixin:
     """Expose model open/save/create/configuration methods through a mixin."""
 
@@ -1224,22 +1321,6 @@ class SolidWorksIOMixin:
     def _adapter(obj: Any) -> Any:
         """Return the runtime adapter object for dynamic attribute access."""
         return cast(Any, obj)
-
-    @staticmethod
-    def _is_success(value: Any) -> bool:
-        """Interpret SolidWorks save API return values consistently.
-
-        Args:
-            value: Return value from ``Save*`` COM calls.
-
-        Returns:
-            bool: ``True`` when return value indicates success.
-        """
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return value == 0
-        return bool(value)
 
     def _resolve_template_path(
         self, preferred_indices: list[int], extension: str
@@ -1419,9 +1500,7 @@ class SolidWorksIOMixin:
             # later tool call (exports especially) target the wrong document
             # (issue #91). ActivateDoc3 takes the titlebar name, not the path.
             if title:
-                activated = adapter._attempt(
-                    lambda: app.ActivateDoc3(title, False, 0, _byref_int())
-                )
+                activated = activate_doc(adapter, app, title)
                 if activated is not None:
                     adapter._attempt(
                         lambda: _sw_type_info.flag_doc(activated, int(doc_type)),
@@ -1455,14 +1534,22 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("open_model", _open),
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close the current SolidWorks model and optionally save first.
 
         Args:
-            save: When ``True``, calls ``Save`` before closing.
+            save: When ``True``, saves silently first (see
+                :func:`saving.save_document`); a failed save leaves the
+                document open.
+            overwrite_modified_references: Let that save overwrite the user's
+                modified files the assembly uses.
 
         Returns:
-            AdapterResult[None]: Result of the close operation.
+            AdapterResult[Any]: Result of the close operation; a
+            ``confirmation_required`` error when saving would overwrite the
+            user's files (the document stays open).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1489,15 +1576,17 @@ class SolidWorksIOMixin:
             Read them through ``_get_attr_or_call`` which works either way.
             """
             if save:
-                adapter._get_attr_or_call(model, "Save")
+                outcome = saving.save_document(
+                    adapter, model, None, overwrite_modified_references
+                )
+                if isinstance(outcome, saving.NeedsConfirmation):
+                    return outcome
             title = adapter._get_attr_or_call(model, "GetTitle")
             app.CloseDoc(title)
             adapter.currentModel = None
+            return None
 
-        return cast(
-            AdapterResult[None],
-            adapter._handle_com_operation("close_model", _close),
-        )
+        return _confirmation_or(adapter._handle_com_operation("close_model", _close))
 
     async def create_part(
         self,
@@ -1747,14 +1836,15 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("create_drawing", _create),
         )
 
-    async def get_dimension(self, name: str) -> AdapterResult[float]:
-        """Read a named model dimension in millimetres.
+    async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Read a named model dimension: mm for a length, degrees for an angle.
 
         Args:
             name: Fully-qualified dimension name.
 
         Returns:
-            AdapterResult[float]: Dimension value in millimetres.
+            AdapterResult[dict[str, Any]]: ``value``, ``units`` (``mm``, ``deg``
+            or ``count``) and ``kind`` (``length``, ``angle`` or ``count``).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1762,12 +1852,13 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
 
-        def _get() -> float:
+        def _get() -> dict[str, Any]:
             """Get the dimension value."""
             dimension = adapter.currentModel.Parameter(name)
             if not dimension:
                 raise Exception(f"Dimension '{name}' not found")
-            # SystemValue is reliable on SW 2025 (in meters, convert to mm)
+            kind, unit, factor = dimension_kind(adapter, dimension)
+            # SystemValue is reliable on SW 2025 (metres or radians).
             value = adapter._attempt(lambda: dimension.SystemValue, default=None)
             if value is None:
                 # Fall back to GetValue3 for older SW versions
@@ -1776,22 +1867,34 @@ class SolidWorksIOMixin:
                 )
             if value is None:
                 raise Exception(f"Failed to read dimension '{name}'")
-            return float(value) * 1000
+            return {
+                "value": from_system_value(float(value), kind, factor),
+                "units": unit,
+                "kind": kind,
+            }
 
         return cast(
-            AdapterResult[float],
+            AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("get_dimension", _get),
         )
 
-    async def set_dimension(self, name: str, value: float) -> AdapterResult[None]:
-        """Set a named model dimension in millimetres and rebuild.
+    async def set_dimension(
+        self, name: str, value: float
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set a named model dimension and rebuild.
+
+        The unit follows what the dimension measures (``IDimension.GetType``):
+        millimetres for a length, degrees for an angle, and a whole number for
+        a count such as a pattern's instances. Before, every value was taken as
+        millimetres, so a count of 2 became 0.002 and 180 degrees 0.18 rad.
 
         Args:
             name: Fully-qualified dimension name.
-            value: New value in millimetres.
+            value: The new value, in the dimension's unit.
 
         Returns:
-            AdapterResult[None]: Result of the set operation.
+            AdapterResult[dict[str, Any]]: ``old_value``, ``new_value`` (read
+            back after the rebuild), ``units`` and ``kind``.
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
@@ -1799,17 +1902,28 @@ class SolidWorksIOMixin:
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
 
-        def _set() -> None:
+        def _set() -> dict[str, Any]:
             """Set the dimension value."""
             dimension = adapter.currentModel.Parameter(name)
             if not dimension:
                 raise Exception(f"Dimension '{name}' not found")
+            kind, unit, factor = dimension_kind(adapter, dimension)
+            if kind == "count" and value != round(value):
+                raise ValueError(
+                    f"Dimension '{name}' is a count (such as a pattern's "
+                    f"instances); give a whole number, not {value:g}."
+                )
 
+            def _read() -> float | None:
+                raw = adapter._attempt(lambda: dimension.SystemValue, default=None)
+                return None if raw is None else float(raw)
+
+            before = _read()
             # SetValue3 has gen_py parameter mapping issues on SW 2025.
-            # SystemValue (in meters) is reliable.
-            value_m = value / 1000.0
+            # SystemValue (metres, radians or the count) is reliable.
+            target = float(round(value)) if kind == "count" else value * factor
             adapter._attempt(
-                lambda: setattr(dimension, "SystemValue", value_m),
+                lambda: setattr(dimension, "SystemValue", target),
                 default=None,
             )
 
@@ -1823,9 +1937,29 @@ class SolidWorksIOMixin:
                 )
             if rebuilt is None:
                 raise Exception("Failed to set dimension")
+            after = _read()
+            if after is not None and not math.isclose(
+                after, target, rel_tol=1e-9, abs_tol=1e-12
+            ):
+                kept = from_system_value(after, kind, factor)
+                raise Exception(
+                    f"SolidWorks kept dimension '{name}' at {kept:g} {unit}, not "
+                    f"{value:g}: it may be a driven (reference) dimension, or "
+                    "set by an equation or a design table."
+                )
+            return {
+                "old_value": (
+                    None if before is None else from_system_value(before, kind, factor)
+                ),
+                "new_value": from_system_value(
+                    target if after is None else after, kind, factor
+                ),
+                "units": unit,
+                "kind": kind,
+            }
 
         return cast(
-            AdapterResult[None],
+            AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("set_dimension", _set),
         )
 
@@ -1871,101 +2005,43 @@ class SolidWorksIOMixin:
             adapter._handle_com_operation("set_units", _apply),
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save the active model to its current path or to a new file path.
 
+        Saves without a SolidWorks dialog; an assembly's modified parts are
+        saved with it, except the user's own files, which need
+        ``overwrite_modified_references`` (see :mod:`.saving`).
+
         Args:
-            file_path: Optional target path for Save As.
+            file_path: Optional target path for Save As. The document's own
+                path (in any spelling) is a plain save: Save-As over itself
+                once closed the document and wrote an empty part.
+            overwrite_modified_references: Let an assembly save overwrite the
+                user's modified files it uses.
 
         Returns:
-            AdapterResult[None]: Result of the save operation.
+            AdapterResult[Any]: ``file_path``, ``saved_references`` and
+            ``warnings``; a ``confirmation_required`` error when the user's
+            files would be overwritten (nothing is written).
         """
         adapter = self._adapter(self)
         if not adapter.currentModel:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
+        model = adapter.currentModel
 
-        def _save() -> None:
-            """Save the model."""
-            if file_path:
-                resolved_path = os.path.abspath(file_path)
-                directory = os.path.dirname(resolved_path)
-                if directory:
-                    os.makedirs(directory, exist_ok=True)
-
-                current_path = adapter._attempt(
-                    lambda: adapter._get_attr_or_call(
-                        adapter.currentModel, "GetPathName"
-                    ),
-                    default="",
-                )
-                same_file = bool(current_path) and os.path.normcase(
-                    os.path.abspath(str(current_path))
-                ) == os.path.normcase(resolved_path)
-
-                if same_file:
-                    # Saving a document over its own path is a plain Save.
-                    # It used to fall through to the Save-As branch below, which
-                    # closed the document and deleted the file before calling
-                    # SaveAs3 on the now-closed doc. That wrote an empty part and
-                    # lost the geometry.
-                    save_result = adapter._attempt(
-                        lambda: adapter.currentModel.Save3(1, None, None)
-                    )
-                    if save_result is None:
-                        save_fn = getattr(adapter.currentModel, "Save", None)
-                        if callable(save_fn):
-                            save_fn()
-                    if not os.path.exists(resolved_path):
-                        raise Exception(f"File not written after save: {resolved_path}")
-                    return
-
-                # A *different* document may be holding the target path open.
-                # Close that one by name only - never the document being saved.
-                if adapter.swApp:
-                    adapter._attempt(
-                        lambda: adapter.swApp.CloseDoc(os.path.basename(resolved_path))
-                    )
-
-                # Deliberately no os.remove here: SaveAs3 overwrites, and
-                # deleting first meant a failed save destroyed the old file too.
-                save_as3_result = adapter.currentModel.SaveAs3(resolved_path, 0, 0)
-                if not self._is_success(save_as3_result):
-                    save_as = getattr(adapter.currentModel, "SaveAs", None)
-                    if callable(save_as):
-                        fallback_result = save_as(resolved_path)
-                        if not self._is_success(fallback_result):
-                            raise Exception(f"Failed to save as: {resolved_path}")
-                    else:
-                        raise Exception(f"Failed to save as: {resolved_path}")
-
-                if not os.path.exists(resolved_path):
-                    raise Exception(f"File not written after save: {resolved_path}")
-                return
-
-            save_result = adapter._attempt(
-                lambda: adapter.currentModel.Save3(1, None, None)
+        return _confirmation_or(
+            adapter._handle_com_operation(
+                "save_file",
+                lambda: saving.save_document(
+                    adapter, model, file_path, overwrite_modified_references
+                ),
             )
-            if save_result is None:
-                save_fn = getattr(adapter.currentModel, "Save", None)
-                if callable(save_fn):
-                    save_result = save_fn()
-                else:
-                    raise Exception("Failed to save file")
-
-            if self._is_success(save_result):
-                return
-
-            path_attr = getattr(adapter.currentModel, "GetPathName", "")
-            model_path = path_attr() if callable(path_attr) else path_attr
-            if model_path and os.path.exists(model_path):
-                return
-            raise Exception("Failed to save file")
-
-        return cast(
-            AdapterResult[None],
-            adapter._handle_com_operation("save_file", _save),
         )
 
     async def rebuild_model(
@@ -2199,13 +2275,7 @@ class SolidWorksIOMixin:
                 )
                 if title:
                     open_titles.append(str(title))
-                candidates = {
-                    str(title).lower() if title else "",
-                    str(path).lower() if path else "",
-                    Path(str(path)).name.lower() if path else "",
-                }
-                candidates.discard("")
-                if needle in candidates:
+                if needle in document_names(title, path):
                     match = doc
                     match_title = str(title) if title else None
                     break
@@ -2225,10 +2295,7 @@ class SolidWorksIOMixin:
                     "activate it"
                 )
 
-            activated = adapter._attempt(
-                lambda: app.ActivateDoc3(match_title, False, 0, _byref_int()),
-                default=None,
-            )
+            activated = activate_doc(adapter, app, match_title)
             model = activated or adapter._attempt(
                 lambda: getattr(app, "ActiveDoc", None), default=None
             )
@@ -2271,6 +2338,56 @@ class SolidWorksIOMixin:
             AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("activate_document", _activate),
         )
+
+    async def use_document(self, title_or_path: str) -> AdapterResult[dict[str, Any]]:
+        """Make an open document the one this session works on.
+
+        For a tool's ``document`` argument. When that document is already
+        active and this session's own, nothing is activated (a quick check,
+        not ``ActivateDoc3`` and its longer settle pause); otherwise it is
+        activated as ``activate_document`` does.
+
+        Args:
+            title_or_path: A window title, a full path, or a file name of a
+                document that is already open.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``activated``, ``verified`` and
+            ``switched`` (False when it already was the active document).
+        """
+        adapter = self._adapter(self)
+        target = (title_or_path or "").strip().lower()
+
+        def _already_active() -> str | None:
+            app = adapter.swApp
+            active = getattr(app, "ActiveDoc", None)
+            if active is None:
+                return None
+            title = adapter._get_attr_or_call(active, "GetTitle")
+            path = adapter._get_attr_or_call(active, "GetPathName")
+            if target not in document_names(title, path):
+                return None
+            key = adapter._document_key(active)
+            if key != adapter._last_active_document or key != adapter._document_key(
+                adapter.currentModel
+            ):
+                return None
+            return str(title)
+
+        if target and adapter.is_connected():
+            check = adapter._handle_com_operation(
+                "check_active_document", _already_active
+            )
+            if check.is_success and check.data:
+                return AdapterResult(
+                    status=AdapterResultStatus.SUCCESS,
+                    data={"activated": check.data, "verified": True, "switched": False},
+                    execution_time=check.execution_time,
+                )
+        result = await self.activate_document(title_or_path)
+        if result.is_success and isinstance(result.data, dict):
+            result.data["switched"] = True
+        return result
 
     async def list_configurations(self) -> AdapterResult[list[str]]:
         """List all configuration names on the active model.
@@ -2720,10 +2837,7 @@ class SolidWorksIOMixin:
                 default=None,
             )
             if title:
-                adapter._attempt(
-                    lambda: app.ActivateDoc3(title, False, 0, _byref_int()),
-                    default=None,
-                )
+                activate_doc(adapter, app, title)
 
             component = adapter._attempt(
                 lambda: assembly.AddComponent4(
@@ -3203,10 +3317,7 @@ class SolidWorksIOMixin:
                 default=None,
             )
             if drawing_title:
-                adapter._attempt(
-                    lambda: app.ActivateDoc3(drawing_title, False, 0, _byref_int()),
-                    default=None,
-                )
+                activate_doc(adapter, app, drawing_title)
 
             view = adapter._attempt(
                 lambda: drawing.CreateDrawViewFromModelView3(

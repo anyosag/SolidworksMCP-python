@@ -375,7 +375,7 @@ def test_create_cut_extrude_raises_when_no_feature_and_no_errors() -> None:
     assert "Sketch1" in (result.error or "")
     error = result.error or ""
     assert "built no feature" in error
-    assert "tried: the requested direction; direction flipped" in error
+    assert "tried: along the sketch normal; against the sketch normal" in error
 
 
 # ---------------------------------------------------------------------------
@@ -1039,11 +1039,12 @@ def test_through_all_both_falls_back_to_the_single_ended_enum() -> None:
 
 
 def test_blind_cut_from_a_face_sketch_flips_direction() -> None:
-    """The requested direction points out of the part and builds nothing, so
-    the single-ended cut is retried the other way (#193)."""
+    """Along the sketch normal points out of the part and builds nothing, so
+    the single-ended cut is retried the other way (#193). ``Dir=True`` is
+    along the normal for FeatureCut4."""
     feature = SimpleNamespace(Name="Cut-Extrude1")
     adapter, log = _cut_adapter_recording(
-        cut4=lambda args: feature if args[2] else None,
+        cut4=lambda args: None if args[2] else feature,
         cut3=lambda _args: None,
     )
 
@@ -1054,9 +1055,9 @@ def test_blind_cut_from_a_face_sketch_flips_direction() -> None:
     cut_args = [entry[1] for entry in log if entry[0] != "select"]
     # (Sd, Dir, T1, T2, D2) for FeatureCut4, FeatureCut3, then flipped FeatureCut4.
     assert [(a[0], a[2], a[3], a[4], a[6]) for a in cut_args] == [
-        (True, False, 1, 1, 0.0),
-        (True, False, 1, 1, 0.0),
         (True, True, 1, 1, 0.0),
+        (True, True, 1, 1, 0.0),
+        (True, False, 1, 1, 0.0),
     ]
     assert [entry[0] for entry in log].count("select") == 3
 
@@ -2618,6 +2619,7 @@ class TestFeatureTreeEditOutcomes:
             "features_before": 7,
             "features_after": 5,
             "features_removed": 2,
+            "absorbed_sketches": [],
         }
 
     def test_suppress_reports_the_read_back_state(self, monkeypatch) -> None:
@@ -3003,10 +3005,30 @@ class TestMirrorAndPatternImplOutcomes:
             "count": 6,
             "angle": 180.0,
             "equal_spacing": False,
+            "reverse_direction": False,
         }
         args = manager.FeatureCircularPattern5.call_args.args
         assert args[0] == 6
         assert args[1] == pytest.approx(math.pi)
+        assert args[2] is False  # FlipDirection
+
+    def test_a_reversed_pattern_flips_its_direction(self, monkeypatch) -> None:
+        """reverse_direction reaches FeatureCircularPattern5's FlipDirection."""
+        adapter = _build_adapter(monkeypatch)
+        adapter.currentModel = MagicMock()
+        adapter.currentModel.Extension.SelectByID2.return_value = True
+        manager = adapter.currentModel.FeatureManager
+        manager.FeatureCircularPattern5.return_value = SimpleNamespace(Name="P1")
+
+        result = _pattern_circular_impl(
+            adapter, ["Cut1"], "Axis1", 3, 60.0, False, reverse_direction=True
+        )
+
+        assert result.data["reverse_direction"] is True
+        args = manager.FeatureCircularPattern5.call_args.args
+        assert args[1] == pytest.approx(math.radians(60))
+        assert args[2] is True
+        assert args[5] is False  # EqualSpacing off: Spacing is the step
 
 
 # ---- create_extrusion end conditions -------------------------------------------
@@ -3444,13 +3466,20 @@ def _fillet_feature() -> AdapterResult:
     )
 
 
+def _summary(volume: float | None) -> AdapterResult:
+    return AdapterResult(
+        status=AdapterResultStatus.SUCCESS, data={"volume_mm3": volume}
+    )
+
+
 class TestAddFilletVolumeCheck:
-    """The async layer compares volume before and after, like mirror_feature."""
+    """The async layer compares volume before and after, like mirror_feature,
+    with a read that doesn't rebuild, so a selected set of edges survives."""
 
     @pytest.mark.asyncio
     async def test_unchanged_volume_is_an_error(self, monkeypatch) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(return_value=_volume(4800.0))
+        adapter.get_model_geometry_summary = AsyncMock(return_value=_summary(4800.0))
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
 
         result = await adapter.add_fillet(1.0, ["face:0,0,0"])
@@ -3461,8 +3490,8 @@ class TestAddFilletVolumeCheck:
     @pytest.mark.asyncio
     async def test_changed_volume_is_reported(self, monkeypatch) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(
-            side_effect=[_volume(4800.0), _volume(4797.4)]
+        adapter.get_model_geometry_summary = AsyncMock(
+            side_effect=[_summary(4800.0), _summary(4797.4)]
         )
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
 
@@ -3478,8 +3507,8 @@ class TestAddFilletVolumeCheck:
         self, monkeypatch, volumes
     ) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(
-            side_effect=[_volume(v) for v in volumes]
+        adapter.get_model_geometry_summary = AsyncMock(
+            side_effect=[_summary(v) for v in volumes]
         )
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
 
@@ -3491,12 +3520,30 @@ class TestAddFilletVolumeCheck:
     @pytest.mark.asyncio
     async def test_a_failed_fillet_is_returned_unchanged(self, monkeypatch) -> None:
         adapter = _build_adapter(monkeypatch)
-        adapter.get_mass_properties = AsyncMock(return_value=_volume(4800.0))
+        adapter.get_model_geometry_summary = AsyncMock(return_value=_summary(4800.0))
         failed = AdapterResult(status=AdapterResultStatus.ERROR, error="nope")
         monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: failed)
 
         assert await adapter.add_fillet(1.0, ["0,0,0"]) is failed
-        adapter.get_mass_properties.assert_awaited_once()
+        adapter.get_model_geometry_summary.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_volume_read_never_rebuilds(self, monkeypatch) -> None:
+        """A rebuild would clear the edges select_edges picked."""
+        adapter = _build_adapter(monkeypatch)
+        adapter.get_mass_properties = AsyncMock()
+        adapter.get_model_geometry_summary = AsyncMock(
+            side_effect=[
+                _summary(4800.0),
+                AdapterResult(status=AdapterResultStatus.ERROR, error="no part"),
+            ]
+        )
+        monkeypatch.setattr(features, "_add_fillet_impl", lambda *_a: _fillet_feature())
+
+        result = await adapter.add_fillet(1.0, [])
+
+        assert result.is_success
+        adapter.get_mass_properties.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3544,7 +3591,10 @@ async def test_delete_feature_falls_back_to_the_name_without_a_listing(
 
     result = await adapter.delete_feature("Fillet1@Part1")
 
-    assert result.data == {"removed_features": ["Fillet1"]}
+    assert result.data == {
+        "removed_features": ["Fillet1"],
+        "absorbed_sketches_left": [],
+    }
 
 
 @pytest.mark.asyncio

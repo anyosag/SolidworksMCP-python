@@ -30,6 +30,21 @@ from .tool_boundary import (
 # Input schemas using Python 3.14 built-in types
 
 
+def _saved_references(data: Any) -> list[str]:
+    """The other files an assembly save wrote, from the adapter's result data."""
+    if isinstance(data, dict):
+        return list(data.get("saved_references") or [])
+    return []
+
+
+#: Shared by every tool that can save an assembly (see adapters/solidworks/saving.py).
+_OVERWRITE_REFERENCES_DESCRIPTION = (
+    "Set true only after the user agreed: lets an assembly save also overwrite "
+    "the user's own modified part files that a `confirmation_required` error "
+    "listed. New parts, and parts this session saved, are saved without it."
+)
+
+
 class SaveFileInput(CompatInput):
     """Input schema for saving a file.
 
@@ -40,6 +55,9 @@ class SaveFileInput(CompatInput):
     file_path: str | None = Field(
         default=None,
         description="Optional output path. If omitted, saves the current active document.",
+    )
+    overwrite_modified_references: bool = Field(
+        default=False, description=_OVERWRITE_REFERENCES_DESCRIPTION
     )
 
 
@@ -57,6 +75,9 @@ class SaveAsInput(CompatInput):
         default="solidworks", description="File format (solidworks, step, iges, etc.)"
     )
     overwrite: bool = Field(default=False, description="Overwrite existing file")
+    overwrite_modified_references: bool = Field(
+        default=False, description=_OVERWRITE_REFERENCES_DESCRIPTION
+    )
 
 
 class FileOperationInput(CompatInput):
@@ -170,6 +191,9 @@ class SaveAssemblyInput(CompatInput):
     include_references: bool = Field(
         default=False,
         description="When true and file_path is set, copy referenced assembly files into the target folder.",
+    )
+    overwrite_modified_references: bool = Field(
+        default=False, description=_OVERWRITE_REFERENCES_DESCRIPTION
     )
 
 
@@ -314,7 +338,7 @@ async def register_file_management_tools(
                         File management tools require an active SolidWorks document.
                         Save operations preserve the current document state and metadata.
     """
-    mcp = with_tool_boundary(mcp)
+    mcp = with_tool_boundary(mcp, adapter)
     tool_count = 0
 
     def _coerce_input(model_cls: Any, payload: Any) -> Any:
@@ -577,8 +601,11 @@ async def register_file_management_tools(
         the target path (folder exists, no accidental overwrite), use `save_part` or
         `save_assembly`; to write another format, use `save_as` or an `export_*` tool.
         Needs: an open, active document, already saved once unless you give a path.
-        Changes: writes the file; a different file at `file_path` is replaced. Returns:
-        `data` from the save (usually empty).
+        Changes: writes the file, without SolidWorks dialogs; a different file at
+        `file_path` is replaced. An assembly also saves its modified parts; if that
+        would overwrite the user's own files, nothing is written and the error is
+        `confirmation_required`. Returns: `data` with `file_path`,
+        `saved_references` and `warnings`.
 
         Args:
             input_data: The save. Nothing is required: give `file_path` to save to a
@@ -593,7 +620,9 @@ async def register_file_management_tools(
             "save_file",
             "Active adapter does not support save_file; the file was not saved.",
         )
-        result = await adapter.save_file(input_data.file_path)
+        result = await adapter.save_file(
+            input_data.file_path, input_data.overwrite_modified_references
+        )
         require_success(result, "Failed to save file")
         return {
             "status": "success",
@@ -632,7 +661,9 @@ async def register_file_management_tools(
             "sldasm",
             "slddrw",
         }:
-            result = await adapter.save_file(input_data.file_path)
+            result = await adapter.save_file(
+                input_data.file_path, input_data.overwrite_modified_references
+            )
             require_success(result, "Failed to save file")
             return {
                 "status": "success",
@@ -1128,14 +1159,19 @@ async def register_file_management_tools(
         file as last saved, and the files it references, into the new folder; unsaved
         changes are left out and references are not updated. For a self-contained copy,
         use `pack_and_go_assembly`. Needs: an open, active assembly, saved once for
-        `include_references`. Changes: writes the assembly file (and copies). Returns:
-        `file_path`, plus `copied_files` and `missing_source_files` when copying
-        references.
+        `include_references`. Changes: writes the assembly file and its modified
+        parts, without SolidWorks dialogs (or, with `include_references`, copies).
+        If saving would overwrite the user's own modified part files, nothing is
+        written and the error is `confirmation_required` with the files in
+        `data.files`: ask the user, then call again with
+        `overwrite_modified_references: true`. Returns: `file_path` and
+        `saved_references`, plus `copied_files` and `missing_source_files` when
+        copying references.
 
         Args:
             input_data: The save. Nothing is required: give `file_path` for a new
-                path or omit it to save in place; `overwrite` and
-                `include_references` are off.
+                path or omit it to save in place; `overwrite`,
+                `include_references` and `overwrite_modified_references` are off.
 
         Returns:
             dict[str, Any]: The save result.
@@ -1156,21 +1192,27 @@ async def register_file_management_tools(
             if input_data.include_references:
                 return _copy_active_assembly_with_references(file_path)
 
-            result = await adapter.save_file(file_path)
+            result = await adapter.save_file(
+                file_path, input_data.overwrite_modified_references
+            )
             require_success(result, context="Failed to save assembly")
             return {
                 "status": "success",
                 "message": f"Assembly saved as: {file_path}",
                 "file_path": file_path,
+                "saved_references": _saved_references(result.data),
                 "execution_time": result.execution_time,
             }
         else:
             # Save to current location
-            result = await adapter.save_file(None)
+            result = await adapter.save_file(
+                None, input_data.overwrite_modified_references
+            )
             require_success(result, context="Failed to save assembly")
             return {
                 "status": "success",
                 "message": "Assembly saved successfully",
+                "saved_references": _saved_references(result.data),
                 "execution_time": result.execution_time,
             }
 

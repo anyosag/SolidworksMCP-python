@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 import os
 import platform
@@ -21,6 +20,7 @@ from solidworks_mcp.config import (
     SolidWorksMCPConfig,
 )
 from solidworks_mcp.server import SolidWorksMCPServer
+from solidworks_mcp.tools.tool_boundary import takes_input
 
 # ---------------------------------------------------------------------------
 # Environment helpers
@@ -554,12 +554,10 @@ class TestLevelBSmokeExecution:
         results: list[dict[str, Any]] = []
         failed: list[str] = []
 
-        import inspect
-
         for tool in await mock_server.mcp.list_tools():
             name = tool.name
             payload = _SMOKE_PAYLOADS.get(name, {})
-            _takes_args = bool(inspect.signature(tool.fn).parameters)
+            _takes_args = takes_input(tool.fn)
             t0 = time.perf_counter()
             try:
                 result = await tool.fn(payload) if _takes_args else await tool.fn()
@@ -611,9 +609,7 @@ class TestLevelBSmokeExecution:
             payload = _SMOKE_PAYLOADS.get(name, {})
             try:
                 result = (
-                    await tool.fn(payload)
-                    if inspect.signature(tool.fn).parameters
-                    else await tool.fn()
+                    await tool.fn(payload) if takes_input(tool.fn) else await tool.fn()
                 )
                 if not isinstance(result, dict):
                     non_dict.append(f"{name}: returned {type(result).__name__}")
@@ -635,9 +631,7 @@ class TestLevelBSmokeExecution:
             payload = _SMOKE_PAYLOADS.get(name, {})
             try:
                 result = (
-                    await tool.fn(payload)
-                    if inspect.signature(tool.fn).parameters
-                    else await tool.fn()
+                    await tool.fn(payload) if takes_input(tool.fn) else await tool.fn()
                 )
                 if isinstance(result, dict) and "status" not in result:
                     missing_status.append(name)
@@ -663,9 +657,7 @@ class TestLevelBSmokeExecution:
             payload = _SMOKE_PAYLOADS.get(name, {})
             try:
                 result = (
-                    await tool.fn(payload)
-                    if inspect.signature(tool.fn).parameters
-                    else await tool.fn()
+                    await tool.fn(payload) if takes_input(tool.fn) else await tool.fn()
                 )
             except Exception as exc:
                 # Size-budget test is not responsible for behavioral failures.
