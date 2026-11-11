@@ -14,6 +14,7 @@ from fastmcp import FastMCP
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
+from solidworks_mcp.adapters.solidworks import limits
 from solidworks_mcp.tools.automation import register_automation_tools
 from solidworks_mcp.tools.modeling import register_modeling_tools
 from solidworks_mcp.tools.sketching import register_sketching_tools
@@ -183,3 +184,39 @@ async def test_a_planned_tool_is_refused(mock_config: Any) -> None:
     result = await run({"steps": [{"tool": "batch_export", "arguments": {}}]})
 
     assert "batch_export is not available yet" in result["message"]
+
+
+async def test_progress_is_reported_before_each_step_and_at_the_end(part: Any) -> None:
+    _adapter, run = part
+    ctx = AsyncMock()
+
+    result = await run({"steps": _BOX}, ctx)
+
+    assert result["status"] == "success"
+    calls = [c.kwargs for c in ctx.report_progress.await_args_list]
+    assert [(c["progress"], c["total"]) for c in calls] == [
+        (0, 4),
+        (1, 4),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+    ]
+    assert calls[1]["message"] == "Step 2 of 4: add_rectangle"
+    assert calls[-1]["message"] == "All 4 steps done"
+
+
+async def test_a_workflow_stops_between_steps_when_the_client_has_gone(
+    part: Any,
+) -> None:
+    adapter, run = part
+    limits.mark_client_gone("test")
+
+    result = await run({"steps": _BOX})
+
+    assert result["status"] == "error"
+    assert result["error_type"] == "operation_stopped"
+    assert result["message"].startswith(
+        "Workflow 'workflow' stopped before step 1 of 4 (create_sketch)"
+    )
+    assert result["data"]["completed"] == 0
+    assert not any(f.type == "Extrusion" for f in adapter._features.values())

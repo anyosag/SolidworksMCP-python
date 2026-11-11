@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
-from solidworks_mcp.adapters.solidworks import features
+from solidworks_mcp.adapters.solidworks import features, limits
 
 Point = tuple[float, float, float]
 
@@ -835,3 +835,29 @@ def test_an_unreadable_face_box_gives_none(box) -> None:
 )
 def test_box_distance(box, point, distance) -> None:
     assert features._box_distance(box, point) == pytest.approx(distance)
+
+
+# ---- a stopped walk ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("picks", "doing"),
+    [(None, "measuring edges"), (_many_picks(), "reading edge and face boxes")],
+)
+def test_the_edge_walk_stops_when_the_client_has_gone(picks, doing) -> None:
+    picker = features._BodyEntityPicker(_adapter(_plate()), picks)
+    limits.mark_client_gone("test")
+
+    with pytest.raises(limits.OperationStopped, match=f"Stopped {doing}"):
+        picker.nearest("GetEdges", (0.02, 0.0, 0.006))
+
+
+def test_a_fillet_stops_between_edges_and_says_which() -> None:
+    adapter = _adapter(_plate(), named={"Edge<1>", "Edge<2>"})
+    limits.mark_client_gone("test")
+
+    result = features._add_fillet_impl(adapter, 1.0, ["Edge<1>", "Edge<2>"])
+
+    assert result.is_error
+    assert "Stopped selecting edge 1 of 2" in (result.error or "")
+    assert adapter.log.calls["FeatureFillet3"] == 0

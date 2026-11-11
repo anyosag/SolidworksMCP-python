@@ -87,6 +87,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call is cancelled after `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5)
   and reported as `error_type: solidworks_dialog`, with its text, instead of
   hanging the server. It never answers Save or Don't Save.
+- **Long operations can't hang the next call or outlive their client.** On
+  the dish rack, a client killed during `add_fillet`'s edge walk left
+  SolidWorks at 100% CPU, and the next two calls each waited 1800 s. A COM
+  call already made can't be abandoned (pywin32 has no `CoCancelCall`), so:
+  - each call first asks SolidWorks' window, through Win32 only, whether it
+    answers. A SolidWorks still busy is given
+    `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS` (default 30) to finish; then the call
+    returns `error_type: solidworks_busy` at once, without running;
+  - the server's own loops (picking fillet and chamfer edges, `select_edges`,
+    `add_outlines`, `check_wall_thickness`) stop between COM calls once the
+    call has run `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS` (default 900;
+    `0` means no limit), with `error_type: operation_stopped`. A stopped
+    `add_outlines` removes what it drew;
+  - a thread watches the stdio pipe, reading nothing; once the client has
+    gone, those loops and `execute_workflow` stop at their next step
+    (`SOLIDWORKS_MCP_WATCH_CLIENT=0` turns it off);
+  - `execute_workflow` reports progress before each step, which keeps a
+    client's timeout from expiring on a long workflow and lets it cancel
+    between steps.
 
 ### Changed
 

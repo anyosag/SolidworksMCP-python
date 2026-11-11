@@ -137,7 +137,7 @@ Create, read or update a design table (an Excel sheet that drives a model's conf
 
 ### `execute_workflow`
 
-Run a named sequence of tool steps, in order or in parallel, with an error policy.
+Run a list of tool steps in order in one call, stopping at the first that fails.
 
 **Prerequisite:** SolidWorks running
 
@@ -145,16 +145,14 @@ Run a named sequence of tool steps, in order or in parallel, with an error polic
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `workflow_name` | `str` | ✅ | `` | Name of the workflow |
-| `steps` | `List[Dict[str, Any]]` | ✅ | `` | List of workflow steps |
-| `parallel_execution` | `bool` | — | `False` | Execute compatible steps in parallel |
-| `error_handling` | `str` | — | `stop` | Error handling strategy (stop, skip, retry) |
+| `workflow_name` | `str` | — | `workflow` | A name for the run, used in its messages |
+| `steps` | `List[WorkflowStep]` | ✅ | `` | The steps, run one after another: each a {tool, arguments} pair, e.g. {'tool': 'add_line', 'arguments': {'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}} |
+| `rollback_on_error` | `bool` | — | `False` | When a step fails, delete the features and sketches the earlier steps added to the document that was active at the start |
 
 **Sample call:**
 
 ```json
 {
-  "workflow_name": "MCP_Demo_Part",
   "steps": []
 }
 ```

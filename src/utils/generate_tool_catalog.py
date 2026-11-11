@@ -746,6 +746,8 @@ def generate_index_page(catalog: list[dict[str, Any]]) -> str:
         "| `solidworks_unavailable` | SolidWorks was closed or crashed (RPC disconnect); the next call after it is started reconnects |",
         "| `solidworks_reconnected` | SolidWorks restarted and the server reconnected to it; the call did nothing and earlier documents are gone |",
         "| `active_document_changed` | Someone else switched the active document since the last call; nothing was done until `activate_document` picks one |",
+        "| `solidworks_busy` | SolidWorks didn't answer for `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS`; nothing was run, retry once it is free |",
+        "| `operation_stopped` | The call stopped part-way: past `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS`, or the client went away |",
         "| `circuit_open` | Calls are paused after repeated failures; retry after the breaker timeout |",
         "| `com_wrong_thread` | A SolidWorks call ran off the thread that connected (a server bug; restart the server) |",
         "| `com_member_not_found` | SolidWorks could not resolve an API member (usually a stale `gen_py` cache) |",

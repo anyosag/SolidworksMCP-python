@@ -4,7 +4,7 @@ Extract engineering properties from models: mass, volume, centre of mass, moment
 
 > **Prerequisite:** An active model (part or assembly) with solid geometry.
 
-**Total tools in this category: 6**
+**Total tools in this category: 7**
 
 ---
 
@@ -79,6 +79,27 @@ Run a geometry analysis on the active model, such as curvature, draft or wall th
 {
   "analysis_type": "curvature"
 }
+```
+
+---
+
+### `check_wall_thickness`
+
+Measure the active part's thinnest walls before 3D printing it.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `min_wall_mm` | `float` | — | `0.8` | The thinnest wall the printer can make, mm (0.8 is two 0.4 mm nozzle lines); thinner spots are listed |
+| `max_rays` | `int` | — | `5000` | The most points to measure; more finds thin spots on big parts, slower (default 5000) |
+
+**Sample call:**
+
+```json
+{}
 ```
 
 ---

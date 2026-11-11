@@ -17,6 +17,7 @@ from ..base import (
     SolidWorksFeature,
     SweepParameters,
 )
+from . import limits
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -2248,11 +2249,16 @@ class _BodyEntityPicker:
             return [0.0] * len(entities)
         if getter not in self._boxes:
             read = _face_box if getter == "GetFaces" else _edge_box
-            self._boxes[getter] = [read(self._adapter, e) for e in entities]
+            boxes = []
+            for entity in entities:
+                limits.check("reading edge and face boxes")
+                boxes.append(read(self._adapter, entity))
+            self._boxes[getter] = boxes
         return [_box_distance(box, point) for box in self._boxes[getter]]
 
     def _distance(self, entity: Any, point: tuple[float, float, float]) -> float | None:
         """Distance from ``point`` to the closest point on ``entity``, or None."""
+        limits.check("measuring edges")
         self._flag_once(entity, "GetClosestPointOn")
         closest = _attempt(
             self._adapter, lambda: list(entity.GetClosestPointOn(*point))
@@ -2569,6 +2575,7 @@ def _select_edge_specs(adapter: Any, edge_names: list[str], face_edges: bool) ->
         picker.rebuild()
 
     for idx, (edge_name, spec) in enumerate(zip(edge_names, specs, strict=True)):
+        limits.check(f"selecting edge {idx + 1} of {len(edge_names)}")
         sel_name, x, y, z, entity_type = spec
         append = idx > 0  # first edge starts fresh, subsequent ones append
         if sel_name == "" and entity_type == "FACE" and face_edges:

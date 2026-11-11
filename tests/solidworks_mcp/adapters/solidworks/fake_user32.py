@@ -99,6 +99,10 @@ class FakeUser32:
     def IsZoomed(self, hwnd: int) -> int:  # noqa: N802
         return int(self.windows[hwnd].zoomed)
 
+    def IsHungAppWindow(self, hwnd: int) -> int:  # noqa: N802
+        """Windows' own "not responding" flag; ``hung`` sets it."""
+        return int(self.windows[hwnd].hung)
+
     def GetForegroundWindow(self) -> int:  # noqa: N802
         return self.foreground
 
@@ -201,10 +205,12 @@ class FakeUser32:
         timeout: int,
         result: Any,
     ) -> int:
-        """Answer ``WM_GETTEXT`` by writing ``message_text`` into the buffer."""
+        """Answer ``WM_NULL`` (a ping) and ``WM_GETTEXT`` (``message_text``)."""
         window = self.windows[hwnd]
         if window.hung:
             return 0
+        if msg == 0:  # WM_NULL
+            return 1
         data = ctypes.create_unicode_buffer(window.message_text[: wparam - 1])
         ctypes.memmove(lparam, data, ctypes.sizeof(data))
         return 1

@@ -320,6 +320,25 @@ updated 2026-04-24.
   one's next call fail this way, which is safe but slow. Give each client its
   own SolidWorks where you can.
 
+### 17. A tool returns `solidworks_busy` or `operation_stopped`
+
+- **`solidworks_busy`:** before each call the server asks SolidWorks' frame
+  window, through Win32 only (`IsHungAppWindow`, then `WM_NULL` with
+  `SendMessageTimeoutW`), whether it answers. A SolidWorks still busy after
+  `SOLIDWORKS_MCP_BUSY_WAIT_SECONDS` (default 30) is not called; nothing ran.
+  Usually an earlier call, another program or the user is still running a
+  long operation. If it stays busy with no one using it, it is stuck: ask
+  the user to end it in Task Manager.
+- **`operation_stopped`:** a server loop (`add_fillet`/`add_chamfer` edge
+  picking, `select_edges`, `add_outlines`, `check_wall_thickness`) stopped
+  between COM calls. Either the call ran past
+  `SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS` (default 900; `0` means no
+  limit), or the stdio watcher saw the client close its pipe
+  (`adapters/solidworks/limits.py`; `SOLIDWORKS_MCP_WATCH_CLIENT=0` turns
+  it off). A single COM call can't be interrupted, so the stop lands at the
+  next check. New loops that make many COM calls should call
+  `limits.check("doing what")` between them.
+
 > **Full COM pitfall catalogue for LLM agents:** `docs/agents/com-api-pitfalls.md`
 
 ### Decision order when starting a debug session

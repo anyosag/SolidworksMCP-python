@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
-from solidworks_mcp.adapters.solidworks import sketch
+from solidworks_mcp.adapters.solidworks import limits, sketch
 
 
 class _Adapter:
@@ -528,3 +528,29 @@ async def test_the_mixin_forwards_the_new_methods() -> None:
     assert drawn.is_success
     assert (await adapter.set_sketch_construction(["Line_1"])).is_success
     assert (await adapter.add_arc(0, 0, 5, 0, 0, 5, "cw")).is_success
+
+
+def test_a_stopped_outline_removes_what_the_call_drew(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Out of time at segment 3: the two segments drawn are deleted again."""
+    adapter = _Adapter()
+    adapter.currentSketchManager = _Manager()
+    adapter.currentModel = _Model(set(), None)
+    checks: list[str] = []
+
+    def check(doing: str) -> None:
+        checks.append(doing)
+        if len(checks) == 3:
+            raise limits.OperationStopped(f"Stopped {doing} after 901 s: limit")
+
+    monkeypatch.setattr(limits, "check", check)
+
+    result = sketch._add_sketch_outlines_impl(adapter, _slot())
+
+    assert result.status == AdapterResultStatus.ERROR
+    message = result.error or ""
+    assert message.startswith("Stopped drawing outline 1, segment 3 after 901 s")
+    assert "the segments this call drew were removed again" in message
+    assert adapter.currentModel.deleted == 1
+    assert adapter._sketch_entities == {}

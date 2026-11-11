@@ -65,6 +65,8 @@ SOLIDWORKS_DIALOG = "solidworks_dialog"
 CONFIRMATION_REQUIRED = "confirmation_required"
 SOLIDWORKS_RECONNECTED = "solidworks_reconnected"
 ACTIVE_DOCUMENT_CHANGED = "active_document_changed"
+SOLIDWORKS_BUSY = "solidworks_busy"
+OPERATION_STOPPED = "operation_stopped"
 
 DEFAULT_RULES: tuple[ErrorRule, ...] = (
     # First: a dialog's own text can contain anything ("file not found",
@@ -135,6 +137,29 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             "(the message names both) and retry."
         ),
         patterns=(r"active document changed between calls",),
+    ),
+    ErrorRule(
+        error_type=SOLIDWORKS_BUSY,
+        hint=(
+            "Nothing was run: SolidWorks is still busy with a long operation (an "
+            "earlier call, another program, or the user) and isn't answering. "
+            "Wait a minute and retry. If it stays busy, tell the user; if no "
+            "one is using it, it may be stuck and need restarting."
+        ),
+        patterns=(r"solidworks is busy: it has not answered",),
+    ),
+    ErrorRule(
+        error_type=OPERATION_STOPPED,
+        hint=(
+            "The server stopped this operation part-way: it ran past "
+            "SOLIDWORKS_MCP_OPERATION_TIMEOUT_SECONDS, or the client went away. "
+            "Check what it did (list_features, get_model_info), then do the work "
+            "in smaller pieces, e.g. fewer edges or outlines per call."
+        ),
+        patterns=(
+            r"ran past its \d+ s limit",
+            r"the mcp client disconnected",
+        ),
     ),
     ErrorRule(
         error_type="com_wrong_thread",

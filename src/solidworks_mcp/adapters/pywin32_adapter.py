@@ -31,6 +31,7 @@ from .solidworks import (
     SolidWorksSelectionMixin,
     SolidWorksSketchMixin,
     bitmap,
+    limits,
     saving,
 )
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
@@ -2408,6 +2409,13 @@ class PyWin32Adapter(
             switched = self._active_document_switched(operation_name)
             if switched is not None:
                 return switched
+        if outermost:
+            # A SolidWorks busy with someone else's long call would hold this
+            # one for as long as that takes (1800 s, seen); refuse instead.
+            busy = self._refuse_while_busy(operation_name)
+            if busy is not None:
+                return busy
+            limits.begin(operation_name)
         keeper = self._keeper if outermost else None
         was_minimized = outermost and self._window_is_minimized()
         if keeper is not None and was_minimized:
@@ -2426,6 +2434,8 @@ class PyWin32Adapter(
             )
         finally:
             self._operation_depth -= 1
+            if outermost:
+                limits.end()
             # After the timing in _run_com_operation, so execution_time stays
             # the call itself; the watchdog stays armed through the pause.
             _settle_after(operation_name)
@@ -2447,6 +2457,48 @@ class PyWin32Adapter(
             if recovered is not None:
                 return recovered
         return result
+
+    def _refuse_while_busy(self, operation_name: str) -> AdapterResult[Any] | None:
+        """Refuse an operation while SolidWorks doesn't answer its window.
+
+        Asks the frame window through Win32 only (``SolidWorksWindow.is_responding``),
+        waiting up to ``SOLIDWORKS_MCP_BUSY_WAIT_SECONDS`` for a SolidWorks
+        busy with a long call to finish.
+
+        Args:
+            operation_name: The operation about to run.
+
+        Returns:
+            The ``solidworks_busy`` error to return instead of running it, or
+            ``None`` to run it (also when the window isn't known).
+        """
+        window = self._window
+        if window is None:
+            return None
+        budget = limits.busy_wait_seconds()
+        # A window that can't be asked counts as answering: the check must
+        # never be what stops a call.
+        waited = limits.wait_until_responsive(
+            lambda: bool(self._attempt(window.is_responding, default=True)), budget
+        )
+        if waited is not None:
+            if waited >= 1.0:
+                logger.info(
+                    "SolidWorks answered after {:.1f} s; running {}",
+                    waited,
+                    operation_name,
+                )
+            return None
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(
+                f"SolidWorks is busy: it has not answered for {budget:.0f} s "
+                f"(SOLIDWORKS_MCP_BUSY_WAIT_SECONDS), so {operation_name} was not "
+                "run. A long operation is still running in it: an earlier call, "
+                "another program, or the user. Wait for it to finish and retry."
+            ),
+            execution_time=budget,
+        )
 
     def _solidworks_exited(self, *, probe: bool = False) -> bool:
         """Whether the SolidWorks this adapter connected to has exited.

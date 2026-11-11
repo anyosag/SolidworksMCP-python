@@ -461,6 +461,20 @@ class TestSolidWorksMCPServer:
         sync_runner.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_run_local_stdio_watches_for_the_client_leaving(self, monkeypatch):
+        """Stdio startup starts the stdin watcher before the transport runs."""
+        from solidworks_mcp.adapters.solidworks import limits
+
+        order: list[str] = []
+        monkeypatch.setattr(limits, "watch_stdin", lambda: order.append("watch"))
+        server = SolidWorksMCPServer(SolidWorksMCPConfig(mock_solidworks=False))
+        server.server = SimpleNamespace(run_stdio=lambda: order.append("run"))
+
+        await server._run_local_stdio()
+
+        assert order == ["watch", "run"]
+
+    @pytest.mark.asyncio
     async def test_run_local_stdio_with_async_runner(self):
         """Test stdio startup using async run_stdio_async fallback."""
         config = SolidWorksMCPConfig(mock_solidworks=False)

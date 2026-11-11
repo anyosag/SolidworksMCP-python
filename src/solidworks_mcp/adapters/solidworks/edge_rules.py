@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from . import limits
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -342,6 +343,7 @@ class EdgeRuleSelector:
         seen: set[tuple[Any, ...]] = set()
         out = []
         for edge in edges:
+            limits.check("reading edges")
             info = describe_edge(self._adapter, edge)
             key = edge_key(info)
             if key is not None:

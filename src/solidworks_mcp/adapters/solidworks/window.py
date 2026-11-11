@@ -39,6 +39,12 @@ SW_MINIMIZE = 6
 SW_SHOWMINNOACTIVE = 7
 SW_RESTORE = 9
 
+# A message that does nothing, and SendMessageTimeout's "wait only for this
+# window" and "don't wait on a hung window" flags (winuser.h).
+WM_NULL = 0x0000
+SMTO_BLOCK = 0x0001
+SMTO_ABORTIFHUNG = 0x0002
+
 #: The values :meth:`SolidWorksWindow.state` returns.
 WINDOW_STATES = ("minimized", "normal", "maximized", "hidden", "unknown")
 
@@ -50,6 +56,7 @@ _SIGNATURES: list[tuple[str, list[Any], Any]] = [
     ("IsWindowEnabled", [_HWND], ctypes.c_int),
     ("IsIconic", [_HWND], ctypes.c_int),
     ("IsZoomed", [_HWND], ctypes.c_int),
+    ("IsHungAppWindow", [_HWND], ctypes.c_int),
     ("ShowWindow", [_HWND, ctypes.c_int], ctypes.c_int),
     ("ShowWindowAsync", [_HWND, ctypes.c_int], ctypes.c_int),
     ("GetForegroundWindow", [], _HWND),
@@ -152,6 +159,33 @@ class SolidWorksWindow:
     def has_modal_dialog(self) -> bool:
         """Whether SolidWorks shows a modal dialog (its frame is disabled)."""
         return self.available and not self._user32.IsWindowEnabled(self.hwnd)
+
+    def is_responding(self, timeout_ms: int = 1000) -> bool:
+        """Whether SolidWorks' UI thread answers a message within ``timeout_ms``.
+
+        A SolidWorks busy in a long call (its own, or another program's) does
+        not process messages, so it doesn't answer; one showing a dialog
+        does. Windows' own "not responding" flag (``IsHungAppWindow``, set
+        after 5 s without messages) answers first, without waiting. A window
+        that can't be found counts as responding: there is nothing to wait
+        for, and the call itself will say what is wrong.
+        """
+        if not self.available:
+            return True
+        if self._user32.IsHungAppWindow(self.hwnd):
+            return False
+        result = ctypes.c_size_t(0)
+        return bool(
+            self._user32.SendMessageTimeoutW(
+                self.hwnd,
+                WM_NULL,
+                0,
+                0,
+                SMTO_BLOCK | SMTO_ABORTIFHUNG,
+                int(timeout_ms),
+                ctypes.byref(result),
+            )
+        )
 
     def show_without_focus(self) -> None:
         """Restore the window without activating it (``ShowWindowAsync``).

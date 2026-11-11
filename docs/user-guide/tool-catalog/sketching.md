@@ -4,7 +4,7 @@ Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge
 
 > **Prerequisite:** An active part document with an active sketch edit session.
 
-**Total tools in this category: 19**
+**Total tools in this category: 22**
 
 ---
 
@@ -18,7 +18,7 @@ Open a new sketch on a plane of the active part, ready for lines, circles and ot
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `plane` | `str` | ✅ | `` | Sketch plane name (e.g., 'Top', 'Front', 'Right', 'XY', 'XZ', 'YZ') |
+| `plane` | `str` | ✅ | `` | Plane to sketch on: 'Front' (or 'XY'), 'Top' ('XZ'), 'Right' ('YZ'), or the exact name of a plane in the part, e.g. 'Plane1' |
 | `sketch_name` | `str?` | — | `None` | Name to give the sketch in the feature tree, applied when exit_sketch closes it; omit to keep SolidWorks' own (Sketch1, Sketch2, ...) |
 
 **Sample call:**
@@ -164,6 +164,7 @@ Draw a circular arc in the open sketch from its centre, start point and end poin
 | `start_y` | `float` | ✅ | `` | Arc start point Y coordinate in mm |
 | `end_x` | `float` | ✅ | `` | Arc end point X coordinate in mm |
 | `end_y` | `float` | ✅ | `` | Arc end point Y coordinate in mm |
+| `direction` | `Literal['ccw', 'cw']` | — | `ccw` | Which way the arc runs from start to end, looking at the sketch (x right, y up): 'ccw' counter-clockwise (the default) or 'cw' |
 
 **Sample call:**
 
@@ -175,6 +176,72 @@ Draw a circular arc in the open sketch from its centre, start point and end poin
   "start_y": 0.0,
   "end_x": 30.0,
   "end_y": 0.0
+}
+```
+
+---
+
+### `add_outlines`
+
+Draw whole outlines of lines and arcs in the open sketch in one call, in mm.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `outlines` | `List[Outline]` | ✅ | `` | One or more outlines, each a closed loop by default. Give each either 'points' (a polygon) or 'start' plus 'segments' (lines and arcs) |
+
+**Sample call:**
+
+```json
+{
+  "outlines": []
+}
+```
+
+---
+
+### `edit_sketch`
+
+Open an existing sketch for editing, listing its segments with ids.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | `str` | ✅ | `` | The sketch to open, e.g. 'Sketch3' |
+
+**Sample call:**
+
+```json
+{
+  "name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `delete_sketch_entities`
+
+Delete lines, arcs and other entities of the open sketch by id.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `ids` | `List[str]` | ✅ | `` | Ids of the entities to delete, from edit_sketch or the add_* tools |
+
+**Sample call:**
+
+```json
+{
+  "ids": []
 }
 ```
 

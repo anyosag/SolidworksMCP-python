@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus
+from . import limits
 
 # swConstraintType_e values per the official SolidWorks API enum docs
 # (SolidWorks.Interop.swconst). The legacy IModelDoc2.SketchAddConstraints
@@ -943,6 +944,14 @@ def _add_sketch_outlines_impl(
             adapter._sketch_entity_centers.pop(entity_id, None)
         return True
 
+    def _cleanup(drawn: list[tuple[str, Any]]) -> str:
+        if _undo(drawn):
+            return "the segments this call drew were removed again"
+        return (
+            f"{len(drawn)} segments this call drew stay in the sketch; undo or "
+            "delete them"
+        )
+
     def _outlines_operation() -> dict[str, Any]:
         drawn: list[tuple[str, Any]] = []
         replies: list[dict[str, Any]] = []
@@ -951,6 +960,12 @@ def _add_sketch_outlines_impl(
             construction = bool(outline.get("construction", False))
             ids: list[str] = []
             for segment_index, segment in enumerate(outline["segments"], start=1):
+                try:
+                    limits.check(
+                        f"drawing outline {outline_index}, segment {segment_index}"
+                    )
+                except limits.OperationStopped as stopped:
+                    raise Exception(f"{stopped}; {_cleanup(drawn)}") from stopped
                 handle, create_error = adapter._attempt_with_error(
                     lambda s=segment: _create(s)
                 )
@@ -966,16 +981,10 @@ def _add_sketch_outlines_impl(
                         what = "was not created"
                     if handle:
                         drawn.append(("", handle))
-                    cleanup = (
-                        "the segments this call drew were removed again"
-                        if _undo(drawn)
-                        else f"{len(drawn)} segments this call drew stay in the "
-                        "sketch; undo or delete them"
-                    )
                     raise Exception(
                         f"Outline {outline_index}, segment {segment_index} "
                         f"({segment['type']} from {segment['start']} to "
-                        f"{segment['end']}) {what}; {cleanup}"
+                        f"{segment['end']}) {what}; {_cleanup(drawn)}"
                     )
                 prefix = "Arc" if segment["type"] == "arc" else "Line"
                 entity_id: str = adapter._register_sketch_entity(prefix, handle)

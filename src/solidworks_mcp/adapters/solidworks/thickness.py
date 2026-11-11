@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from . import limits
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -227,6 +228,7 @@ def measure_wall_thickness(
     for body in bodies:
         _flag(adapter, body, "GetFaces")
         for face in as_list(_attempt(adapter, lambda b=body: b.GetFaces())):
+            limits.check("sampling faces")
             face_count += 1
             _flag(adapter, face, "GetTessTriangles", "GetTessNorms")
             samples += sample_points(

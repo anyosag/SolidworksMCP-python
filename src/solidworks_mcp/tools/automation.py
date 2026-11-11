@@ -10,10 +10,11 @@ create_template for reusable standards, and optimize_performance for tuning.
 import inspect
 from typing import Any
 
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks import limits
 from .input_compat import CompatInput
 from .support_levels import SUPPORT_LEVELS, SupportLevel
 from .tool_boundary import (
@@ -594,12 +595,15 @@ End Sub
         return {"done": True, "deleted": deleted}
 
     @mcp.tool()
-    async def execute_workflow(input_data: WorkflowInput) -> dict[str, Any]:
+    async def execute_workflow(
+        input_data: WorkflowInput, ctx: Context | None = None
+    ) -> dict[str, Any]:
         """Run a list of tool steps in order in one call, stopping at the first that fails.
 
         Use it for a sequence you already know, e.g. sketch, draw, exit, extrude: give
         `steps`, each a `tool` name and the `arguments` you would pass that tool. Steps
-        run one at a time (SolidWorks takes one call at a time). With
+        run one at a time (SolidWorks takes one call at a time), and it reports
+        progress after each, so a long run doesn't look idle to the client. With
         `rollback_on_error`, a failing step makes it delete the features and sketches
         the earlier steps added, so the document is as it started (other changes, such
         as dimensions or saved files, stay). Needs: whatever the steps need. Changes:
@@ -648,7 +652,23 @@ End Sub
             else None
         )
         done: list[dict[str, Any]] = []
+        total = len(input_data.steps)
         for index, step in enumerate(input_data.steps):
+            if limits.client_gone():
+                raise ToolOperationError(
+                    f"Workflow '{name}' stopped before step {index + 1} of {total} "
+                    f"({step.tool}): the MCP client disconnected, so nothing "
+                    "would read the result.",
+                    data={"steps": done, "completed": index, "failed_step": None},
+                )
+            if ctx is not None:
+                # Progress resets an MCP client's idle timeout, and the await
+                # lets a cancel from the client land between steps.
+                await ctx.report_progress(
+                    progress=index,
+                    total=total,
+                    message=f"Step {index + 1} of {total}: {step.tool}",
+                )
             fn = registry[step.tool].fn
             takes_input = bool(inspect.signature(fn).parameters)
             reply = await (fn(step.arguments) if takes_input else fn())
@@ -676,6 +696,10 @@ End Sub
                     f"{len(input_data.steps)} ({step.tool}): {reply.get('message')}",
                     data=data,
                 )
+        if ctx is not None:
+            await ctx.report_progress(
+                progress=total, total=total, message=f"All {total} steps done"
+            )
         return {
             "status": "success",
             "message": f"Workflow '{name}' ran all {len(done)} steps",

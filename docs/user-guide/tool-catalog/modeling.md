@@ -4,7 +4,7 @@ Create and manipulate SolidWorks parts, assemblies, and drawings. These are the 
 
 > **Prerequisite:** An active SolidWorks session. Most feature tools require an open Part document.
 
-**Total tools in this category: 31**
+**Total tools in this category: 35**
 
 ---
 
@@ -488,6 +488,7 @@ Delete a feature or sketch from the active model, along with the features that d
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `name` | `str` | ✅ | `` | Feature or sketch name, e.g. 'Boss-Extrude1' or 'Sketch1' |
+| `delete_absorbed` | `bool` | — | `False` | Delete the feature's own sketch too (a cut's profile); off leaves it in the tree and the reply names it |
 
 **Sample call:**
 
@@ -584,6 +585,110 @@ Select every edge of one face of the active part, ready for `add_fillet` or `add
 | `plane` | `str?` | — | `None` | Reference plane name, e.g. 'Front Plane'; picks the body face(s) lying on it |
 | `edge_type` | `str` | — | `all` | 'all', 'linear' or 'circular' (e.g. hole rims) |
 | `append` | `bool` | — | `False` | Add to the current selection instead of replacing it |
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
+### `select_edges`
+
+Select the edges of the active part that match rules, ready for `add_fillet` or `add_chamfer` with no edge names.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `feature` | `str?` | — | `None` | Take the edges of the faces this feature made, e.g. 'Cut-Extrude2' (the cut's walls and rims). Give at most one of feature, face_point, side and plane; none takes every edge of the part |
+| `face_point` | `List[float]?` | — | `None` | Take the edges of the face at this point, [x, y, z] mm |
+| `side` | `str?` | — | `None` | Take the edges of the furthest flat face facing this way: top, bottom, front, back, right, left or +X..-Z |
+| `plane` | `str?` | — | `None` | Take the edges of the face(s) lying on this plane, e.g. 'Top Plane' |
+| `edge_type` | `str` | — | `all` | Keep 'all' (the default), 'linear' or 'circular' edges |
+| `parallel_to` | `str | List[float]?` | — | `None` | Keep only straight edges along this direction: 'x', 'y', 'z' or [x, y, z] |
+| `parallel_tolerance_deg` | `float` | — | `1.0` | How many degrees off parallel_to an edge may be (default 1) |
+| `inside_box` | `List[List[float]]?` | — | `None` | Keep only edges wholly inside this box: [[xmin, ymin, zmin], [xmax, ymax, zmax]] in model mm |
+| `min_length` | `float?` | — | `None` | Keep only edges at least this long, mm |
+| `max_length` | `float?` | — | `None` | Keep only edges at most this long, mm |
+| `append` | `bool` | — | `False` | Add to the current selection instead of replacing it |
+
+**Sample call:**
+
+```json
+{}
+```
+
+---
+
+### `set_visibility`
+
+Show or hide planes, axes, points, origins and sketches in the active document.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `visible` | `bool` | ✅ | `` | true shows them, false hides them |
+| `names` | `List[str]` | ✅ | `` | Planes, axes, points, coordinate systems or sketches by their tree names, e.g. ['Plane1', 'Sketch3'] |
+| `types` | `List[DisplayType]` | ✅ | `` | Every entity of these types in the document, as View > Hide/Show does: planes, axes, temporary_axes, origins, coordinate_systems, points, sketches |
+
+**Sample call:**
+
+```json
+{
+  "visible": false,
+  "names": "MCP_Demo_Part",
+  "types": []
+}
+```
+
+---
+
+### `edit_feature`
+
+Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `name` | `str` | ✅ | `` | The feature to change, e.g. 'Cut-Extrude2' |
+| `depth` | `float?` | — | `None` | Extrude or cut: the new depth, mm |
+| `end_condition` | `str?` | — | `None` | Extrude or cut: Blind, ThroughAll, ThroughAllBoth, MidPlane or UpToNext |
+| `reverse_direction` | `bool?` | — | `None` | Extrude, cut or revolve: true to go the other way |
+| `angle` | `float?` | — | `None` | Revolve: the new angle, degrees |
+| `radius` | `float?` | — | `None` | Fillet: the new radius, mm |
+
+**Sample call:**
+
+```json
+{
+  "name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `set_rollback`
+
+Move the rollback bar before or after a feature, so new features go in there, or back to the end.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `before` | `str?` | — | `None` | Put the bar just above this feature, e.g. 'Fillet1' |
+| `after` | `str?` | — | `None` | Put the bar just below this feature; neither moves it to the end |
 
 **Sample call:**
 
@@ -749,8 +854,9 @@ Repeat features of the active part around an axis, e.g. a ring of bosses or ribs
 | `features` | `List[str]` | ✅ | `` | Names of the features to pattern. At least one required. |
 | `axis` | `str` | ✅ | `` | Name of the axis to rotate about, e.g. 'Axis1' as created by create_axis |
 | `count` | `int` | ✅ | `` | Total number of instances including the original. Must be at least 2 - a pattern of one is just the original feature |
-| `angle` | `float` | — | `360.0` | Total angle in degrees to spread the instances over. Defaults to a full 360 |
-| `equal_spacing` | `bool` | — | `True` | Space instances evenly across 'angle' |
+| `angle` | `float?` | — | `None` | Total angle in degrees the instances are spread over evenly; a full 360 when neither angle nor step_angle is given |
+| `step_angle` | `float?` | — | `None` | Instead of angle: degrees between neighbouring instances, e.g. 60 for instances every 60 degrees |
+| `reverse_direction` | `bool` | — | `False` | Pattern the other way round the axis |
 
 **Sample call:**
 

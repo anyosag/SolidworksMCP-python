@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
+from solidworks_mcp.adapters.solidworks import limits
 from solidworks_mcp.adapters.solidworks import thickness as th
 from solidworks_mcp.adapters.solidworks.documentation import (
     SolidWorksDocumentationMixin,
@@ -225,3 +226,10 @@ async def test_the_adapter_method_needs_a_part() -> None:
         "check_wall_thickness needs an active part document (active document is "
         "drawing)."
     )
+
+
+def test_sampling_stops_when_the_client_has_gone() -> None:
+    limits.mark_client_gone("test")
+
+    with pytest.raises(limits.OperationStopped, match="Stopped sampling faces"):
+        th.measure_wall_thickness(_Harness(_Model()), 1.0)

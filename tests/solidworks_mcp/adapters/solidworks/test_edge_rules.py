@@ -16,6 +16,7 @@ import pytest
 
 from solidworks_mcp.adapters.base import AdapterResult, AdapterResultStatus
 from solidworks_mcp.adapters.solidworks import edge_rules as er
+from solidworks_mcp.adapters.solidworks import limits
 from solidworks_mcp.adapters.solidworks.selection import SolidWorksSelectionMixin
 
 # ---- fakes -------------------------------------------------------------------
@@ -438,3 +439,11 @@ async def test_select_edges_refusals(
     result = await _Harness(model).select_edges(query)
 
     assert fragment in (result.error or "")
+
+
+def test_reading_edges_stops_when_the_client_has_gone() -> None:
+    selector = er.EdgeRuleSelector(_Harness(_model()))
+    limits.mark_client_gone("test")
+
+    with pytest.raises(limits.OperationStopped, match="Stopped reading edges"):
+        selector.candidates({})
