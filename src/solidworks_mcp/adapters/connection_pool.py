@@ -729,6 +729,37 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.check_wall_thickness(min_wall_mm, max_rays),
         )
 
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Edit a feature's parameters using pool."""
+        return await self._execute_with_pool(
+            "edit_feature", lambda adapter: adapter.edit_feature(name, changes)
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar using pool."""
+        return await self._execute_with_pool(
+            "set_rollback", lambda adapter: adapter.set_rollback(before, after)
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch using pool."""
+        return await self._execute_with_pool(
+            "edit_sketch", lambda adapter: adapter.edit_sketch(name)
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete sketch entities using pool."""
+        return await self._execute_with_pool(
+            "delete_sketch_entities",
+            lambda adapter: adapter.delete_sketch_entities(entity_ids),
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:

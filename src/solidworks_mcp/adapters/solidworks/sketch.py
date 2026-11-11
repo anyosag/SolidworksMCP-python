@@ -151,6 +151,30 @@ class SolidWorksSketchMixin:
     ) -> AdapterResult[dict[str, Any]]:
         return _set_sketch_construction_impl(self, entity_ids, construction)
 
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch for editing (``feature_editing.open_sketch``)."""
+        from .feature_editing import open_sketch
+
+        return _sketch_edit_operation(
+            self, "edit_sketch", lambda: open_sketch(self, name)
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete entities of the open sketch by id."""
+        from .feature_editing import delete_sketch_entities
+
+        if not self._adapter(self).currentSketchManager:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        return _sketch_edit_operation(
+            self,
+            "delete_sketch_entities",
+            lambda: delete_sketch_entities(self, entity_ids),
+        )
+
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:
         return _add_spline_impl(self, points)
 
@@ -797,6 +821,23 @@ def _add_arc_impl(
     return cast(
         AdapterResult[str], adapter._handle_com_operation("add_arc", _arc_operation)
     )
+
+
+def _sketch_edit_operation(
+    adapter: Any, operation_name: str, operation: Any
+) -> AdapterResult[dict[str, Any]]:
+    """Run a sketch-editing closure; its errors read as plain sentences."""
+    from .com_utils import strip_op_prefix
+
+    if not adapter.currentModel:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
+    result = cast(
+        AdapterResult[dict[str, Any]],
+        adapter._handle_com_operation(operation_name, operation),
+    )
+    if not result.is_success:
+        result.error = strip_op_prefix(result.error, operation_name)
+    return result
 
 
 def _make_construction(adapter: Any, segment: Any, construction: bool) -> bool:

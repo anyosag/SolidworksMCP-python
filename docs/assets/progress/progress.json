@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 160,
+  "total": 164,
   "by_level": {
    "stable": 106,
    "beta": 0,
-   "experimental": 14,
+   "experimental": 18,
    "planned": 40
   },
   "list": [
@@ -485,11 +485,32 @@
     "summary": "Delete a feature or sketch from the active model, along with the features that depend on it."
    },
    {
+    "name": "delete_sketch_entities",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Delete lines, arcs and other entities of the open sketch by id."
+   },
+   {
     "name": "discover_solidworks_docs",
     "family": "docs_discovery",
     "level": "stable",
     "reason": "",
     "summary": "Rebuild the SolidWorks API index on purpose. The lookups don't need it."
+   },
+   {
+    "name": "edit_feature",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius."
+   },
+   {
+    "name": "edit_sketch",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Open an existing sketch for editing, listing its segments with ids."
    },
    {
     "name": "execute_macro",
@@ -1010,6 +1031,13 @@
     "summary": "Assign a library material to the active part, e.g. \"AISI 1020\" or \"6061-T6 (SS)\"."
    },
    {
+    "name": "set_rollback",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Move the rollback bar before or after a feature, so new features go in there, or back to the end."
+   },
+   {
     "name": "set_sheet_scale",
     "family": "drawing_automation",
     "level": "stable",
@@ -1133,11 +1161,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 227,
+   "covered": 235,
    "total": 2838
   },
   "api": {
-   "covered": 248,
+   "covered": 262,
    "total": 5985
   },
   "interfaces": [
@@ -1189,6 +1217,8 @@
      "CreateLinearSketchStepAndRepeat",
      "EditDelete",
      "EditRebuild3",
+     "EditRollback",
+     "EditSketch",
      "EditSuppress2",
      "EditUndo",
      "EditUndo2",
@@ -1277,6 +1307,7 @@
    {
     "name": "IPartDoc",
     "covered": [
+     "EditRollback",
      "ExportToDWG2",
      "FeatureByName",
      "FeatureExtrusion2",
@@ -1320,6 +1351,7 @@
      "Create3rdAngleViews2",
      "CreateDrawViewFromModelView3",
      "EditSheet",
+     "EditSketch",
      "EditTemplate",
      "FeatureByName",
      "GetCurrentSheet",
@@ -1334,6 +1366,7 @@
     "name": "IFeatureManager",
     "covered": [
      "CreateSaveBodyFeature",
+     "EditRollback",
      "FeatureCircularPattern5",
      "FeatureCut3",
      "FeatureCut4",
@@ -1411,6 +1444,7 @@
     "covered": [
      "GetBox",
      "GetChildren",
+     "GetDefinition",
      "GetErrorCode2",
      "GetFaces",
      "GetFirstDisplayDimension",
@@ -1423,8 +1457,10 @@
      "GetParents",
      "GetSpecificFeature2",
      "GetTypeName2",
+     "IsRolledBack",
      "IsSuppressed",
      "IsSuppressed2",
+     "ModifyDefinition",
      "Parameter",
      "Select",
      "Select2"

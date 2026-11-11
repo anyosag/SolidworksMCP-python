@@ -94,8 +94,16 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
 ## Changing an existing model
 
 1. `open_model`, then `list_features` and `list_model_dimensions`.
-2. `set_dimension` with the full name (e.g. "D1@Boss-Extrude1") and the new
-   value in mm.
+2. Change it where it stands; don't delete and re-create a feature, which
+   takes its dependents (fillets, patterns) with it:
+   - an extrude's or cut's depth, end condition or direction, a revolve's
+     angle, a fillet's radius: `edit_feature` with `name` and the change;
+   - any other dimension: `set_dimension` with the full name (e.g.
+     "D1@Boss-Extrude1") and the new value in mm;
+   - a profile: `edit_sketch`, `delete_sketch_entities` with the ids it
+     lists, the `add_*` tools for the new shape, then `exit_sketch`;
+   - a new feature mid-tree: `set_rollback` with `after` the feature it
+     builds on, add it, then `set_rollback` with no input.
 3. `rebuild_model`: an error names each failing feature and how to fix it.
 4. `verify_model` with the new expected size.
 

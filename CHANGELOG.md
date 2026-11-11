@@ -45,6 +45,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   degrees apart is `count: 3`, `step_angle: 60`), `angle` stays the total
   spread, and `reverse_direction` patterns the other way round the axis.
   The reply gives `step_angle` and `total_angle`.
+- **Editing an existing model in place**, instead of deleting and
+  re-creating a feature, which took its dependents (two fillets on the dish
+  rack) with it. Experimental until their live tests run:
+  - `edit_feature` changes an extrude's or cut's `depth`, `end_condition`
+    and `reverse_direction`, a revolve's `angle` and a fillet's `radius`
+    through the feature's definition (`GetDefinition`, `ModifyDefinition`),
+    and reads the values back after the rebuild.
+  - `set_rollback` moves the rollback bar before or after a feature, so a
+    new feature goes in mid-tree, and back to the end.
+  - `edit_sketch` opens an existing sketch for editing with an id for each
+    segment; `delete_sketch_entities` removes segments by id, and the `add_*`
+    tools draw the new ones.
 - **`check_wall_thickness`** measures the active part's thinnest walls
   before 3D printing: points sampled on every face, a ray cast inward from
   each (`RayIntersections`), the distance to where it leaves the solid. The

@@ -884,6 +884,81 @@ class SetVisibilityInput(CompatInput):
             raise ValueError("give names, types or both to show or hide")
 
 
+class EditFeatureInput(CompatInput):
+    """Input schema for changing an existing feature's parameters.
+
+    Attributes:
+        name (str): The feature to change.
+        depth (float | None): New depth, mm (extrude, cut).
+        end_condition (str | None): New end condition (extrude, cut).
+        reverse_direction (bool | None): New direction (extrude, cut, revolve).
+        angle (float | None): New angle, degrees (revolve).
+        radius (float | None): New radius, mm (fillet).
+    """
+
+    name: str = Field(description="The feature to change, e.g. 'Cut-Extrude2'")
+    depth: float | None = Field(
+        default=None, gt=0, description="Extrude or cut: the new depth, mm"
+    )
+    end_condition: str | None = Field(
+        default=None,
+        description=(
+            "Extrude or cut: Blind, ThroughAll, ThroughAllBoth, MidPlane or UpToNext"
+        ),
+    )
+    reverse_direction: bool | None = Field(
+        default=None,
+        description="Extrude, cut or revolve: true to go the other way",
+    )
+    angle: float | None = Field(
+        default=None, gt=0, le=360, description="Revolve: the new angle, degrees"
+    )
+    radius: float | None = Field(
+        default=None, gt=0, description="Fillet: the new radius, mm"
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name is required")
+        if not self.changes():
+            raise ValueError(
+                "give at least one change: depth, end_condition, "
+                "reverse_direction, angle or radius"
+            )
+
+    def changes(self) -> dict[str, Any]:
+        """The changes given, by name."""
+        return self.model_dump(
+            include={"depth", "end_condition", "reverse_direction", "angle", "radius"},
+            exclude_none=True,
+        )
+
+
+class SetRollbackInput(CompatInput):
+    """Input schema for moving the rollback bar.
+
+    Attributes:
+        before (str | None): Put the bar just above this feature.
+        after (str | None): Put the bar just below this feature.
+    """
+
+    before: str | None = Field(
+        default=None,
+        description="Put the bar just above this feature, e.g. 'Fillet1'",
+    )
+    after: str | None = Field(
+        default=None,
+        description="Put the bar just below this feature; neither moves it to the end",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        self.before = (self.before or "").strip() or None
+        self.after = (self.after or "").strip() or None
+        if self.before and self.after:
+            raise ValueError("give before or after, not both")
+
+
 class RebuildModelInput(CompatInput):
     """Input schema for forcing a model rebuild.
 
@@ -2351,6 +2426,78 @@ async def register_modeling_tools(
             "status": "success",
             "message": (
                 f"{'Showed' if input_data.visible else 'Hid'} {', '.join(what)}"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def edit_feature(input_data: EditFeatureInput) -> dict[str, Any]:
+        """Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius.
+
+        Use it instead of deleting and re-creating a feature, which takes its
+        dependents (fillets, patterns) with it. Give `name` and only the changes:
+        `depth` (mm), `end_condition`, `reverse_direction` (extrudes and cuts),
+        `angle` (revolves) or `radius` (fillets). Other features' sizes change with
+        `set_dimension`. Needs: an open part. Changes: the feature, then a rebuild;
+        `undo` reverts it. Returns: `data` with `feature`, `type`, `before` and `after`
+        (read back from SolidWorks after the rebuild).
+
+        Args:
+            input_data: The change. `name` and at least one change are required.
+
+        Returns:
+            dict[str, Any]: The feature's values before and after.
+        """
+        input_data = normalize_input(input_data, EditFeatureInput)
+        changes = input_data.changes()
+        result = await adapter.edit_feature(input_data.name, changes)
+        require_success(result, context=f"Failed to edit {input_data.name}")
+        data = result.data if isinstance(result.data, dict) else {}
+        after = data.get("after") or {}
+
+        def _shown(value: Any) -> str:
+            return f"{value:g}" if isinstance(value, float) else str(value)
+
+        described = ", ".join(
+            f"{k} {_shown(after.get(k, v))}" for k, v in changes.items()
+        )
+        return {
+            "status": "success",
+            "message": f"Changed {input_data.name}: {described}",
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def set_rollback(
+        input_data: SetRollbackInput | None = None,
+    ) -> dict[str, Any]:
+        """Move the rollback bar before or after a feature, so new features go in there, or back to the end.
+
+        Use it to add a feature in the middle of the tree: roll back to just after the
+        feature it builds on, add it, then call this with no input to roll forward.
+        Features below the bar are not built while it is up. Needs: an open part or
+        assembly. Changes: the rollback bar's position. Returns: `data` with `position`
+        and `rolled_back` (the features now below the bar).
+
+        Args:
+            input_data: Where to put the bar: `before` or `after` a feature; neither
+                (or no input) moves it to the end.
+
+        Returns:
+            dict[str, Any]: Where the bar is now.
+        """
+        input_data = normalize_input(input_data, SetRollbackInput)
+        result = await adapter.set_rollback(input_data.before, input_data.after)
+        require_success(result, context="Failed to move the rollback bar")
+        data = result.data if isinstance(result.data, dict) else {}
+        rolled = data.get("rolled_back") or []
+        return {
+            "status": "success",
+            "message": (
+                f"Rollback bar at {data.get('position', 'the end')}"
+                + (f"; {len(rolled)} feature(s) below it" if rolled else "")
             ),
             "data": data,
             "execution_time": result.execution_time,

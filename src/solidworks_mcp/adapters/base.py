@@ -1210,6 +1210,72 @@ class SolidWorksAdapter(ABC):
             error="check_wall_thickness is not implemented by this adapter",
         )
 
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Change an existing feature's parameters in place.
+
+        Args:
+            name (str): The feature's tree name.
+            changes (dict[str, Any]): ``depth`` (mm), ``end_condition``,
+                ``reverse_direction``, ``angle`` (degrees) or ``radius`` (mm).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``type``, ``before`` and
+            ``after``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="edit_feature is not implemented by this adapter",
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar before or after a feature, or (neither) to the end.
+
+        Args:
+            before (str | None): Put the bar just above this feature.
+            after (str | None): Put the bar just below this feature.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``position`` and ``rolled_back``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_rollback is not implemented by this adapter",
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch for editing, with an id for each segment.
+
+        Args:
+            name (str): The sketch's tree name.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``sketch`` and ``segments``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="edit_sketch is not implemented by this adapter",
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete entities of the open sketch by id.
+
+        Args:
+            entity_ids (list[str]): Ids from the ``add_*`` tools or ``edit_sketch``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``deleted`` and ``remaining``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_sketch_entities is not implemented by this adapter",
+        )
+
     async def create_reference_plane(
         self,
         reference: str,

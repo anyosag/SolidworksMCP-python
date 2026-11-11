@@ -1092,6 +1092,147 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=0.0,
         )
 
+    #: The mock's feature types as SolidWorks' ``GetTypeName2`` names them.
+    _MOCK_TYPE_NAMES = {
+        "Extrusion": "Extrusion",
+        "Cut": "Cut",
+        "Revolve": "Revolution",
+        "Fillet": "Fillet",
+    }
+    #: ``edit_feature``'s change names -> the mock feature's parameter keys.
+    _MOCK_EDIT_KEYS = {
+        "depth": "depth",
+        "end_condition": "end_condition",
+        "reverse_direction": "reverse_direction",
+        "angle": "angle",
+        "radius": "size",
+    }
+
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock editing a feature's parameters, with the live adapter's rules.
+
+        The change rules (which feature takes which change) are the live
+        ones (``feature_editing.check_changes``); the values are kept in the
+        feature's ``parameters``.
+        """
+        from .solidworks.feature_editing import check_changes, end_condition_value
+
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        feature = next((f for f in self._features.values() if f.name == name), None)
+        if feature is None:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Feature {name!r} not found; list_features names them.",
+            )
+        kind = self._MOCK_TYPE_NAMES.get(feature.type, feature.type)
+        problem = check_changes(kind, changes, name)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        parameters = feature.parameters if feature.parameters is not None else {}
+        feature.parameters = parameters
+        before = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in changes}
+        for key, value in changes.items():
+            if key == "end_condition":
+                value = end_condition_value(str(value))[0]
+            parameters[self._MOCK_EDIT_KEYS[key]] = value
+        after = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in changes}
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"feature": name, "type": kind, "before": before, "after": after},
+            execution_time=self._delays["feature_operation"],
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock moving the rollback bar over the mock feature tree."""
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        names = [f.name for f in self._features.values()]
+        target = before or after
+        if target and target not in names:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Feature {target!r} not found; list_features names them.",
+            )
+        if before:
+            index = names.index(before)
+            position = f"before {before}"
+        elif after:
+            index = names.index(after) + 1
+            position = f"after {after}"
+        else:
+            index, position = len(names), "the end"
+        self.__dict__["_rollback_index"] = index
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"position": position, "rolled_back": names[index:]},
+            execution_time=self._delays["model_operation"],
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Mock opening an existing sketch for editing.
+
+        The mock keeps no sketch geometry, so the sketch opens with no
+        listed segments; new ``add_*`` calls draw into it as usual.
+        """
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if name not in self._sketches:
+            kind = self._mock_feature_kind(name)
+            error = (
+                f"Feature {name!r} not found; list_features names them."
+                if kind is None
+                else f"{name!r} is a {kind}, not a sketch."
+            )
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
+        self._current_sketch = name
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"sketch": name, "segments": []},
+            execution_time=self._delays["sketch_operation"],
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock deleting entities of the open sketch by id."""
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        missing = [i for i in entity_ids if i not in self._sketch_entity_ids]
+        if missing:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Sketch entity {', '.join(missing)} not found in the open sketch."
+                ),
+            )
+        for entity_id in entity_ids:
+            self._sketch_entity_ids.discard(entity_id)
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "deleted": list(entity_ids),
+                "remaining": sorted(self._sketch_entity_ids),
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
     async def check_wall_thickness(
         self, min_wall_mm: float = 0.8, max_rays: int = 5000
     ) -> AdapterResult[dict[str, Any]]:

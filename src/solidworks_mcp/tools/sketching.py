@@ -423,6 +423,34 @@ class Outline(BaseModel):
         return resolved
 
 
+class EditSketchInput(CompatInput):
+    """Input schema for opening an existing sketch.
+
+    Attributes:
+        name (str): The sketch's tree name.
+    """
+
+    name: str = Field(description="The sketch to open, e.g. 'Sketch3'")
+
+    def model_post_init(self, __context: Any) -> None:
+        self.name = self.name.strip()
+        if not self.name:
+            raise ValueError("name is required")
+
+
+class DeleteSketchEntitiesInput(CompatInput):
+    """Input schema for deleting entities of the open sketch.
+
+    Attributes:
+        ids (list[str]): Entity ids from ``edit_sketch`` or the ``add_*`` tools.
+    """
+
+    ids: list[str] = Field(
+        min_length=1,
+        description="Ids of the entities to delete, from edit_sketch or the add_* tools",
+    )
+
+
 class AddOutlinesInput(CompatInput):
     """Input schema for drawing whole outlines in one call.
 
@@ -974,6 +1002,65 @@ async def register_sketching_tools(
             "segment_count": count,
             "line_count": data.get("line_count", 0),
             "arc_count": data.get("arc_count", 0),
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def edit_sketch(input_data: EditSketchInput) -> dict[str, Any]:
+        """Open an existing sketch for editing, listing its segments with ids.
+
+        Use it to change a profile without deleting the feature built on it: open the
+        sketch, `delete_sketch_entities` what goes, draw what's new with the `add_*`
+        tools or `add_outlines`, then `exit_sketch`, which rebuilds the features that
+        use it. Needs: an open part with the sketch. Changes: opens the sketch for
+        editing. Returns: `sketch` with `name` and `segments` (each with `id`, `type`,
+        and `start_mm`, `end_mm` or `center_mm` in sketch coordinates).
+
+        Args:
+            input_data: The sketch. `name` is required.
+
+        Returns:
+            dict[str, Any]: The open sketch and its segments.
+        """
+        input_data = normalize_input(input_data, EditSketchInput)
+        names_on_exit.clear()
+        result = await adapter.edit_sketch(input_data.name)
+        require_success(result, context=f"Failed to open {input_data.name}")
+        data = result.data if isinstance(result.data, dict) else {}
+        segments = data.get("segments") or []
+        return {
+            "status": "success",
+            "message": f"Opened {input_data.name} for editing ({len(segments)} segments)",
+            "sketch": {"name": input_data.name, "segments": segments},
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def delete_sketch_entities(
+        input_data: DeleteSketchEntitiesInput,
+    ) -> dict[str, Any]:
+        """Delete lines, arcs and other entities of the open sketch by id.
+
+        Use it after `edit_sketch` (whose reply lists the ids) or to remove something
+        an `add_*` tool just drew. Needs: an open sketch. Changes: removes the entities
+        from the sketch. Returns: `deleted` and `remaining` (the ids still in the
+        sketch).
+
+        Args:
+            input_data: The entities. `ids` (one or more) is required.
+
+        Returns:
+            dict[str, Any]: What was deleted.
+        """
+        input_data = normalize_input(input_data, DeleteSketchEntitiesInput)
+        result = await adapter.delete_sketch_entities(list(input_data.ids))
+        require_success(result, context="Failed to delete sketch entities")
+        data = result.data if isinstance(result.data, dict) else {}
+        return {
+            "status": "success",
+            "message": f"Deleted {', '.join(input_data.ids)}",
+            "deleted": data.get("deleted", list(input_data.ids)),
+            "remaining": data.get("remaining", []),
             "execution_time": result.execution_time,
         }
 

@@ -151,6 +151,46 @@ class SolidWorksFeaturesMixin:
     ) -> AdapterResult[dict[str, Any]]:
         return _suppress_feature_impl(self, name, suppress)
 
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Change an existing feature's parameters (``feature_editing``).
+
+        Args:
+            name: The feature's tree name.
+            changes: ``depth`` (mm), ``end_condition``, ``reverse_direction``,
+                ``angle`` (degrees) or ``radius`` (mm).
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``feature``, ``type``, ``before``
+            and ``after`` (read back after the rebuild).
+        """
+        from .feature_editing import edit_feature
+
+        return _feature_edit_operation(
+            self,
+            "edit_feature",
+            lambda: edit_feature(self, name, changes, _null_callout()),
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar before or after a feature, or to the end.
+
+        Args:
+            before: Put the bar just above this feature.
+            after: Put the bar just below this feature.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``position`` and ``rolled_back``.
+        """
+        from .feature_editing import set_rollback
+
+        return _feature_edit_operation(
+            self, "set_rollback", lambda: set_rollback(self, before, after)
+        )
+
     async def rename_feature(
         self, old_name: str, new_name: str
     ) -> AdapterResult[dict[str, Any]]:
@@ -2484,6 +2524,34 @@ def _removed_names(
 #: ``swDelete_Absorbed`` a feature's own sketch with it.
 _DELETE_CHILDREN = 1
 _DELETE_ABSORBED = 2
+
+
+def _feature_edit_operation(
+    adapter: Any, operation_name: str, operation: Any
+) -> AdapterResult[dict[str, Any]]:
+    """Run a ``feature_editing`` operation; its errors read as plain sentences.
+
+    Args:
+        adapter: A connected adapter.
+        operation_name: For ``_handle_com_operation`` and its prefix.
+        operation: The zero-argument closure doing the COM work.
+
+    Returns:
+        AdapterResult[dict[str, Any]]: Its result; ``No active model`` first
+        when there is no document.
+    """
+    from .com_utils import strip_op_prefix
+
+    if not adapter.currentModel:
+        return AdapterResult(status=AdapterResultStatus.ERROR, error="No active model")
+    result = cast(
+        AdapterResult[dict[str, Any]],
+        adapter._handle_com_operation(operation_name, operation),
+    )
+    if not result.is_success:
+        result.error = strip_op_prefix(result.error, operation_name)
+    return result
+
 
 #: ``IFeature.GetTypeName2`` of a sketch.
 _SKETCH_TYPE_NAMES = frozenset({"ProfileFeature", "3DProfileFeature"})

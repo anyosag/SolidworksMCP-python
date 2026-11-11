@@ -786,6 +786,44 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"min_wall_mm": min_wall_mm, "max_rays": max_rays},
         )
 
+    async def edit_feature(
+        self, name: str, changes: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Edit a feature's parameters through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "edit_feature",
+            lambda: self.adapter.edit_feature(name, changes),
+            input_dict={"name": name, "changes": changes},
+        )
+
+    async def set_rollback(
+        self, before: str | None = None, after: str | None = None
+    ) -> AdapterResult[dict[str, Any]]:
+        """Move the rollback bar through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_rollback",
+            lambda: self.adapter.set_rollback(before, after),
+            input_dict={"before": before, "after": after},
+        )
+
+    async def edit_sketch(self, name: str) -> AdapterResult[dict[str, Any]]:
+        """Open an existing sketch through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "edit_sketch",
+            lambda: self.adapter.edit_sketch(name),
+            input_dict={"name": name},
+        )
+
+    async def delete_sketch_entities(
+        self, entity_ids: list[str]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Delete sketch entities through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "delete_sketch_entities",
+            lambda: self.adapter.delete_sketch_entities(entity_ids),
+            input_dict={"entity_ids": entity_ids},
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:
