@@ -203,6 +203,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "pattern_circular": _STABLE,
     "rebuild_model": _STABLE,
     "rename_feature": _STABLE,
+    "select_edges": _UNCHECKED,
     "select_face_edges": _STABLE,
     "select_feature": _STABLE,
     "set_component_state": _STABLE,

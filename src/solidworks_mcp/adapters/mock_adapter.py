@@ -882,6 +882,131 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["feature_operation"] / 4,
         )
 
+    def _mock_block_edges(self) -> list[dict[str, Any]]:
+        """The canned 10 mm block's edges, described as the live adapter does.
+
+        Twelve straight edges, plus a 2 mm hole rim on each Z face once any
+        circle has been sketched (the block ``select_face_edges`` uses).
+        """
+        edges: list[dict[str, Any]] = []
+        for axis in range(3):
+            others = [i for i in range(3) if i != axis]
+            for a in (0.0, 10.0):
+                for b in (0.0, 10.0):
+                    start = [0.0, 0.0, 0.0]
+                    start[others[0]], start[others[1]] = a, b
+                    end = list(start)
+                    end[axis] = 10.0
+                    edges.append(
+                        {
+                            "curve": "linear",
+                            "start_mm": start,
+                            "end_mm": end,
+                            "length_mm": 10.0,
+                        }
+                    )
+        if any(e.startswith("Circle") for e in self._sketch_entity_ids):
+            edges += [
+                {
+                    "curve": "circular",
+                    "center_mm": [5.0, 5.0, z],
+                    "axis": [0.0, 0.0, 1.0],
+                    "radius_mm": 2.0,
+                }
+                for z in (0.0, 10.0)
+            ]
+        return edges
+
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock rule-based edge selection on the canned 10 mm block.
+
+        The same validation, rules (``edge_rules.filter_edges``), messages
+        and payload as the live adapter. Any feature in the mock tree made
+        the whole block; a face source keeps the edges lying on that face.
+        """
+        from .solidworks.edge_rules import (
+            MAX_DESCRIBED_EDGES,
+            describe_source,
+            filter_edges,
+            no_match_message,
+            validate_edge_query,
+        )
+        from .solidworks.face_selection import side_vector
+
+        problem = validate_edge_query(query)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        if not self._current_model:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        if getattr(self._current_model, "type", "Part") != "Part":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="select_edges requires an active part document.",
+            )
+        await asyncio.sleep(self._delays["feature_operation"] / 4)
+
+        normal: tuple[float, float, float] | None = None
+        if query.get("feature"):
+            name = str(query["feature"])
+            if not any(f.name == name for f in self._features.values()):
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"Feature {name!r} not found; list_features names the features.",
+                )
+        elif query.get("face_point") is not None:
+            normal = self._mock_face_at(query["face_point"])
+            if normal is None:
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"No face found at point {list(query['face_point'])} mm.",
+                )
+        elif query.get("side"):
+            normal = side_vector(str(query["side"]))
+        elif query.get("plane"):
+            if query["plane"] != "Front Plane":
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=f"No body face lies on {query['plane']!r}.",
+                )
+            normal = (0.0, 0.0, -1.0)
+
+        edges = self._mock_block_edges()
+        if normal is not None:
+            axis = next(i for i in range(3) if normal[i] != 0)
+            level = 10.0 if normal[axis] > 0 else 0.0
+            edges = [
+                e
+                for e in edges
+                if all(
+                    abs(p[axis] - level) < 1e-9
+                    for p in (e.get("start_mm"), e.get("end_mm"), e.get("center_mm"))
+                    if p is not None
+                )
+            ]
+        kept, counts = filter_edges([(None, e) for e in edges], query)
+        if not kept:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error=no_match_message(query, counts)
+            )
+        if not append:
+            self._selection.clear()
+        self._selection.extend(f"Edge{i}" for i in range(len(kept)))
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "source": describe_source(query),
+                "matched": counts,
+                "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
+                "selected_edges": len(kept),
+                "selection_count": len(self._selection),
+            },
+            execution_time=self._delays["feature_operation"] / 4,
+        )
+
     async def add_fillet(
         self, radius: float, edge_names: list[str]
     ) -> AdapterResult[SolidWorksFeature]:

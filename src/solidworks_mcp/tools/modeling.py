@@ -746,6 +746,93 @@ class SelectFaceEdgesInput(CompatInput):
             raise ValueError(problem)
 
 
+class SelectEdgesInput(CompatInput):
+    """Input schema for selecting edges by rule.
+
+    Attributes:
+        feature (str | None): Take the edges of the faces this feature made.
+        face_point (list[float] | None): Take the edges of the face at this point.
+        side (str | None): Take the edges of the furthest face facing this way.
+        plane (str | None): Take the edges of the face(s) on this plane.
+        edge_type (str): Keep all, linear or circular edges.
+        parallel_to (str | list[float] | None): Keep straight edges along this.
+        parallel_tolerance_deg (float): How far off parallel still counts.
+        inside_box (list[list[float]] | None): Keep edges inside this box, mm.
+        min_length (float | None): Keep edges at least this long, mm.
+        max_length (float | None): Keep edges at most this long, mm.
+        append (bool): Add to the current selection instead of replacing it.
+    """
+
+    feature: str | None = Field(
+        default=None,
+        description=(
+            "Take the edges of the faces this feature made, e.g. 'Cut-Extrude2' "
+            "(the cut's walls and rims). Give at most one of feature, "
+            "face_point, side and plane; none takes every edge of the part"
+        ),
+    )
+    face_point: list[float] | None = Field(
+        default=None,
+        description="Take the edges of the face at this point, [x, y, z] mm",
+    )
+    side: str | None = Field(
+        default=None,
+        description=(
+            "Take the edges of the furthest flat face facing this way: top, "
+            "bottom, front, back, right, left or +X..-Z"
+        ),
+    )
+    plane: str | None = Field(
+        default=None,
+        description="Take the edges of the face(s) lying on this plane, e.g. 'Top Plane'",
+    )
+    edge_type: str = Field(
+        default="all",
+        description="Keep 'all' (the default), 'linear' or 'circular' edges",
+    )
+    parallel_to: str | list[float] | None = Field(
+        default=None,
+        description=(
+            "Keep only straight edges along this direction: 'x', 'y', 'z' or [x, y, z]"
+        ),
+    )
+    parallel_tolerance_deg: float = Field(
+        default=1.0,
+        gt=0,
+        le=45,
+        description="How many degrees off parallel_to an edge may be (default 1)",
+    )
+    inside_box: list[list[float]] | None = Field(
+        default=None,
+        description=(
+            "Keep only edges wholly inside this box: [[xmin, ymin, zmin], "
+            "[xmax, ymax, zmax]] in model mm"
+        ),
+    )
+    min_length: float | None = Field(
+        default=None, ge=0, description="Keep only edges at least this long, mm"
+    )
+    max_length: float | None = Field(
+        default=None, ge=0, description="Keep only edges at most this long, mm"
+    )
+    append: bool = Field(
+        default=False,
+        description="Add to the current selection instead of replacing it",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from ..adapters.solidworks.edge_rules import validate_edge_query
+
+        self.edge_type = str(self.edge_type or "all").strip().lower()
+        problem = validate_edge_query(self.query())
+        if problem:
+            raise ValueError(problem)
+
+    def query(self) -> dict[str, Any]:
+        """The rules as the adapter's ``select_edges`` takes them."""
+        return self.model_dump(exclude={"append"}, exclude_none=True)
+
+
 class RebuildModelInput(CompatInput):
     """Input schema for forcing a model rebuild.
 
@@ -2052,8 +2139,9 @@ async def register_modeling_tools(
         Pick the face with one of `point` (a point on it, mm), `side` (top, bottom,
         front, back, right, left or +X..-Z; the furthest flat face that way) or `plane`
         (the face lying on that plane). `edge_type` narrows to linear or circular edges
-        (hole rims). Needs: an open part. Changes: the selection only. Returns: `data`
-        with `face`, `edges`, `selected_edges` and `selection_count`.
+        (hole rims); for a feature's edges or edges along an axis or inside a box, use
+        `select_edges`. Needs: an open part. Changes: the selection only. Returns:
+        `data` with `face`, `edges`, `selected_edges` and `selection_count`.
 
         Args:
             input_data: The face. Give exactly one of `point`, `side` or `plane`;
@@ -2079,6 +2167,41 @@ async def register_modeling_tools(
                 f"Selected {data.get('selected_edges', 0)} edge(s) "
                 f"({', '.join(kinds)}) on the face at "
                 f"{data.get('face', {}).get('center_mm')} mm"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def select_edges(input_data: SelectEdgesInput) -> dict[str, Any]:
+        """Select the edges of the active part that match rules, ready for `add_fillet` or `add_chamfer` with no edge names.
+
+        Take edges from one source: a `feature` (the edges of the faces it made, e.g.
+        a cut's rims), a face (`face_point`, `side` or `plane`), or, with none, the
+        whole part. Then keep those that pass every filter given: `edge_type`,
+        `parallel_to` (straight edges along x, y, z or a direction), `inside_box` (mm)
+        and `min_length`/`max_length` (mm). Needs: an open part. Changes: the
+        selection only, all or nothing. Returns: `data` with `source`, `matched` (how
+        many edges were left after each rule; when none match, the error names the
+        rule that removed them), `edges` (up to 50), `selected_edges` and
+        `selection_count`.
+
+        Args:
+            input_data: The rules. Nothing is required: at most one source, any
+                filters; `append` is off.
+
+        Returns:
+            dict[str, Any]: The edges selected.
+        """
+        input_data = normalize_input(input_data, SelectEdgesInput)
+        result = await adapter.select_edges(input_data.query(), input_data.append)
+        require_success(result)
+        data = result.data if isinstance(result.data, dict) else {}
+        return {
+            "status": "success",
+            "message": (
+                f"Selected {data.get('selected_edges', 0)} edge(s) of "
+                f"{data.get('source', 'the part')}"
             ),
             "data": data,
             "execution_time": result.execution_time,

@@ -1140,6 +1140,31 @@ class SolidWorksAdapter(ABC):
             error="rebuild_model is not implemented by this adapter",
         )
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select the active part's edges that match a rule.
+
+        Args:
+            query (dict[str, Any]): At most one source - ``feature`` (the
+                edges of the faces it made), ``face_point`` (mm), ``side`` or
+                ``plane``; none means every edge - and the filters
+                ``edge_type``, ``parallel_to`` (``"x"``/``"y"``/``"z"`` or a
+                direction), ``parallel_tolerance_deg``, ``inside_box`` (two
+                corners, mm), ``min_length`` and ``max_length`` (mm).
+            append (bool): Add to the current selection instead of replacing it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``source``, ``matched`` (the count
+            left after each rule), ``edges`` (up to 50 described),
+            ``selected_edges`` and ``selection_count``. ERROR when no edge
+            matches, naming the rule that removed them.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="select_edges is not implemented by this adapter",
+        )
+
     async def create_reference_plane(
         self,
         reference: str,

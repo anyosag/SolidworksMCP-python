@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 157,
+  "total": 158,
   "by_level": {
    "stable": 106,
    "beta": 0,
-   "experimental": 11,
+   "experimental": 12,
    "planned": 40
   },
   "list": [
@@ -952,6 +952,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Search SolidWorks API interface and member names by keyword."
+   },
+   {
+    "name": "select_edges",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Select the edges of the active part that match rules, ready for `add_fillet` or `add_chamfer` with no edge names."
    },
    {
     "name": "select_face_edges",

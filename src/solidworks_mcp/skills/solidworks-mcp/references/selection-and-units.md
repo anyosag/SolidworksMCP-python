@@ -55,9 +55,16 @@ In order of reliability:
    flat face that way), a `point` on the face in mm, or a `plane` the face
    lies on. `edge_type: "circular"` picks hole rims, `"linear"` the straight
    edges. Then fillet or chamfer with empty `edge_names`.
-3. **A face spec.** `"face:x,y,z"` (metres) in `edge_names` treats every edge
+3. **`select_edges`.** Edges by rule. Take them from a `feature` (the
+   edges of the faces it made), one face (`face_point` in mm, `side` or
+   `plane`) or the whole part, then keep those that pass every filter given:
+   `edge_type`, `parallel_to` ("x", "y", "z" or a direction; straight edges
+   only), `inside_box` (two corners in model mm) and `min_length` /
+   `max_length` (mm). `data.matched` counts what each rule left. Then fillet
+   or chamfer with empty `edge_names`.
+4. **A face spec.** `"face:x,y,z"` (metres) in `edge_names` treats every edge
    of the face containing that point.
-4. **An edge point.** `"x,y,z"` (metres) picks the nearest edge. Avoid it
+5. **An edge point.** `"x,y,z"` (metres) picks the nearest edge. Avoid it
    where two faces meet at the point (a hole rim on a flat face): it can
    pick a different edge.
 

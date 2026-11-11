@@ -748,6 +748,21 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             error_results_are_failures=False,
         )
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select edges by rule through circuit breaker.
+
+        Like ``select_face_edges``, "no edge matches" is an answer, not a
+        fault, so it doesn't count against the breaker.
+        """
+        return await self._execute_with_circuit_breaker(
+            "select_edges",
+            lambda: self.adapter.select_edges(query, append),
+            input_dict={"query": query, "append": append},
+            error_results_are_failures=False,
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:

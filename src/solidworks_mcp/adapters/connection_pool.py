@@ -700,6 +700,14 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             ),
         )
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select edges by rule using pool."""
+        return await self._execute_with_pool(
+            "select_edges", lambda adapter: adapter.select_edges(query, append)
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:

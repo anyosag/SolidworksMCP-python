@@ -195,6 +195,58 @@ class SolidWorksSelectionMixin:
 
         return self._run_clean("select_face_edges", _select_edges)
 
+    async def select_edges(
+        self, query: dict[str, Any], append: bool = False
+    ) -> AdapterResult[dict[str, Any]]:
+        """Multi-select the active part's edges that match a rule.
+
+        See ``SolidWorksAdapter.select_edges`` for the contract; the rules
+        live in ``edge_rules``.
+        """
+        from .edge_rules import (
+            MAX_DESCRIBED_EDGES,
+            EdgeRuleSelector,
+            describe_source,
+            filter_edges,
+            no_match_message,
+            validate_edge_query,
+        )
+
+        problem = validate_edge_query(query)
+        if problem:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        if not self.currentModel:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        from .io import _doc_type
+
+        doc_type = _doc_type(self)
+        if doc_type is not None and doc_type != 1:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    "select_edges requires an active part document "
+                    f"(active document type is {doc_type})."
+                ),
+            )
+
+        def _select() -> dict[str, Any]:
+            selector = EdgeRuleSelector(self)
+            kept, counts = filter_edges(selector.candidates(query), query)
+            if not kept:
+                raise LookupError(no_match_message(query, counts))
+            count = selector.select(kept, append)
+            return {
+                "source": describe_source(query),
+                "matched": counts,
+                "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
+                "selected_edges": len(kept),
+                "selection_count": count,
+            }
+
+        return self._run_clean("select_edges", _select)
+
     def _run_clean(
         self, operation_name: str, operation: Callable[[], Any]
     ) -> AdapterResult[dict[str, Any]]:

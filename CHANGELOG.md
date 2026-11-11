@@ -28,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sketch y and the normal as model vectors, the origin in mm, and a summary
   ("sketch x = model +X, sketch y = model -Z" on Top). It is read from the
   sketch, so it holds for reference planes too.
+- **`select_edges`** selects edges by rule, ready for `add_fillet` or
+  `add_chamfer`: the edges of the faces a `feature` made (each once,
+  though two faces share it), of one face, or of the whole part, filtered
+  by `edge_type`, `parallel_to` an axis or direction, `inside_box` and a
+  length range. The reply counts what each rule left, and when nothing
+  matches the `not_found` error names the rule that removed them.
+  Experimental until its live test runs.
 
 ### Fixed
 
