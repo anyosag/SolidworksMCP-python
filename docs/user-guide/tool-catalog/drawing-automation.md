@@ -4,7 +4,7 @@ Put the model's dimensions on a drawing and lay them out so nothing overlaps, ad
 
 > **Prerequisite:** An active Drawing document with views of a model; generate_drawing_package only needs a saved part or assembly.
 
-**Total tools in this category: 5**
+**Total tools in this category: 7**
 
 ---
 
@@ -13,6 +13,13 @@ Put the model's dimensions on a drawing and lay them out so nothing overlaps, ad
 Bring the model's dimensions into the active drawing's views, each dimension shown once.
 
 **Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `view_name` | `str?` | — | `None` | One view, e.g. 'Drawing View1'; every orthographic view when omitted. Find names with list_drawing_views. |
+| `include_hole_wizard` | `bool` | — | `True` | Also import Hole Wizard location dimensions |
 
 **Sample call:**
 
@@ -28,6 +35,12 @@ Move drawing dimensions out of their views into tidy rows so nothing overlaps, t
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `view_name` | `str?` | — | `None` | Only move this view's dimensions, e.g. 'Drawing View1'; every view when omitted. The overlap check always covers the whole sheet. |
+
 **Sample call:**
 
 ```json
@@ -42,10 +55,86 @@ Insert a bill-of-materials table for an assembly view on the active drawing.
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `view_name` | `str` | ✅ | `` | A view of an assembly, e.g. 'Drawing View1' |
+| `template_path` | `str?` | — | `None` | .sldbomtbt template; bom-standard when omitted |
+| `bom_type` | `Literal['top_level_only', 'parts_only', 'indented']` | — | `top_level_only` | BOM structure |
+| `x_mm` | `float?` | — | `None` | Table X on the sheet (mm); the sheet's BOM anchor when omitted |
+| `y_mm` | `float?` | — | `None` | Table Y on the sheet (mm) |
+
 **Sample call:**
 
 ```json
-{}
+{
+  "view_name": "MCP_Demo_Part"
+}
+```
+
+---
+
+### `add_gtol`
+
+Add a GD&T feature control frame to the active drawing, e.g. position Ø0.2 (M) to A|B|C.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `characteristic` | `Literal['position', 'flatness', 'perpendicularity', 'parallelism', 'profile_surface', 'concentricity']` | ✅ | `` | Geometric characteristic |
+| `tolerance` | `float` | ✅ | `` | Tolerance value, e.g. 0.2 |
+| `diameter_zone` | `bool` | — | `False` | Cylindrical zone: Ø before the tolerance |
+| `material_condition` | `Literal['none', 'mmc', 'lmc']` | — | `none` | Material condition modifier |
+| `datums` | `List[str]` | ✅ | `` | Datum letters, primary first |
+| `x_mm` | `float` | — | `0.0` | Frame X on the sheet (mm); not used when on a dimension |
+| `y_mm` | `float` | — | `0.0` | Frame Y on the sheet (mm); not used when on a dimension |
+| `attach_x_mm` | `float?` | — | `None` | X of a point on the edge the leader points to |
+| `attach_y_mm` | `float?` | — | `None` | Y of a point on the edge the leader points to |
+| `dimension_view` | `str?` | — | `None` | View holding the dimension to attach to |
+| `dimension_name` | `str?` | — | `None` | Model dimension to attach to, e.g. 'D3@Sketch1' (see list_model_dimensions); the frame sits under its text |
+
+**Sample call:**
+
+```json
+{
+  "characteristic": null,
+  "tolerance": 10.0,
+  "datums": []
+}
+```
+
+---
+
+### `add_datum_tag`
+
+Add a datum feature symbol (A, B, C, ...) on an edge of the active drawing.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `label` | `str` | ✅ | `` | Datum letter, e.g. 'A' |
+| `attach_x_mm` | `float` | ✅ | `` | X of a point on the edge it marks (mm) |
+| `attach_y_mm` | `float` | ✅ | `` | Y of a point on the edge it marks (mm) |
+| `x_mm` | `float` | ✅ | `` | Tag X on the sheet (mm) |
+| `y_mm` | `float` | ✅ | `` | Tag Y on the sheet (mm) |
+
+**Sample call:**
+
+```json
+{
+  "label": "example",
+  "attach_x_mm": 10.0,
+  "attach_y_mm": 10.0,
+  "x_mm": 10.0,
+  "y_mm": 10.0
+}
 ```
 
 ---
@@ -56,10 +145,20 @@ Set the active drawing sheet's scale, e.g. 1:2; views that use the sheet scale f
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `numerator` | `float` | ✅ | `` | e.g. 1 for 1:2 |
+| `denominator` | `float` | ✅ | `` | e.g. 2 for 1:2 |
+
 **Sample call:**
 
 ```json
-{}
+{
+  "numerator": 10.0,
+  "denominator": 10.0
+}
 ```
 
 ---
@@ -70,10 +169,31 @@ Create a complete A3 drawing of a part or assembly in one call, and save it with
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `model_path` | `str` | ✅ | `` | Full path to the .SLDPRT or .SLDASM |
+| `output_dir` | `str?` | — | `None` | Where to save the drawing; the model's folder when omitted |
+| `title` | `str?` | — | `None` | Short title, e.g. 'Mounting Plate - Rev A'; the file name when omitted |
+| `subtitle` | `str?` | — | `None` | Sheet title, e.g. 'Base support' |
+| `drawing_number` | `str?` | — | `None` | DWG NO., also the drawing file name, e.g. 'MP-RevA-01' |
+| `author` | `str` | — | `` | DRAWN name |
+| `revision` | `str` | — | `A` | Revision letter |
+| `company` | `str` | — | `` | Company name |
+| `notes` | `List[str]` | ✅ | `` | Extra note lines (material, process, connections); 3-7 lines in total |
+| `include_isometric` | `bool` | — | `True` | Add an isometric view |
+| `write_model_properties` | `bool` | — | `True` | Write Description/Material/Weight into the model so the title block shows them, and save it |
+| `title_block_text_height_mm` | `float?` | — | `None` | Largest text height (mm) for the title block's DWG NO. and TITLE, e.g. 3 for smaller text. By default they keep the sheet format's height and are only shrunk to fit their boxes. |
+| `include_bom` | `bool` | — | `False` | Assemblies only: put a bill of materials in the top of the isometric view's cell, with the isometric fitted below it |
+
 **Sample call:**
 
 ```json
-{}
+{
+  "model_path": null,
+  "notes": []
+}
 ```
 
 ---

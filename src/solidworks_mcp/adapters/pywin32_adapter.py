@@ -31,9 +31,17 @@ from .solidworks import (
     SolidWorksSelectionMixin,
     SolidWorksSketchMixin,
     bitmap,
+    saving,
 )
+from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
-from .solidworks.io import _byref_int
+from .solidworks.io import activate_doc
+from .solidworks.window import (
+    MinimizeKeeper,
+    SolidWorksWindow,
+    drop_keeper,
+    keeper_for,
+)
 
 try:
     import pythoncom
@@ -199,6 +207,82 @@ def _settle_after(operation_name: str) -> None:
         )
     if pause > 0:
         time.sleep(pause)
+
+
+#: Options for every export (``SaveAs2``/``SaveAs3`` to another format):
+#: swSaveAsOptions_Silent (1) | swSaveAsOptions_Copy (2), from the SW 2026
+#: constants type library. The exports used to pass 2 believing it was
+#: Silent; 2 is Copy, so they could still show dialogs.
+_EXPORT_OPTIONS = saving.SAVE_SILENT | saving.SAVE_COPY
+
+_FALSY = {"0", "false", "no", "off"}
+_DEFAULT_DIALOG_TIMEOUT_SECONDS = 5.0
+
+#: HRESULTs a call gets from a SolidWorks that has exited: RPC_E_DISCONNECTED,
+#: RPC_S_SERVER_UNAVAILABLE and RPC_S_CALL_FAILED.
+_SOLIDWORKS_GONE = frozenset({-2147417848, -2147023174, -2147023170})
+
+# What _ComSessionCoordinator.reconnect found.
+_RECONNECTED = "reconnected"
+_SAME_SOLIDWORKS = "same"
+_NOT_RUNNING = "not_running"
+_NOT_READY = "not_ready"
+
+
+#: Operations that pick the document to work on, or only list documents.
+#: They run whatever SolidWorks has active; every other operation is refused
+#: when the active document changed since this session's last call (see
+#: ``PyWin32Adapter._active_document_switched``).
+_DOCUMENT_CHOOSING_OPERATIONS = frozenset(
+    {
+        "activate_document",
+        "close_model",
+        "create_assembly",
+        "create_drawing",
+        "create_part",
+        "create_technical_drawing",
+        "get_application_info",
+        "list_open_documents",
+        "open_model",
+    }
+)
+
+
+def _hresult_of(error: BaseException | None) -> int | None:
+    """The HRESULT of a ``com_error`` (``None`` for anything else)."""
+    if not isinstance(error, pywintypes.com_error):
+        return None
+    code = error.args[0] if error.args else None
+    return code if isinstance(code, int) else None
+
+
+def _keep_minimized_enabled() -> bool:
+    """Whether a minimized SolidWorks is kept minimized through operations.
+
+    On unless ``SOLIDWORKS_MCP_KEEP_MINIMIZED`` is ``0``/``false``/``no``/``off``.
+    """
+    value = os.getenv("SOLIDWORKS_MCP_KEEP_MINIMIZED", "1").strip().lower()
+    return value not in _FALSY
+
+
+def _block_activation_enabled() -> bool:
+    """Whether operations stop SolidWorks activating itself while minimized.
+
+    On unless ``SOLIDWORKS_MCP_BLOCK_ACTIVATION`` is ``0``/``false``/``no``/``off``.
+    """
+    value = os.getenv("SOLIDWORKS_MCP_BLOCK_ACTIVATION", "1").strip().lower()
+    return value not in _FALSY
+
+
+def _dialog_timeout_seconds() -> float:
+    """Seconds a SolidWorks dialog may block an operation before it is cancelled.
+
+    ``SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS`` (default 5); ``0`` turns the
+    dialog watchdog off.
+    """
+    return _settle_seconds(
+        "SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS", _DEFAULT_DIALOG_TIMEOUT_SECONDS
+    )
 
 
 def _run_macro_error_name(code: Any) -> str:
@@ -439,6 +523,28 @@ class _ComSessionCoordinator:
             app.SetUserPreferenceToggle(520, False)
             app.SetUserPreferenceToggle(642, False)
 
+    @staticmethod
+    def show_window(app: Any, window: SolidWorksWindow | None) -> None:
+        """Show SolidWorks only when it is hidden (hide it when headless).
+
+        Setting ``Visible = True`` on a window that is already shown can
+        restore it from minimized, so a visible or minimized window is left
+        alone. Without a window handle, ``app.Visible`` is read instead.
+
+        Args:
+            app: The live ``SldWorks.Application`` COM object.
+            window: Its frame window, when the handle could be read.
+        """
+        if _headless_requested():
+            app.Visible = False
+            return
+        if window is not None and window.available:
+            hidden = window.state() == "hidden"
+        else:
+            hidden = not getattr(app, "Visible", False)
+        if hidden:
+            app.Visible = True
+
     async def connect(self) -> None:
         """Orchestrate the full SolidWorks connection sequence.
 
@@ -447,9 +553,10 @@ class _ComSessionCoordinator:
         1. Initialise the COM apartment.
         2. Acquire the ``SldWorks.Application`` COM object (with retries).
         3. Wait for the server to become ready.
-        4. Show the application window (hidden instead when
-           ``SOLIDWORKS_MCP_HEADLESS`` is set).
+        4. Find the frame window (``IFrame.GetHWnd``), and show it only if it
+           is hidden (hidden instead when ``SOLIDWORKS_MCP_HEADLESS`` is set).
         5. Suppress interactive dialogs for automation.
+        6. Minimize the window again if it was minimized before connecting.
 
         On any failure the adapter state is cleaned up (``swApp`` set to
         ``None``, COM apartment uninitialised) before re-raising.
@@ -464,12 +571,160 @@ class _ComSessionCoordinator:
                 lambda: sw_type_info.flag_methods(app, "ISldWorks"), default=0
             )
             await self.wait_for_server_ready(app)
-            app.Visible = not _headless_requested()
-            self.set_automation_preferences(app, interactive=False)
+            window = self._adapter._attach_window(app)
+            self.prepare_session(app, window)
+            self._adapter._sw_process_id = window.process_id() if window else 0
+            self._adapter._solidworks_lost = False
         except Exception as exc:
             self._adapter.swApp = None
             self.uninitialize_com_apartment()
             raise SolidWorksMCPError(f"Failed to connect to SolidWorks: {exc}") from exc
+
+    def prepare_session(self, app: Any, window: SolidWorksWindow | None) -> None:
+        """Ready a SolidWorks just bound to (by connect or reconnect).
+
+        Lets its frame activate again, shows it only if it is hidden, turns
+        off its interactive dialogs, and keeps it minimized if it was.
+
+        Args:
+            app: The ``SldWorks.Application`` COM object.
+            window: Its frame window (``adapter._window``), when known.
+        """
+        adapter = self._adapter
+        if window is not None:
+            # A server that died mid-operation can leave the frame
+            # unable to activate; the user couldn't click it up.
+            window.allow_activation()
+        keeper = adapter._keeper
+        was_minimized = adapter._window_is_minimized()
+        if keeper is not None:
+            if was_minimized:
+                keeper.want(True)
+            keeper.begin()
+        focus = adapter._focus_to_return() if was_minimized else 0
+        try:
+            self.show_window(app, window)
+            self.set_automation_preferences(app, interactive=False)
+            adapter._keep_minimized(
+                was_minimized or (keeper is not None and keeper.wanted), focus
+            )
+        finally:
+            if keeper is not None:
+                keeper.end()
+
+    def reconnect(self) -> str:
+        """Bind to the SolidWorks running now, without ever starting one.
+
+        ``GetActiveObject`` only finds a running SolidWorks. ``Dispatch``,
+        which connect falls back to, would start one, and a user who closed
+        SolidWorks doesn't expect it to come back.
+
+        Returns:
+            str: ``reconnected`` (bound to another SolidWorks), ``same`` (the
+            connected SolidWorks is still running), ``not_running`` or
+            ``not_ready`` (it doesn't answer yet, or setting it up failed).
+        """
+        adapter = self._adapter
+        raw, _ = adapter._attempt_with_error(
+            lambda: win32com.client.GetActiveObject("SldWorks.Application")
+        )
+        app = adapter._attempt(lambda: _dynamic_dispatch(raw)) if raw else None
+        if app is None:
+            return _NOT_RUNNING
+        adapter._attempt(lambda: sw_type_info.flag_methods(app, "ISldWorks"), default=0)
+        if (
+            adapter._attempt(lambda: adapter._get_attr_or_call(app, "RevisionNumber"))
+            is None
+        ):
+            return _NOT_READY
+        window = adapter._attach_window(app)
+        process_id = window.process_id() if window else 0
+        if process_id and process_id == adapter._sw_process_id:
+            adapter.swApp = app
+            return _SAME_SOLIDWORKS
+        _, error = adapter._attempt_with_error(
+            lambda: self.prepare_session(app, window)
+        )
+        if error is not None:
+            logger.warning("Setting up the running SolidWorks failed: {}", error)
+            return _NOT_READY
+        adapter.swApp = app
+        adapter._sw_process_id = process_id
+        return _RECONNECTED
+
+    def recover(self, operation_name: str, *, ran: bool) -> AdapterResult[Any] | None:
+        """Reconnect after the connected SolidWorks has exited.
+
+        The operation is never run on the SolidWorks reconnected to: its
+        documents are not the ones the caller was working on, and the active
+        document there may be the user's.
+
+        Args:
+            operation_name: The operation that found SolidWorks gone.
+            ran: Whether it ran (and failed) before that was found.
+
+        Returns:
+            ``None`` when the connected SolidWorks is still running (go on as
+            usual), else the error to return for the operation.
+        """
+        adapter = self._adapter
+        old_window = adapter._window
+        outcome = self.reconnect()
+        bound = outcome in (_RECONNECTED, _SAME_SOLIDWORKS)
+        if not bound:
+            adapter._window = None
+            adapter._keeper = None
+        new_hwnd = adapter._window.hwnd if adapter._window is not None else None
+        if old_window is not None and old_window.hwnd != new_hwnd:
+            # Its thread would go on polling a window that no longer exists.
+            drop_keeper(old_window)
+        if outcome == _SAME_SOLIDWORKS:
+            adapter._solidworks_lost = False
+            return None
+        if not adapter._solidworks_lost:
+            logger.warning(
+                "The SolidWorks this server was connected to has exited ({})",
+                operation_name,
+            )
+        self.forget_documents()
+        adapter._solidworks_lost = not bound
+
+        what = f"{operation_name} failed" if ran else f"{operation_name} was not run"
+        gone = (
+            "The SolidWorks this server was connected to has exited (it was "
+            f"closed or crashed), so {what}"
+        )
+        if outcome == _RECONNECTED:
+            logger.info("Reconnected to the running SolidWorks")
+            error = (
+                f"{gone}. The server has reconnected to the SolidWorks running "
+                "now; documents that were open before are open in it only if "
+                "they were reopened."
+            )
+        elif outcome == _NOT_RUNNING:
+            error = (
+                f"{gone}, and SolidWorks is not running now. Start SolidWorks; "
+                "the next call reconnects to it."
+            )
+        else:
+            error = (
+                f"{gone}, and the SolidWorks running now is not answering yet "
+                "(it may still be starting). Retry in a few seconds."
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR, error=error, execution_time=0.0
+        )
+
+    def forget_documents(self) -> None:
+        """Drop the document and sketch handles of a SolidWorks that has exited."""
+        adapter = self._adapter
+        adapter.currentModel = None
+        adapter.currentSketch = None
+        adapter.currentSketchManager = None
+        adapter._last_sketch_name = None
+        adapter._reset_sketch_entity_registry()
+        adapter._last_active_document = None
+        adapter._active_document_seen = False
 
     async def disconnect(self) -> None:
         """Clear session state and release the COM apartment.
@@ -495,6 +750,16 @@ class _ComSessionCoordinator:
             self._adapter.currentSketchManager = None
             self._adapter._reset_sketch_entity_registry()
             self._adapter.swApp = None
+            self._adapter._sw_process_id = 0
+            self._adapter._solidworks_lost = False
+            self._adapter._last_active_document = None
+            self._adapter._active_document_seen = False
+            if self._adapter._window is not None:
+                self._adapter._window.allow_activation()
+            self._adapter._window = None
+            # The keeper itself stays: it belongs to the window, and other
+            # adapters (or a reconnect) share it.
+            self._adapter._keeper = None
         finally:
             self.uninitialize_com_apartment()
 
@@ -1898,6 +2163,25 @@ class PyWin32Adapter(
         self._com_initialized = False
         # Thread that initialised the COM apartment (see _handle_com_operation).
         self._com_thread_id: int | None = None
+        # The connected SolidWorks' frame window, and how deep in nested
+        # _handle_com_operation calls we are (only the outermost one keeps the
+        # window minimized and watches for dialogs).
+        self._window: SolidWorksWindow | None = None
+        # Remembers that the user wants that window minimized, across
+        # operations and adapters (see MinimizeKeeper).
+        self._keeper: MinimizeKeeper | None = None
+        # The connected SolidWorks' process (read from its window), and
+        # whether it has exited with no SolidWorks to reconnect to yet.
+        self._sw_process_id = 0
+        self._solidworks_lost = False
+        # The document SolidWorks had active when this session's last call
+        # ended (``None``: none), once a call has ended.
+        self._last_active_document: tuple[str, str] | None = None
+        self._active_document_seen = False
+        self._operation_depth = 0
+        # The window the user was in when an operation last started with
+        # SolidWorks minimized; the focus goes back there.
+        self._user_focus = 0
 
         # COM constants (equivalent to SolidWorks API constants)
         self.constants = {
@@ -2110,6 +2394,183 @@ class PyWin32Adapter(
                 ),
                 execution_time=0.0,
             )
+
+        # Only the outermost call keeps the window minimized and watches for
+        # dialogs; operations that call other operations don't act twice.
+        outermost = self._operation_depth == 0
+        if outermost and self._solidworks_exited():
+            # Every call on the old swApp would fail until the server
+            # restarted; bind to the SolidWorks running now instead.
+            recovered = self._session_coordinator.recover(operation_name, ran=False)
+            if recovered is not None:
+                return recovered
+        if outermost and operation_name not in _DOCUMENT_CHOOSING_OPERATIONS:
+            switched = self._active_document_switched(operation_name)
+            if switched is not None:
+                return switched
+        keeper = self._keeper if outermost else None
+        was_minimized = outermost and self._window_is_minimized()
+        if keeper is not None and was_minimized:
+            keeper.want(True)
+        if keeper is not None:
+            keeper.begin()
+        focus = self._focus_to_return() if was_minimized else 0
+        blocked = self._block_activation(
+            was_minimized or (keeper is not None and keeper.wanted)
+        )
+        watchdog = self._arm_dialog_watchdog() if outermost else None
+        self._operation_depth += 1
+        try:
+            result = self._run_com_operation(
+                operation_name, operation_func, *operation_args, **operation_kwargs
+            )
+        finally:
+            self._operation_depth -= 1
+            # After the timing in _run_com_operation, so execution_time stays
+            # the call itself; the watchdog stays armed through the pause.
+            _settle_after(operation_name)
+            dialogs = watchdog.disarm() if watchdog is not None else []
+            if outermost:
+                self._remember_active_document()
+            if outermost:
+                self._keep_minimized(
+                    was_minimized or (keeper is not None and keeper.wanted), focus
+                )
+            if blocked and self._window is not None:
+                self._window.allow_activation()
+            if keeper is not None:
+                keeper.end()
+        if dialogs:
+            return self._dialog_result(operation_name, dialogs, result)
+        if outermost and result.is_error and self._solidworks_exited(probe=True):
+            recovered = self._session_coordinator.recover(operation_name, ran=True)
+            if recovered is not None:
+                return recovered
+        return result
+
+    def _solidworks_exited(self, *, probe: bool = False) -> bool:
+        """Whether the SolidWorks this adapter connected to has exited.
+
+        With its frame window known this needs no COM: the window is gone,
+        or now belongs to another process. Without one, only ``probe`` (used
+        after a failed operation) can tell, by reading ``RevisionNumber``: a
+        SolidWorks that has exited answers with an RPC error.
+
+        Args:
+            probe: Whether a COM call may be made to find out.
+
+        Returns:
+            bool: True when it has exited (or an earlier reconnect found no
+            SolidWorks to bind to).
+        """
+        if self._solidworks_lost:
+            return True
+        if self.swApp is None:
+            return False
+        window = self._window
+        if window is not None and self._sw_process_id:
+            return not window.available or window.process_id() != self._sw_process_id
+        if not probe:
+            return False
+        app = self.swApp
+        _, error = self._attempt_with_error(
+            lambda: self._get_attr_or_call(app, "RevisionNumber")
+        )
+        return _hresult_of(error) in _SOLIDWORKS_GONE
+
+    def _document_key(self, document: Any) -> tuple[str, str] | None:
+        """``(path, title)`` naming a document; ``None`` for no document.
+
+        A value that can't be read as text is left empty, so two documents
+        that can't be told apart compare equal.
+        """
+        if document is None:
+            return None
+        path = self._attempt(lambda: self._get_attr_or_call(document, "GetPathName"))
+        title = self._attempt(lambda: self._get_attr_or_call(document, "GetTitle"))
+        return (
+            os.path.normcase(path.strip()) if isinstance(path, str) else "",
+            title.strip() if isinstance(title, str) else "",
+        )
+
+    def _active_document_key(self) -> tuple[str, str] | None:
+        """The key of the document SolidWorks has active now."""
+        app = self.swApp
+        return self._document_key(
+            self._attempt(lambda: getattr(app, "ActiveDoc", None))
+        )
+
+    def _remember_active_document(self) -> None:
+        """Note the active document as an outermost operation ends."""
+        if self.swApp is None:
+            return
+        self._last_active_document = self._active_document_key()
+        self._active_document_seen = True
+
+    @staticmethod
+    def _document_label(key: tuple[str, str] | None) -> str:
+        """How a message names the document ``key`` (from ``_document_key``)."""
+        if key is None:
+            return "no document"
+        path, title = key
+        name = title or os.path.basename(path)
+        return f"'{name}'" if name else "an unnamed document"
+
+    def _active_document_switched(
+        self, operation_name: str
+    ) -> AdapterResult[Any] | None:
+        """Refuse an operation when someone else switched the active document.
+
+        Several tools act on SolidWorks' active document, and some adopt it
+        as ``currentModel``. When the user or another program (another MCP
+        client driving the same SolidWorks) activates a different document
+        between this session's calls, the next call would change their
+        document instead of this session's. A live test from one session
+        added features to another session's open part that way (2026-11-10).
+
+        Only after a call has ended (so the active document then is known)
+        and while this session has a document of its own; a session with
+        none takes whatever is active, as before.
+
+        Args:
+            operation_name: The operation about to run.
+
+        Returns:
+            The error to return instead of running it, or ``None`` to run it.
+        """
+        if not self._active_document_seen or self.currentModel is None:
+            return None
+        if self.swApp is None:
+            return None
+        active = self._active_document_key()
+        if active == self._last_active_document:
+            return None
+        working_on = self._document_label(self._document_key(self.currentModel))
+        now = (
+            f"it is now {self._document_label(active)}"
+            if active is not None
+            else "no document is active now"
+        )
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(
+                f"SolidWorks' active document changed between calls ({now}), "
+                f"so {operation_name} was not run: the user or another program "
+                f"switched it, and this session was working on {working_on}. "
+                f"Call activate_document with {working_on} to go on with it, or "
+                "with the other document if that is the one to work on."
+            ),
+            execution_time=0.0,
+        )
+
+    def _run_com_operation(
+        self,
+        operation_name: str,
+        operation_func: Callable[..., T],
+        *operation_args: Any,
+        **operation_kwargs: Any,
+    ) -> AdapterResult[T]:
+        """Run one COM operation, timing it and turning exceptions into results."""
         start_time = time.time()
 
         try:
@@ -2148,9 +2609,203 @@ class PyWin32Adapter(
                 error=f"Error in {operation_name}: {e}",
                 execution_time=execution_time,
             )
-        finally:
-            # After the timing above, so execution_time stays the call itself.
-            _settle_after(operation_name)
+
+    def _attach_window(self, app: Any) -> SolidWorksWindow | None:
+        """Bind to the connected SolidWorks' frame window (``IFrame.GetHWnd``).
+
+        The handle comes from this SolidWorks, so a second SolidWorks on the
+        machine is never touched.
+
+        Args:
+            app: The live ``SldWorks.Application`` COM object.
+
+        Returns:
+            The window, or ``None`` when the handle can't be read.
+        """
+        frame = self._attempt(lambda: self._get_attr_or_call(app, "Frame"))
+        hwnd = (
+            self._attempt(lambda: int(self._get_attr_or_call(frame, "GetHWnd")))
+            if frame is not None
+            else None
+        )
+        self._window = SolidWorksWindow(hwnd) if hwnd else None
+        self._keeper = keeper_for(self._window) if self._window is not None else None
+        return self._window
+
+    def _window_state(self) -> str:
+        """The SolidWorks window's state, ``unknown`` without a handle."""
+        return self._window.state() if self._window is not None else "unknown"
+
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore the SolidWorks window (Win32 only, no COM).
+
+        Minimizing doesn't leave SolidWorks in the foreground; restoring brings
+        it up for the user. A window minimized this way stays minimized
+        through later operations (see ``_keep_minimized``).
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        if state not in ("minimize", "restore"):
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Unknown window state {state!r}; use minimize or restore",
+            )
+        window = self._window
+        if window is None or not window.available:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="The SolidWorks window is not available (not connected)",
+            )
+        if state == "minimize":
+            focus = self._focus_to_return()
+            window.minimize(focus_to=focus)
+            if self._keeper is not None:
+                self._keeper.want(_keep_minimized_enabled())
+        else:
+            if self._keeper is not None:
+                self._keeper.want(False)
+            window.allow_activation()
+            window.restore()
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={"window_state": window.state()},
+        )
+
+    def _window_is_minimized(self) -> bool:
+        """Whether keeping the window minimized applies right now."""
+        return (
+            self._window is not None
+            and _keep_minimized_enabled()
+            and self._window.is_minimized()
+        )
+
+    def _block_activation(self, minimized_wanted: bool) -> bool:
+        """Stop SolidWorks activating itself during one operation.
+
+        Taking the focus back after SolidWorks grabbed it was too late: a
+        window manager that switches on ``EVENT_SYSTEM_FOREGROUND`` (the
+        user's Stage Manager) flipped to SolidWorks and back (2026-11-10).
+        ``WS_EX_NOACTIVATE`` on the frame stops the grab (see
+        ``SolidWorksWindow.block_activation``). Only while SolidWorks is meant
+        to stay minimized and the user is in another program, and only for
+        the operation; ``SOLIDWORKS_MCP_BLOCK_ACTIVATION=0`` turns it off.
+
+        Args:
+            minimized_wanted: Whether SolidWorks is meant to stay minimized.
+
+        Returns:
+            Whether activation was blocked here (and must be allowed again).
+        """
+        window = self._window
+        if (
+            not minimized_wanted
+            or window is None
+            or not _keep_minimized_enabled()
+            or not _block_activation_enabled()
+            or window.foreground_is_solidworks()
+        ):
+            return False
+        return window.block_activation()
+
+    def _focus_to_return(self) -> int:
+        """The window to give the focus back to after the operation.
+
+        The current foreground window, remembered; or, when SolidWorks already
+        has the focus (an earlier operation took it - a minimized SolidWorks
+        can't get it from the user), the window remembered last time. One tool
+        can run several operations, so this outlives a single operation.
+        """
+        if self._window is None:
+            return 0
+        if not self._window.foreground_is_solidworks():
+            self._user_focus = self._window.foreground_window()
+            if self._keeper is not None:
+                self._keeper.user_focus = self._user_focus
+        elif not self._user_focus and self._keeper is not None:
+            self._user_focus = self._keeper.user_focus
+        return self._user_focus
+
+    def _keep_minimized(self, was_minimized: bool, focus: int = 0) -> None:
+        """Undo what SolidWorks did to a window that was minimized.
+
+        ``NewDocument`` and activating an assembly restore a minimized
+        SolidWorks and take the foreground; it keeps the foreground even once
+        minimized again (measured on SW 2026 SP4.1). So: minimize it again,
+        then give the focus back to ``focus``, the window that had it.
+
+        Args:
+            was_minimized: Whether the window was minimized when the
+                operation started.
+            focus: The window that had the focus then (``0``: none to return).
+        """
+        window = self._window
+        if not was_minimized or window is None or not _keep_minimized_enabled():
+            return
+        if window.has_modal_dialog():
+            # Minimizing would hide the dialog from the watchdog and the user;
+            # the keeper minimizes once it has gone.
+            return
+        if not window.is_minimized():
+            logger.debug("SolidWorks restored its window; minimizing it again")
+            window.minimize(focus_to=focus)
+        if focus and window.foreground_is_solidworks():
+            if not window.give_focus_to(focus):
+                # SolidWorks is still busy with the new document; retry off
+                # the COM thread (Win32 calls only) instead of waiting here.
+                window.give_focus_back_soon(focus)
+
+    def _arm_dialog_watchdog(self) -> DialogWatchdog | None:
+        """Start watching for blocking dialogs, when there is a window to watch."""
+        timeout = _dialog_timeout_seconds()
+        if self._window is None or timeout <= 0:
+            return None
+        watchdog = DialogWatchdog(
+            self._window, timeout, on_unanswerable=self._show_unanswerable_dialog
+        )
+        watchdog.arm()
+        return watchdog
+
+    def _show_unanswerable_dialog(self, info: DialogInfo) -> None:
+        """Bring SolidWorks up so the user can answer a dialog that won't cancel."""
+        logger.warning(
+            "SolidWorks dialog {} could not be cancelled; restoring the window "
+            "so it can be answered",
+            info.summary(),
+        )
+        if self._window is not None:
+            self._window.allow_activation()
+            self._window.restore()
+
+    @staticmethod
+    def _dialog_result(
+        operation_name: str, dialogs: list[DialogInfo], result: AdapterResult[Any]
+    ) -> AdapterResult[Any]:
+        """The error an operation returns after SolidWorks showed a dialog."""
+        info = dialogs[0]
+        if info.handed_to_user:
+            outcome = "could not cancel it, so SolidWorks was brought up to answer it"
+        elif info.closed:
+            outcome = "cancelled it"
+        else:
+            outcome = "asked it to cancel, but it was still open"
+        data: dict[str, Any] = {"dialog": info.to_dict()}
+        if len(dialogs) > 1:
+            data["dialogs"] = [d.to_dict() for d in dialogs]
+        if result.is_error and result.error:
+            data["operation_error"] = result.error
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error=(
+                f"SolidWorks showed a dialog during {operation_name}, "
+                f"{info.summary()}; the server {outcome}."
+            ),
+            data=data,
+            execution_time=result.execution_time,
+        )
 
     def _attempt(
         self, operation: Callable[[], T], default: T | None = None
@@ -2168,6 +2823,10 @@ class PyWin32Adapter(
         Returns:
             T | None: The result produced by the operation.
         """
+        if self._keeper is not None:
+            # Most COM calls outside _handle_com_operation come through here;
+            # SolidWorks restoring itself right after one is not the user.
+            self._keeper.activity()
         try:
             return operation()
         except Exception:
@@ -2263,7 +2922,7 @@ class PyWin32Adapter(
                 exc,
             )
 
-    def _zoom_to_fit(self, target_doc: Any) -> None:
+    def _zoom_to_fit(self, target_doc: Any) -> bool:
         """Redraw, zoom the model to fit its viewport, and redraw again.
 
         The member is ``ViewZoomtofit2`` (lower-case "tofit"). The old
@@ -2280,7 +2939,8 @@ class PyWin32Adapter(
             target_doc: SolidWorks model document
 
         Returns:
-            None (operation always succeeds or fails silently)
+            bool: Whether a zoom call succeeded. ``False`` (logged) when both
+            failed, so the picture may be zoomed out.
         """
         self._attempt(
             lambda: sw_type_info.flag_members(
@@ -2288,17 +2948,34 @@ class PyWin32Adapter(
             )
         )
         self._attempt(lambda: target_doc.GraphicsRedraw2())
+        zoomed = True
         try:
             target_doc.ViewZoomtofit2()
         except Exception:
             try:
                 target_doc.ViewZoomtofit()
             except Exception as exc:
+                zoomed = False
                 logger.warning(
                     "[pywin32.export_image] ViewZoomtofit failed ({}), "
                     "screenshot may be zoomed out",
                     exc,
                 )
+        self._attempt(lambda: target_doc.GraphicsRedraw2())
+        return zoomed
+
+    def _redraw(self, target_doc: Any) -> None:
+        """Redraw the graphics area without moving the view.
+
+        What ``export_image`` does instead of :meth:`_zoom_to_fit` when it
+        keeps the view (``current``, or ``zoom_to_fit`` false): no zoom and no
+        turn, so the picture shows the view as the user, or an earlier call,
+        left it. ``GraphicsRedraw2`` only repaints the view.
+
+        Args:
+            target_doc: SolidWorks model document
+        """
+        self._attempt(lambda: sw_type_info.flag_members(target_doc, "GraphicsRedraw2"))
         self._attempt(lambda: target_doc.GraphicsRedraw2())
 
     def _save_screenshot_sized(
@@ -2381,9 +3058,7 @@ class PyWin32Adapter(
             RuntimeError: If SaveAs3 fails or file is not created.
         """
         try:
-            target_doc.SaveAs3(
-                resolved_path, 0, 2
-            )  # swSaveAsCurrentVersion=0, Silent=2
+            target_doc.SaveAs3(resolved_path, 0, _EXPORT_OPTIONS)
             if os.path.exists(resolved_path):
                 return
         except Exception as exc:
@@ -2420,7 +3095,9 @@ class PyWin32Adapter(
         Payload keys (matching ExportImageInput): file_path (str): Output path including
         extension. format_type (str): "png" or "jpg". Default "png". width (int): Pixel width.
         Default 1280. height (int): Pixel height. Default 720. view_orientation (str): "front" |
-        "top" | "right" | "isometric" | "current".
+        "top" | "right" | "isometric" | "current". zoom_to_fit (bool | None): Zoom so the
+        model fills the view; ``None`` (default) zooms for every orientation but
+        "current", which keeps the view exactly as it is (no turn, no zoom).
 
         Args:
             payload (dict): The payload value.
@@ -2444,6 +3121,8 @@ class PyWin32Adapter(
         file_path = payload.get("file_path", "")
         width = int(payload.get("width", 1280))
         height = int(payload.get("height", 720))
+        zoom = payload.get("zoom_to_fit")
+        zoom_to_fit = orientation != "current" if zoom is None else bool(zoom)
 
         # Map orientation names to SolidWorks swStandardViews_e constants
         _VIEW_CONSTANTS = {
@@ -2476,30 +3155,34 @@ class PyWin32Adapter(
             target_doc = self._resolve_export_target_doc()
 
             # Activate target_doc's own MDI window before capturing. Without
-            # this, SaveBitmapWithVariableSize renders whatever document
+            # this, the screenshot renders whatever document
             # window is currently frontmost in the SW frame -- which can be
             # a completely different open document if the user has clicked
             # around in SolidWorks since -- even though it's called on the
             # correct target_doc COM object. See com-api-pitfalls.md #21.
             _, target_title = self._document_identity(target_doc)
             if target_title:
-                self._attempt(
-                    lambda: self.swApp.ActivateDoc3(  # type: ignore[union-attr]
-                        target_title, False, 0, _byref_int()
-                    )
-                )
+                activate_doc(self, self.swApp, target_title)
 
-            # Ensure SolidWorks window is focused so the viewport is rendered.
-            # Required for both view changes and bitmap capture.
-            self._attempt(lambda: self.swApp.Frame.SetFocus())  # type: ignore[union-attr]
+            # Focus a visible SolidWorks so the viewport is current. Not a
+            # minimized one: SetFocus would take the user's keyboard focus, and
+            # SaveBMP renders the model while minimized (measured on SW 2026
+            # SP4.1, keep-solidworks-minimized probe).
+            if not self._window_is_minimized():
+                self._attempt(lambda: self.swApp.Frame.SetFocus())  # type: ignore[union-attr]
 
             # Set view orientation if requested
             if orientation != "current" and orientation in _VIEW_CONSTANTS:
                 view_const = _VIEW_CONSTANTS[orientation]
                 self._set_view_orientation(target_doc, orientation, view_const)
 
-            # Zoom to fit so the model fills the viewport before capture
-            self._zoom_to_fit(target_doc)
+            # Zoom to fit so the model fills the viewport before capture;
+            # "current" keeps the view as it is (a close-up stays one).
+            if zoom_to_fit:
+                zoomed = self._zoom_to_fit(target_doc)
+            else:
+                self._redraw(target_doc)
+                zoomed = False
 
             # Remove any pre-existing file so SolidWorks never shows the
             # "already exists — replace?" confirmation dialog.
@@ -2526,6 +3209,8 @@ class PyWin32Adapter(
                 "dimensions": f"{size[0]}x{size[1]}" if size else "unknown",
                 "requested_dimensions": f"{width}x{height}",
                 "view": orientation,
+                "zoomed_to_fit": zoomed,
+                "window_state": self._window_state(),
             }
 
         return self._handle_com_operation("export_image", _screenshot_operation)
@@ -2578,11 +3263,10 @@ class PyWin32Adapter(
             # Try with stl_data first
             try:
                 # swSaveAsVersion_e.swSaveAsCurrentVersion = 0
-                # swSaveAsOptions_e.swSaveAsOptions_Silent = 2
-                ext.SaveAs2(resolved_path, 0, 2, stl_data, None, "")
+                ext.SaveAs2(resolved_path, 0, _EXPORT_OPTIONS, stl_data, None, "")
             except Exception:
                 # Fallback: try without stl_data (type mismatch on IDispatch)
-                ext.SaveAs2(resolved_path, 0, 2, None, None, "")
+                ext.SaveAs2(resolved_path, 0, _EXPORT_OPTIONS, None, None, "")
 
             return os.path.exists(resolved_path)
         except Exception as exc:
@@ -2607,11 +3291,7 @@ class PyWin32Adapter(
             resolved_path,
         )
         try:
-            target_doc.SaveAs3(
-                resolved_path,
-                0,  # swSaveAsCurrentVersion
-                2,  # swSaveAsOptions_Silent
-            )
+            target_doc.SaveAs3(resolved_path, 0, _EXPORT_OPTIONS)
         except Exception as exc:
             logger.warning(
                 "[pywin32.export_file] SaveAs3 also failed: {}",
@@ -2719,7 +3399,7 @@ class PyWin32Adapter(
             success = target_doc.SaveAs3(  # type: ignore[union-attr]
                 resolved_path,
                 0,  # swSaveAsCurrentVersion — format inferred from file extension
-                2,  # swSaveAsOptions_Silent
+                _EXPORT_OPTIONS,
             )
 
             if not success and not os.path.exists(resolved_path):

@@ -58,6 +58,7 @@ class ExportImageInput(CompatInput):
         resolution (str | None): The resolution value.
         view_orientation (str): The view orientation value.
         width (int): The width value.
+        zoom_to_fit (bool | None): Whether to zoom so the model fills the view.
     """
 
     file_path: str | None = Field(
@@ -75,10 +76,21 @@ class ExportImageInput(CompatInput):
     resolution: str | None = Field(default=None, description="Resolution alias")
     view_orientation: str = Field(
         default="isometric",
-        description="View orientation (front, top, right, isometric, current)",
+        description=(
+            "View to turn the model to (front, back, left, right, top, bottom, "
+            "isometric, dimetric, trimetric), or current to keep the view on "
+            "screen exactly as it is, zoom included"
+        ),
     )
     orientation: str | None = Field(
-        default=None, description="Alternative orientation field"
+        default=None, description="Alias of view_orientation"
+    )
+    zoom_to_fit: bool | None = Field(
+        default=None,
+        description=(
+            "Zoom so the whole model fills the picture. Left out: yes for a "
+            "named view, no for current, so a close-up stays a close-up"
+        ),
     )
 
     def model_post_init(self, __context: Any) -> None:
@@ -92,6 +104,11 @@ class ExportImageInput(CompatInput):
         """
         if self.file_path is None:
             self.file_path = self.output_path
+        if (
+            self.orientation is not None
+            and "view_orientation" not in self.model_fields_set
+        ):
+            self.view_orientation = self.orientation
         if self.image_format is not None:
             self.format_type = self.image_format.lower()
         if self.resolution and "x" in self.resolution.lower():
@@ -412,19 +429,24 @@ async def register_export_tools(
 
     @mcp.tool()
     async def export_image(input_data: ExportImageInput) -> dict[str, Any]:
-        """Save a picture of the active model in a standard view, as PNG or JPG, at a chosen size.
+        """Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG.
 
-        Use it to show a result, or to check a model's shape after a change. The view is
-        set first (front, back, left, right, top, bottom, isometric, dimetric,
-        trimetric, or current to keep the user's view). Needs: an open, active document.
-        Changes: writes the image file, and turns the model to the view asked for.
+        Use it to show a result, or to check a model's shape after a change. A standard
+        view (front, back, left, right, top, bottom, isometric, dimetric, trimetric)
+        turns the model to it and zooms so the whole model fits. `current` keeps the
+        view exactly as it is, zoom included: set up a close-up first (or with an
+        earlier call) and it comes out as that close-up. `zoom_to_fit` overrides the
+        zoom either way. The picture keeps the graphics area's shape, padded out to
+        `width` x `height`. Needs: an open, active document. Changes: writes the image
+        file; a standard view or `zoom_to_fit` also turns or zooms the model on screen.
         Returns: `data` with `file_path`, `format`, `dimensions` (the size written),
-        `requested_dimensions` and `view`.
+        `requested_dimensions`, `view`, `zoomed_to_fit` and `window_state`.
 
         Args:
             input_data: The image. `file_path` (or `output_path`) is needed; the
                 format follows its extension. `width`/`height` (or `resolution` as
-                "1920x1080") and `view_orientation` (isometric) have defaults.
+                "1920x1080") and `view_orientation` (isometric) have defaults;
+                `zoom_to_fit` defaults to yes except for `current`.
 
         Returns:
             dict[str, Any]: The image written.

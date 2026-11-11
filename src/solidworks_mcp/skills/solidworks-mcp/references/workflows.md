@@ -15,9 +15,11 @@ step. Values are examples; sizes are millimetres.
    `radius: 5`, then `exit_sketch`. The reply names the sketch, e.g.
    "Sketch2".
 7. `create_cut_extrude` with `sketch_name: "Sketch2"`,
-   `end_condition: "ThroughAll"`, `depth: 10`. A sketch under the body is
-   cut the other way automatically (`direction_flipped: true`). Check that
-   the volume dropped by about π·5²·10 ≈ 785 mm³.
+   `end_condition: "ThroughAll"`, `depth: 10`. Leave out
+   `reverse_direction`: the cut then tries both sides of the sketch plane and
+   keeps the one that removes more. Here that is up into the block, the
+   side the extrusion grew (`direction_flipped: false`). Check that the
+   volume dropped by about π·5²·10 ≈ 785 mm³.
 8. `select_face_edges` with `side: "top"` and `edge_type: "linear"`, then
    `add_fillet` with `radius: 2` and `edge_names: []`.
 9. `verify_model` with `bounding_box_mm: [100, 10, 60]`,

@@ -397,6 +397,19 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS, data={"reset": sorted(was_open)}
         )
 
+    async def set_window_state(self, state: str) -> AdapterResult[dict[str, Any]]:
+        """Minimize or restore SolidWorks through a pooled adapter.
+
+        Args:
+            state: ``minimize`` or ``restore``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``window_state`` afterwards.
+        """
+        return await self._execute_with_pool(
+            "set_window_state", lambda adapter: adapter.set_window_state(state)
+        )
+
     # Adapter interface implementation
 
     async def connect(self) -> None:
@@ -509,30 +522,40 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "open_model", lambda adapter: adapter.open_model(file_path)
         )
 
-    async def close_model(self, save: bool = False) -> AdapterResult[None]:
+    async def close_model(
+        self, save: bool = False, overwrite_modified_references: bool = False
+    ) -> AdapterResult[Any]:
         """Close model using pool.
 
         Args:
             save (bool): The save value. Defaults to False.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.close_model``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "close_model", lambda adapter: adapter.close_model(save)
+            "close_model",
+            lambda adapter: adapter.close_model(save, overwrite_modified_references),
         )
 
-    async def save_file(self, file_path: str | None = None) -> AdapterResult[None]:
+    async def save_file(
+        self,
+        file_path: str | None = None,
+        overwrite_modified_references: bool = False,
+    ) -> AdapterResult[Any]:
         """Save model using pool.
 
         Args:
             file_path (str | None): Path to the target file. Defaults to None.
+            overwrite_modified_references (bool): See ``SolidWorksAdapter.save_file``.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The result produced by the operation.
         """
         return await self._execute_with_pool(
-            "save_file", lambda adapter: adapter.save_file(file_path)
+            "save_file",
+            lambda adapter: adapter.save_file(file_path, overwrite_modified_references),
         )
 
     async def create_part(

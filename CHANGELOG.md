@@ -73,6 +73,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `absorbed_sketches_left`: deleting a cut or boss leaves its own sketch, as
   SolidWorks does, and the reply now names it; `delete_absorbed: true`
   removes it too.
+- **SolidWorks can stay minimized while tools run** (OpenSpec change
+  `keep-solidworks-minimized`). If it is minimized when a tool starts, the
+  server minimizes it again after any call that restored it and gives the
+  keyboard focus back to the user's window. Screenshots (`export_image`) work
+  while minimized and report `window_state`. Turn it off with
+  `SOLIDWORKS_MCP_KEEP_MINIMIZED=0`. A background keeper undoes restores
+  caused by any SolidWorks call, and while SolidWorks is minimized each call
+  stops its window being activated, so it can't take the foreground even for
+  an instant (`SOLIDWORKS_MCP_BLOCK_ACTIVATION=0` turns that off).
+- **`set_solidworks_window`** minimizes or restores the SolidWorks window.
+- **Dialog watchdog.** A modal SolidWorks dialog that stays open during a
+  call is cancelled after `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5)
+  and reported as `error_type: solidworks_dialog`, with its text, instead of
+  hanging the server. It never answers Save or Don't Save.
 
 ### Changed
 
@@ -99,6 +113,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was normal and split the profile. The tools now set
   `ISketchSegment.ConstructionGeometry` on what they drew, and fail if
   SolidWorks won't take it.
+- **The server reconnects after SolidWorks restarts.** Before, once
+  SolidWorks was closed or crashed, every call failed with
+  `RPC_S_SERVER_UNAVAILABLE` until the MCP server was restarted. Now each call
+  first checks, without COM, that the SolidWorks it connected to is still
+  running. If it has exited, the server binds to the running SolidWorks with
+  `GetActiveObject`; it never starts one. That one call returns
+  `error_type: solidworks_reconnected` without running, since the documents it
+  worked on are gone, and the next call works. With no SolidWorks running,
+  calls return `solidworks_unavailable` until the user starts it.
+- **A tool no longer changes a document someone else made active.** If the
+  user, or another program driving the same SolidWorks (such as a second MCP
+  client), switches the active document between this session's calls, the
+  next call doesn't run. It returns `error_type: active_document_changed`,
+  naming both documents, until the session calls `activate_document`; before,
+  it acted on the other document. Opening, creating, activating, closing and
+  listing documents always run, and a session with no document of its own
+  still takes whatever is active.
+- **`export_image` with `view_orientation: "current"` keeps the view.** It
+  no longer zooms to fit, so a close-up can be exported; named views still
+  turn the model and zoom to fit. A new optional `zoom_to_fit` input
+  overrides the zoom either way (the dashboard preview asks for it), and the
+  result reports `zoomed_to_fit`. The `orientation` alias is now applied: it
+  was ignored, so `orientation: "current"` exported an isometric view.
+- **A cut with no direction given keeps the side that removes more.** On
+  the same plane, `create_cut_extrude` used to cut the opposite side from
+  `create_extrusion`: `FeatureCut4`'s `Dir=False` goes against the sketch
+  normal, and a boss's goes along it. It flipped only when nothing was built,
+  so from an offset plane it took a 1.13 mm³ sliver where 9.05 mm³ was meant.
+  Now, with `reverse_direction` left out, it cuts along the normal (the
+  extrusion's side), measures, tries the other side, and keeps the one that
+  removed more (a tie keeps the extrusion's side). That costs up to two more
+  cuts and a delete. A `reverse_direction` you set cuts exactly as before
+  (true: along the normal, false: against it), flipping once only if it
+  finds no material. The result adds `direction_choice` and
+  `volume_removed_mm3`.
+- **`add_fillet` and `add_chamfer` pick many coordinate edges in one pass.**
+  Each edge's bounding box is read once, every point is matched in Python,
+  and only edges near a point are measured. 133 points no longer cost 133
+  walks over every edge (over 30 minutes). The same edge is chosen as before.
+  The model is rebuilt once, before anything is selected, and `add_chamfer`
+  no longer re-reads the body for every point.
+- **Saving an assembly no longer shows "Save Modified Documents".** Saves
+  are silent and write the assembly's modified parts too. If that would
+  overwrite the user's own modified part files, nothing is written and the
+  tool returns `confirmation_required` with the files; call again with
+  `overwrite_modified_references: true` once the user agrees. Saves no
+  longer fall back to the dialog-prone legacy `Save()`, and saving a
+  never-saved document in place is refused with a message instead of
+  opening Save As.
+- **Exports pass the right save options.** They passed `2` believing it
+  was `swSaveAsOptions_Silent`; it is `Copy`. They now pass `Silent | Copy`.
+- **Activating an assembly whose parts changed no longer asks to rebuild
+  it.** Every `ActivateDoc3` call passed `swUserDecision`, which shows "Models
+  contained within the assembly have changed. Would you like to rebuild the
+  assembly now?". The box took the foreground and held the call for 5 s.
+  Documents are now activated without a rebuild and then rebuilt with
+  `EditRebuild3` when they need it, which shows no SolidWorks window at all
+  (`swRebuildActiveDoc` avoided the box but showed a "Loading..." dialog that
+  took the foreground). Your own rebuild preference is unchanged.
 
 ## [2.0.0] - 2026-11-09
 

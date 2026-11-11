@@ -14,6 +14,12 @@ List every dimension in the active part or assembly with its full name and value
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `feature_name` | `str?` | — | `None` | Only list this feature's dimensions, e.g. 'Boss-Extrude1'. Omit to list every dimension in the model. |
+
 **Sample call:**
 
 ```json
@@ -49,6 +55,12 @@ Measure faces, edges or vertices of the active model with SolidWorks' Measure to
 Report the material assigned to the active part.
 
 **Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `configuration` | `str?` | — | `None` | Configuration; the active one when omitted |
 
 **Sample call:**
 
@@ -88,6 +100,12 @@ List the materials in the installed SolidWorks material libraries.
 
 **Prerequisite:** SolidWorks running
 
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `search` | `str?` | — | `None` | Case-insensitive filter on material name or classification, e.g. 'steel' or '6061' |
+
 **Sample call:**
 
 ```json
@@ -101,6 +119,12 @@ List the materials in the installed SolidWorks material libraries.
 Read the active document's custom properties, such as PartNo, Description or Revision.
 
 **Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `configuration` | `str?` | — | `None` | Configuration-specific properties; file-level (what title blocks usually read) when omitted |
 
 **Sample call:**
 

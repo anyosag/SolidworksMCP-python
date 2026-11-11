@@ -1,8 +1,8 @@
 {
  "tools": {
-  "total": 164,
+  "total": 165,
   "by_level": {
-   "stable": 106,
+   "stable": 107,
    "beta": 0,
    "experimental": 19,
    "planned": 39
@@ -559,7 +559,7 @@
     "family": "export",
     "level": "stable",
     "reason": "",
-    "summary": "Save a picture of the active model in a standard view, as PNG or JPG, at a chosen size."
+    "summary": "Save a picture of the active model, in a standard view or as it is on screen, as PNG or JPG."
    },
    {
     "name": "export_pdf",
@@ -1045,6 +1045,13 @@
     "summary": "Set the active drawing sheet's scale, e.g. 1:2; views that use the sheet scale follow it."
    },
    {
+    "name": "set_solidworks_window",
+    "family": "server_admin",
+    "level": "stable",
+    "reason": "",
+    "summary": "Minimize or restore the SolidWorks window, so the user can work in other apps while you model."
+   },
+   {
     "name": "set_units",
     "family": "modeling",
     "level": "stable",
@@ -1161,11 +1168,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 235,
+   "covered": 232,
    "total": 2838
   },
   "api": {
-   "covered": 262,
+   "covered": 261,
    "total": 5985
   },
   "interfaces": [
@@ -1256,9 +1263,7 @@
      "Lock",
      "Parameter",
      "RayIntersections",
-     "Save",
      "Save3",
-     "SaveAs",
      "SaveAs2",
      "SaveAs3",
      "SaveBMP",
@@ -1294,7 +1299,6 @@
      "GetWhatsWrongCount",
      "InsertBomTable4",
      "RayIntersections",
-     "SaveAs",
      "SaveAs2",
      "SaveAs3",
      "SavePackAndGo",

@@ -1,12 +1,13 @@
 """Tools that look after the server itself rather than a SolidWorks model.
 
-Today one tool: ``reset_circuit_breaker``, which re-opens operations the
-server's circuit breaker has paused after repeated failures (#208).
+``reset_circuit_breaker`` re-opens operations the server's circuit breaker has
+paused after repeated failures (#208). ``set_solidworks_window`` minimizes or
+restores the SolidWorks window (keep-solidworks-minimized).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastmcp import FastMCP
 from pydantic import Field
@@ -28,6 +29,21 @@ class ResetCircuitBreakerInput(CompatInput):
         description=(
             "The operation to reset, as named in the circuit_open error "
             "(e.g. create_extrusion); leave it out to reset every operation"
+        ),
+    )
+
+
+class SetSolidWorksWindowInput(CompatInput):
+    """Input schema for minimizing or restoring the SolidWorks window.
+
+    Attributes:
+        state (str): ``minimize`` or ``restore``.
+    """
+
+    state: Literal["minimize", "restore"] = Field(
+        description=(
+            "minimize: hide SolidWorks in the taskbar and keep it there while "
+            "tools run; restore: bring it back up for the user to see"
         ),
     )
 
@@ -74,4 +90,33 @@ async def register_server_admin_tools(
         message = f"Reset {', '.join(names)}" if names else "No operation was paused"
         return {"status": "success", "message": message, "data": {"reset": names}}
 
-    return 1
+    @mcp.tool()
+    async def set_solidworks_window(
+        input_data: SetSolidWorksWindowInput,
+    ) -> dict[str, Any]:
+        """Minimize or restore the SolidWorks window, so the user can work in other apps while you model.
+
+        Use `minimize` when the user asks to keep SolidWorks out of the way: while it
+        is minimized, every tool keeps it minimized and hands the keyboard focus back,
+        and `export_image` still renders. Use `restore` when the user wants to look at
+        the model. The server never minimizes a window the user restored. Changes:
+        only the window; no document is touched. Returns: `data` with `window_state`
+        (`minimized`, `normal`, `maximized`, `hidden` or `unknown`).
+
+        Args:
+            input_data: `state` is required: `minimize` or `restore`.
+
+        Returns:
+            dict[str, Any]: The window's state afterwards.
+        """
+        input_data = normalize_input(input_data, SetSolidWorksWindowInput)
+        result = await adapter.set_window_state(input_data.state)
+        require_success(result, context="Failed to change the SolidWorks window")
+        state = (result.data or {}).get("window_state", "unknown")
+        return {
+            "status": "success",
+            "message": f"SolidWorks window is {state}",
+            "data": {"window_state": state},
+        }
+
+    return 2

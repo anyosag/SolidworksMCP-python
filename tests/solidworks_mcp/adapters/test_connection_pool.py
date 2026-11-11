@@ -1783,6 +1783,9 @@ _SKETCH_PASSTHROUGHS = [
     ("sketch_circular_pattern", (["Arc1"], 360.0, 4)),
     ("sketch_mirror", (["Arc1"], "Line1")),
     ("sketch_offset", (["Arc1"], 2.0, False)),
+    ("set_window_state", ("minimize",)),
+    ("save_file", ("C:/a.SLDASM", True)),
+    ("close_model", (True, True)),
 ]
 
 

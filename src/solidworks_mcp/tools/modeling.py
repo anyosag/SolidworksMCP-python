@@ -132,6 +132,39 @@ def _attach_measured_change(
     return reply
 
 
+def _cut_direction_note(applied: Any) -> str:
+    """Say in a cut's message which side it cut, when it was not the one wanted.
+
+    Args:
+        applied: The cut's ``parameters`` from the adapter.
+
+    Returns:
+        str: A note in parentheses, or ``""`` when the cut went the way asked
+        (or, with no direction given, along the sketch normal as compared).
+    """
+    if not isinstance(applied, dict):
+        return ""
+    flipped = bool(applied.get("direction_flipped"))
+    choice = applied.get("direction_choice")
+    removed = applied.get("volume_removed_mm3")
+    if choice == "not_compared" and applied.get("direction_note"):
+        return f" (the two sides were not compared: {applied['direction_note']})"
+    if flipped and isinstance(removed, dict):
+        return (
+            " (it cut against the sketch normal, the side with more material: "
+            f"{removed.get('against_normal', 0.0):.4g} mm3 against "
+            f"{removed.get('along_normal', 0.0):.4g} mm3 along it)"
+        )
+    if flipped and choice == "only_side_with_material":
+        return (
+            " (the side along the sketch normal had no material, so it cut the "
+            "other way)"
+        )
+    if flipped:
+        return " (the requested direction found no material, so it cut the other way)"
+    return ""
+
+
 class OpenModelInput(BaseModel):
     """Input schema for opening a SolidWorks model.
 
@@ -448,6 +481,14 @@ class CloseModelInput(BaseModel):
     """
 
     save: bool = Field(default=False, description="Save the model before closing")
+    overwrite_modified_references: bool = Field(
+        default=False,
+        description=(
+            "Set true only after the user agreed: lets saving an assembly also "
+            "overwrite the user's own modified part files that a "
+            "`confirmation_required` error listed."
+        ),
+    )
 
 
 class CreateCutExtrudeInput(CompatInput):
@@ -457,19 +498,25 @@ class CreateCutExtrudeInput(CompatInput):
         depth (float): Cut depth in millimeters.
         draft_angle (float): Draft angle in degrees.
         end_condition (str): End condition type.
-        reverse_direction (bool): Reverse cut direction.
+        reverse_direction (bool | None): True cuts along the sketch normal,
+            False against it; None lets a one-way cut take the side with more
+            material.
         both_directions (bool): With ``"ThroughAll"``, cut both ways.
         sketch_name (str | None): Sketch to cut from.
     """
 
     depth: float = Field(description="Cut depth in millimeters")
     draft_angle: float = Field(default=0.0, description="Draft angle in degrees")
-    reverse_direction: bool = Field(
-        default=False,
+    reverse_direction: bool | None = Field(
+        default=None,
         description=(
-            "Cut against the sketch normal instead of along it. Usually not "
-            "needed: if the requested direction finds no material, the cut is "
-            "retried the other way and the reply sets direction_flipped"
+            "Usually leave unset: a one-way cut then tries both sides of the "
+            "sketch and keeps the one that removes more material (on a tie, "
+            "the side along the sketch normal, where create_extrusion grows). "
+            "true cuts along the sketch normal, the side create_extrusion grows "
+            "into by default; false cuts against it (from a sketch on a face, "
+            "into the part). A set side that has no material is cut the other "
+            "way instead, and the reply sets direction_flipped"
         ),
     )
     end_condition: str = Field(
@@ -1555,16 +1602,21 @@ async def register_modeling_tools(
 
         Use it when you are done with a document. Unsaved changes are lost unless `save`
         is on. Needs: an open, active document. Changes: closes the document, and with
-        `save` writes it first. Returns: `saved`, whether a save was asked for.
+        `save` writes it first, without SolidWorks dialogs; a save that fails, or that
+        would overwrite the user's own modified part files (`confirmation_required`),
+        leaves the document open. Returns: `saved`, whether a save was asked for.
 
         Args:
-            input_data: The close. Nothing is required: `save` is off.
+            input_data: The close. Nothing is required: `save` and
+                `overwrite_modified_references` are off.
 
         Returns:
             dict[str, Any]: The close result.
         """
         input_data = normalize_input(input_data, CloseModelInput)
-        result = await adapter.close_model(input_data.save)
+        result = await adapter.close_model(
+            input_data.save, input_data.overwrite_modified_references
+        )
 
         require_success(result, context="Failed to close model")
         return {
@@ -1809,9 +1861,13 @@ async def register_modeling_tools(
 
         Use it after `exit_sketch`. Pass `sketch_name` unless the sketch you just closed
         is the one: with no name only that sketch is used, and any doubt is an error
-        naming the sketches found. A one-way cut that finds no material is retried the
-        other way (`direction_flipped`). For a sketch inside the body, use
-        ThroughAllBoth. Needs: an open part with a solid body. Changes: adds a
+        naming the sketches found. With `reverse_direction` unset, a one-way cut tries
+        both sides of the sketch and keeps the one that removes more material (a tie
+        keeps the side along the sketch normal, where `create_extrusion` grows). Set,
+        true cuts along the sketch normal and false against it, and the other side is
+        tried only when that one has no material. `direction_flipped` says the cut
+        went the other way. For a sketch inside the body, use ThroughAllBoth. Needs:
+        an open part with a solid body. Changes: adds a
         Cut-Extrude feature. Returns: `cut_extrude` (`name`, `sketch_name`,
         `direction_flipped`) and `measured_change` (volume, bounding box and solid-body
         count before and after; left out when the model can't be read).
@@ -1829,7 +1885,6 @@ async def register_modeling_tools(
         params = ExtrusionParameters(
             depth=input_data.depth,
             draft_angle=input_data.draft_angle,
-            reverse_direction=input_data.reverse_direction,
             both_directions=input_data.both_directions,
             thin_feature=False,
             thin_thickness=None,
@@ -1839,6 +1894,9 @@ async def register_modeling_tools(
             auto_select=True,
             sketch_name=input_data.sketch_name,
         )
+        if input_data.reverse_direction is not None:
+            # Set only when given: left unset, the adapter picks the side.
+            params.reverse_direction = input_data.reverse_direction
         before = await _read_summary(adapter)
         result = await adapter.create_cut_extrude(params)
         require_success(result, context="Failed to create cut-extrude")
@@ -1854,14 +1912,10 @@ async def register_modeling_tools(
             isinstance(feature_params, dict) and feature_params.get("direction_flipped")
         )
         name = _result_value(feature, "feature_name", "name", default="Cut-Extrude")
-        message = f"Created cut-extrude: {name}"
-        if flipped:
-            message += (
-                " (the requested direction found no material, so it cut the other way)"
-            )
         reply = {
             "status": "success",
-            "message": message,
+            "message": f"Created cut-extrude: {name}"
+            + _cut_direction_note(feature_params),
             "cut_extrude": {
                 "name": name,
                 "depth": input_data.depth,

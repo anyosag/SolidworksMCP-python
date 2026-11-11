@@ -235,9 +235,10 @@ async def test_cut_reports_the_volume_it_removed(scratch):
         call=f"create_cut_extrude({call})",
     )
     assert cut["status"] == "success", cut
-    # The Top Plane's normal points away from a block extruded up from it, so
-    # the cut finds material only the other way and says so (#193).
-    assert cut["cut_extrude"]["direction_flipped"] is True, cut
+    # With no reverse_direction the cut tries both sides of the Top Plane and
+    # keeps the one with material: along the normal, up into the block the
+    # extrusion grew, so nothing was flipped (#193, DishRack sliver fix).
+    assert cut["cut_extrude"]["direction_flipped"] is False, cut
     change = cut["measured_change"]
     assert change["volume_delta_mm3"] == pytest.approx(-_HOLE_MM3, rel=1e-4)
     assert change["bounding_box_after_mm"] == change["bounding_box_before_mm"]

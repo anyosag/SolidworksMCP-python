@@ -26,6 +26,7 @@ Last updated 2026-11-09.
 | 13 | README: licence-tier tags | #79 (other half) | not yet written | |
 | 14 | Remove the stale `validate_coverage.py`; decide whether mypy gates CI | #157 | not yet written | |
 | 15 | Skills that improve the agent's results, measured on the U-joint prompt | #207 | not yet written | Tabled 2026-11-09: needs research first (what "better" means, a harness to run and score sessions). See `openspec/research/agent-skill-evaluation.md` |
+| 16 | Keep SolidWorks minimized while tools run: sticky minimized state, screenshots while minimized, assembly saves without the Save Modified Documents dialog, a dialog watchdog, a window tool | none (fork) | `keep-solidworks-minimized` | Implemented 2026-11-10 on `feat/keep-minimized` (fork `anyosag/SolidworksMCP-python`); mock suite green; live sign-off pending |
 
 ## Tools that can't run yet (item 10)
 

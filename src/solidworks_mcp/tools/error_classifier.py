@@ -61,12 +61,57 @@ class ErrorRule:
         return any(re.search(p, message, re.IGNORECASE) for p in self.patterns)
 
 
+SOLIDWORKS_DIALOG = "solidworks_dialog"
+CONFIRMATION_REQUIRED = "confirmation_required"
+SOLIDWORKS_RECONNECTED = "solidworks_reconnected"
+ACTIVE_DOCUMENT_CHANGED = "active_document_changed"
+
 DEFAULT_RULES: tuple[ErrorRule, ...] = (
+    # First: a dialog's own text can contain anything ("file not found",
+    # "not connected"), and must not be classified by it.
+    ErrorRule(
+        error_type=SOLIDWORKS_DIALOG,
+        hint=(
+            "SolidWorks opened a dialog during this operation; its title, text "
+            "and buttons are in `data.dialog`. The server cancelled it (it never "
+            "answers Save or Don't Save), so the operation may not have "
+            "finished. If the dialog asks for a decision, tell the user what it "
+            "says; otherwise fix its cause and retry. When it could not be "
+            "cancelled, SolidWorks was brought to the front for the user to "
+            "answer it."
+        ),
+        patterns=(r"solidworks showed a dialog during",),
+    ),
+    ErrorRule(
+        error_type=CONFIRMATION_REQUIRED,
+        hint=(
+            "Nothing was saved. Saving would overwrite the user's existing files "
+            "listed in `data.files` with their unsaved changes. Ask the user "
+            "whether to save those changes; if they agree, call the same tool "
+            "again with `overwrite_modified_references: true`."
+        ),
+        patterns=(r"would overwrite \d+ modified file",),
+    ),
+    # Before solidworks_unavailable: the message says the old SolidWorks
+    # has exited, which that rule also matches.
+    ErrorRule(
+        error_type=SOLIDWORKS_RECONNECTED,
+        hint=(
+            "SolidWorks was restarted (or crashed and was started again), and "
+            "the server has reconnected to it; this call did nothing. "
+            "Documents and sketches from before are gone unless the user "
+            "reopened them: check with list_open_documents, reopen or recreate "
+            "what you need (open_model, create_part), then retry."
+        ),
+        patterns=(r"has reconnected to the solidworks running now",),
+    ),
     ErrorRule(
         error_type="solidworks_unavailable",
         hint=(
-            "SolidWorks is not reachable - it was closed or crashed. Restart "
-            "SolidWorks (and the MCP server if it still fails), then retry."
+            "SolidWorks is not reachable - it was closed or crashed. Ask the "
+            "user to start SolidWorks; the next call reconnects to it (restart "
+            "the MCP server only if it still fails). Documents open before are "
+            "gone unless the user reopens them."
         ),
         hresults=frozenset(
             {RPC_E_DISCONNECTED, RPC_S_SERVER_UNAVAILABLE, RPC_S_CALL_FAILED}
@@ -77,7 +122,19 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             r"not connected to solidworks",
             r"solidworks (application )?(is )?not connected",
             r"solidworks is not running",
+            r"the solidworks this server was connected to has exited",
         ),
+    ),
+    ErrorRule(
+        error_type=ACTIVE_DOCUMENT_CHANGED,
+        hint=(
+            "Nothing was done: since this session's last call, the user or "
+            "another program switched SolidWorks to another document, and the "
+            "call would have changed that one. If the user didn't say which "
+            "document to work on, ask. Then call activate_document with it "
+            "(the message names both) and retry."
+        ),
+        patterns=(r"active document changed between calls",),
     ),
     ErrorRule(
         error_type="com_wrong_thread",
