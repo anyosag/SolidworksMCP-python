@@ -48,13 +48,16 @@ def unknown_types(types: list[str]) -> list[str]:
     return [t for t in types if t not in DISPLAY_TOGGLES]
 
 
-def set_display_types(adapter: Any, types: list[str], visible: bool) -> dict[str, Any]:
-    """Show or hide every entity of each type in the active document.
+def set_display_types(
+    adapter: Any, types: list[str], visible: bool, model: Any = None
+) -> dict[str, Any]:
+    """Show or hide every entity of each type in a document.
 
     Args:
         adapter: A connected adapter with a ``currentModel``.
         types: Keys of :data:`DISPLAY_TOGGLES`.
         visible: Show (True) or hide (False).
+        model: The document (default: the adapter's ``currentModel``).
 
     Returns:
         dict[str, Any]: Per type, ``{"before": bool | None, "after": bool |
@@ -63,7 +66,8 @@ def set_display_types(adapter: Any, types: list[str], visible: bool) -> dict[str
     Raises:
         RuntimeError: SolidWorks kept a toggle at the old value.
     """
-    extension = adapter.currentModel.Extension
+    model = model if model is not None else adapter.currentModel
+    extension = model.Extension
     _flag(adapter, extension, "GetUserPreferenceToggle", "SetUserPreferenceToggle")
     changed: dict[str, Any] = {}
     for name in types:
@@ -88,13 +92,16 @@ def set_display_types(adapter: Any, types: list[str], visible: bool) -> dict[str
             "before": None if before is None else bool(before),
             "after": None if after is None else bool(after),
         }
-    _attempt(adapter, lambda: adapter.currentModel.GraphicsRedraw2())
+    _attempt(adapter, lambda: model.GraphicsRedraw2())
     return changed
 
 
-def restore_display_types(adapter: Any, changed: dict[str, Any]) -> None:
+def restore_display_types(
+    adapter: Any, changed: dict[str, Any], model: Any = None
+) -> None:
     """Put back toggles ``set_display_types`` changed, from their ``before``."""
-    extension = adapter.currentModel.Extension
+    model = model if model is not None else adapter.currentModel
+    extension = model.Extension
     _flag(adapter, extension, "SetUserPreferenceToggle")
     for name, state in changed.items():
         if state.get("before") is None:
@@ -105,7 +112,7 @@ def restore_display_types(adapter: Any, changed: dict[str, Any]) -> None:
                 DISPLAY_TOGGLES[n], _NO_OPTION, bool(s["before"])
             ),
         )
-    _attempt(adapter, lambda: adapter.currentModel.GraphicsRedraw2())
+    _attempt(adapter, lambda: model.GraphicsRedraw2())
 
 
 def set_feature_visibility(

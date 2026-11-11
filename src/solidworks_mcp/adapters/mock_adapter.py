@@ -13,7 +13,7 @@ import random
 import uuid
 from collections.abc import Callable
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from ..exceptions import SolidWorksOperationError
 from .base import (
@@ -40,6 +40,8 @@ from .solidworks.sketch import (
     default_plane_axes,
     plane_candidates_for,
 )
+from .solidworks.stl_settings import preference_changes as _stl_changes
+from .solidworks.visibility import unknown_types as _unknown_display_types
 
 #: Orientations the mock accepts for a drawing view. Kept in step with
 #: ``_NAMED_VIEWS`` in ``adapters/solidworks/io.py`` by a test — the two lists
@@ -2842,7 +2844,19 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         height = int(payload.get("height", 720))
         orientation = str(payload.get("view_orientation", "current")).lower()
         zoom = payload.get("zoom_to_fit")
-        zoom_to_fit = orientation != "current" if zoom is None else bool(zoom)
+        zoom_box = payload.get("zoom_box_mm")
+        zoom_to_fit = (
+            False
+            if zoom_box is not None
+            else (orientation != "current" if zoom is None else bool(zoom))
+        )
+        hide = list(payload.get("hide") or [])
+        unknown = _unknown_display_types(hide)
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Unknown display type(s) to hide: {', '.join(unknown)}",
+            )
 
         await asyncio.sleep(0.3)
         self._operation_count += 1
@@ -2869,6 +2883,8 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "dimensions": f"{width}x{height}",
                 "view": orientation,
                 "zoomed_to_fit": zoom_to_fit,
+                "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
+                "hidden": sorted(hide),
                 "window_state": self._window_state,
             },
             execution_time=0.3,
@@ -2913,6 +2929,42 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             },
             execution_time=0.05,
             metadata={"mock": True},
+        )
+
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock exporting the active document to STL with mesh settings.
+
+        SolidWorks keeps the STL options as the user's preferences; they are
+        changed for the export and put back afterwards.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): Any of ``resolution``, ``deviation_mm``,
+                ``angle_deg``, ``units`` and ``binary``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``).
+        """
+        try:
+            changes = _stl_changes(settings)
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        exported = await self.export_file(file_path, "stl")
+        if not exported.is_success:
+            return cast(AdapterResult[dict[str, Any]], exported)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "file_path": file_path,
+                "mesh": {
+                    "applied": [label for *_rest, label in changes],
+                    "restored": True,
+                },
+            },
+            execution_time=exported.execution_time,
         )
 
     async def export_file(

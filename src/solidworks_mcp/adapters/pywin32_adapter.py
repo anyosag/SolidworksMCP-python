@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from ..exceptions import SolidWorksMCPError
 from . import sw_type_info
@@ -33,6 +33,8 @@ from .solidworks import (
     bitmap,
     limits,
     saving,
+    stl_settings,
+    visibility,
 )
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
@@ -251,6 +253,9 @@ _DOCUMENT_CHOOSING_OPERATIONS = frozenset(
         "get_application_info",
         "list_open_documents",
         "open_model",
+        # Puts the user's application settings back after an export; it must
+        # run even when someone switched documents during the export.
+        "restore_stl_options",
     }
 )
 
@@ -3016,6 +3021,18 @@ class PyWin32Adapter(
                 exc,
             )
 
+    def _zoom_to_box(self, target_doc: Any, box_mm: list[float]) -> None:
+        """Zoom the view to a box of the model, two corners in mm (``ViewZoomTo2``).
+
+        Raises:
+            Exception: When SolidWorks refuses the zoom; the picture is not
+                taken rather than taken at the wrong zoom.
+        """
+        x1, y1, z1, x2, y2, z2 = (float(v) / 1000.0 for v in box_mm)
+        self._redraw(target_doc)
+        target_doc.ViewZoomTo2(x1, y1, z1, x2, y2, z2)
+        self._redraw(target_doc)
+
     def _zoom_to_fit(self, target_doc: Any) -> bool:
         """Redraw, zoom the model to fit its viewport, and redraw again.
 
@@ -3217,6 +3234,14 @@ class PyWin32Adapter(
         height = int(payload.get("height", 720))
         zoom = payload.get("zoom_to_fit")
         zoom_to_fit = orientation != "current" if zoom is None else bool(zoom)
+        hide = list(payload.get("hide") or [])
+        zoom_box = payload.get("zoom_box_mm")
+        unknown = visibility.unknown_types(hide)
+        if unknown:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"Unknown display type(s) to hide: {', '.join(unknown)}",
+            )
 
         # Map orientation names to SolidWorks swStandardViews_e constants
         _VIEW_CONSTANTS = {
@@ -3265,47 +3290,63 @@ class PyWin32Adapter(
             if not self._window_is_minimized():
                 self._attempt(lambda: self.swApp.Frame.SetFocus())  # type: ignore[union-attr]
 
-            # Set view orientation if requested
-            if orientation != "current" and orientation in _VIEW_CONSTANTS:
-                view_const = _VIEW_CONSTANTS[orientation]
-                self._set_view_orientation(target_doc, orientation, view_const)
+            # Planes, sketches and the like hidden for the picture only.
+            hidden = (
+                visibility.set_display_types(self, hide, False, model=target_doc)
+                if hide
+                else {}
+            )
+            try:
+                # Set view orientation if requested
+                if orientation != "current" and orientation in _VIEW_CONSTANTS:
+                    view_const = _VIEW_CONSTANTS[orientation]
+                    self._set_view_orientation(target_doc, orientation, view_const)
 
-            # Zoom to fit so the model fills the viewport before capture;
-            # "current" keeps the view as it is (a close-up stays one).
-            if zoom_to_fit:
-                zoomed = self._zoom_to_fit(target_doc)
-            else:
-                self._redraw(target_doc)
-                zoomed = False
+                # Zoom to fit so the model fills the viewport before capture;
+                # "current" keeps the view as it is (a close-up stays one).
+                if zoom_box is not None:
+                    self._zoom_to_box(target_doc, zoom_box)
+                    zoomed = False
+                elif zoom_to_fit:
+                    zoomed = self._zoom_to_fit(target_doc)
+                else:
+                    self._redraw(target_doc)
+                    zoomed = False
 
-            # Remove any pre-existing file so SolidWorks never shows the
-            # "already exists — replace?" confirmation dialog.
-            if _os.path.exists(resolved):
-                _os.remove(resolved)
+                # Remove any pre-existing file so SolidWorks never shows the
+                # "already exists — replace?" confirmation dialog.
+                if _os.path.exists(resolved):
+                    _os.remove(resolved)
 
-            # SaveBMP at the requested size; SaveAs3 (window size) otherwise.
-            saved = self._save_screenshot_sized(target_doc, resolved, width, height)
-            if not saved:
-                self._save_screenshot_with_saveas3(target_doc, resolved)
-                saved = _os.path.exists(resolved)
+                # SaveBMP at the requested size; SaveAs3 (window size) otherwise.
+                saved = self._save_screenshot_sized(target_doc, resolved, width, height)
+                if not saved:
+                    self._save_screenshot_with_saveas3(target_doc, resolved)
+                    saved = _os.path.exists(resolved)
 
-            if not saved:
-                raise RuntimeError(
-                    f"All screenshot methods produced no output for {resolved}"
-                )
+                if not saved:
+                    raise RuntimeError(
+                        f"All screenshot methods produced no output for {resolved}"
+                    )
 
-            # Report the size actually written, not the one asked for: the
-            # SaveAs3 fallback ignores width/height.
-            size = bitmap.image_size(resolved)
-            return {
-                "file_path": resolved,
-                "format": _os.path.splitext(resolved)[1].lstrip(".").upper() or "PNG",
-                "dimensions": f"{size[0]}x{size[1]}" if size else "unknown",
-                "requested_dimensions": f"{width}x{height}",
-                "view": orientation,
-                "zoomed_to_fit": zoomed,
-                "window_state": self._window_state(),
-            }
+                # Report the size actually written, not the one asked for: the
+                # SaveAs3 fallback ignores width/height.
+                size = bitmap.image_size(resolved)
+                return {
+                    "file_path": resolved,
+                    "format": _os.path.splitext(resolved)[1].lstrip(".").upper()
+                    or "PNG",
+                    "dimensions": f"{size[0]}x{size[1]}" if size else "unknown",
+                    "requested_dimensions": f"{width}x{height}",
+                    "view": orientation,
+                    "zoomed_to_fit": zoomed,
+                    "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
+                    "hidden": sorted(hidden),
+                    "window_state": self._window_state(),
+                }
+            finally:
+                if hidden:
+                    visibility.restore_display_types(self, hidden, model=target_doc)
 
         return self._handle_com_operation("export_image", _screenshot_operation)
 
@@ -3504,6 +3545,63 @@ class PyWin32Adapter(
             return None
 
         return self._handle_com_operation("export_file", _export_operation)
+
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export the active document to STL with these mesh settings for this file.
+
+        SolidWorks keeps the STL options as the user's preferences; they are
+        changed for the export and put back afterwards.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): Any of ``resolution``, ``deviation_mm``,
+                ``angle_deg``, ``units`` and ``binary``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``).
+        """
+        try:
+            changes = stl_settings.preference_changes(settings)
+        except ValueError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        app = self.swApp
+        if app is None or not self.currentModel:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        applied = self._handle_com_operation(
+            "set_stl_options", lambda: stl_settings.apply_changes(app, changes)
+        )
+        if not applied.is_success:
+            return cast(AdapterResult[dict[str, Any]], applied)
+        previous = applied.data or []
+        try:
+            exported = await self.export_file(file_path, "stl")
+        finally:
+            restored = self._handle_com_operation(
+                "restore_stl_options", lambda: stl_settings.restore(app, previous)
+            )
+        not_restored = (
+            restored.data
+            if restored.is_success
+            else [pref for _kind, pref, _old in previous]
+        )
+        if not exported.is_success:
+            return cast(AdapterResult[dict[str, Any]], exported)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "file_path": os.path.abspath(file_path),
+                "mesh": {
+                    "applied": [label for *_rest, label in changes],
+                    "restored": not not_restored,
+                },
+            },
+            execution_time=exported.execution_time,
+        )
 
     def _get_document_type(self) -> str:
         """Helper method to get document type.

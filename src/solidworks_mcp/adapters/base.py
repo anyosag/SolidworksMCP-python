@@ -1901,6 +1901,28 @@ class SolidWorksAdapter(ABC):
         """
         pass
 
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export the active document to STL with these mesh settings for this file.
+
+        SolidWorks keeps the STL options as the user's preferences; they are
+        changed for the export and put back afterwards.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): Any of ``resolution``, ``deviation_mm``,
+                ``angle_deg``, ``units`` and ``binary``.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="export_stl_with_settings is not implemented by this adapter",
+        )
+
     # Dimension Operations
     @abstractmethod
     async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:

@@ -1363,6 +1363,23 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "export_file", lambda adapter: adapter.export_file(file_path, format_type)
         )
 
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export STL with mesh settings using pool.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): The mesh settings.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "export_stl_with_settings",
+            lambda adapter: adapter.export_stl_with_settings(file_path, settings),
+        )
+
     # Dimension operations
 
     async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:

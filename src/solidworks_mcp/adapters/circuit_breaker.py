@@ -1468,6 +1468,24 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"file_path": file_path, "format_type": format_type},
         )
 
+    async def export_stl_with_settings(
+        self, file_path: str, settings: dict[str, Any]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Export STL with mesh settings through circuit breaker.
+
+        Args:
+            file_path (str): Path to the ``.stl`` file.
+            settings (dict[str, Any]): The mesh settings.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "export_stl_with_settings",
+            lambda: self.adapter.export_stl_with_settings(file_path, settings),
+            input_dict={"file_path": file_path, "settings": settings},
+        )
+
     # Dimension operations
 
     async def get_dimension(self, name: str) -> AdapterResult[dict[str, Any]]:

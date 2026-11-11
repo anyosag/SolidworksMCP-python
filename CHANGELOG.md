@@ -87,6 +87,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call is cancelled after `SOLIDWORKS_MCP_DIALOG_TIMEOUT_SECONDS` (default 5)
   and reported as `error_type: solidworks_dialog`, with its text, instead of
   hanging the server. It never answers Save or Don't Save.
+- **`export_stl` takes mesh settings for one file**: `resolution` (coarse,
+  fine or custom), `deviation_mm` and `angle_deg` (which make it custom),
+  `units` and `binary`. SolidWorks keeps these as the user's STL options;
+  they are set for the export, read back, and put back afterwards, and the
+  reply's `export.mesh` says what was applied and whether the user's options
+  were restored. Left out, the user's options are used as before.
+- **`export_image` takes `hide` and `zoom_box_mm`.** `hide` hides planes,
+  sketches, axes, origins, points or coordinate systems for that picture
+  only and shows them again afterwards, even when the picture fails.
+  `zoom_box_mm` zooms to a box of the model (two corners, mm) instead of
+  fitting the whole model. The reply gives `hidden` and `zoom_box_mm`.
 - **Every document tool takes `document`**: the title, file name or path of
   an open document. The server makes it the active document before the tool
   runs, and refuses the call (`not_found`) when it isn't open; nothing is

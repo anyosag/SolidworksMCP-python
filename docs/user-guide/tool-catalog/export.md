@@ -66,6 +66,11 @@ Export the active document to STL, like File > Save As with the STL type.
 |-----------|------|----------|---------|-------------|
 | `file_path` | `str` | ✅ | `` | Full path for the exported file |
 | `format_type` | `str?` | — | `None` | Not needed: the file extension sets the format; defaults to the tool's own format |
+| `resolution` | `Literal['coarse', 'fine', 'custom']?` | — | `None` | Mesh resolution for this file: coarse, fine, or custom with deviation_mm and angle_deg. Left out: the user's STL setting |
+| `deviation_mm` | `float?` | — | `None` | Largest distance between the mesh and the true surface, in mm. Smaller is finer; it makes the resolution custom |
+| `angle_deg` | `float?` | — | `None` | Largest angle between neighbouring facets, in degrees. Smaller is finer on small curved details; it makes the resolution custom |
+| `units` | `Literal['mm', 'cm', 'm', 'in', 'ft']?` | — | `None` | Units written in the file. Left out: the user's STL setting |
+| `binary` | `bool?` | — | `None` | Binary STL (true) or ASCII (false). Left out: the user's setting |
 
 **Sample call:**
 
@@ -145,6 +150,8 @@ Save a picture of the active model, in a standard view or as it is on screen, as
 | `view_orientation` | `str` | — | `isometric` | View to turn the model to (front, back, left, right, top, bottom, isometric, dimetric, trimetric), or current to keep the view on screen exactly as it is, zoom included |
 | `orientation` | `str?` | — | `None` | Alias of view_orientation |
 | `zoom_to_fit` | `bool?` | — | `None` | Zoom so the whole model fills the picture. Left out: yes for a named view, no for current, so a close-up stays a close-up |
+| `zoom_box_mm` | `List[float]?` | — | `None` | Zoom to this part of the model: two opposite corners of a box in model coordinates, mm, as [x1, y1, z1, x2, y2, z2] |
+| `hide` | `List[DisplayType]?` | — | `None` | Hide these for the picture only, e.g. ["planes", "sketches"]; they are shown again afterwards as they were |
 
 **Sample call:**
 

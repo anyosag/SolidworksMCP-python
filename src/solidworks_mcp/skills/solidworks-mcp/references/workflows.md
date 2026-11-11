@@ -61,7 +61,10 @@ hexagonal holes is one call, not 150 `add_line` calls.
 2. `check_wall_thickness` with your printer's thinnest wall as
    `min_wall_mm` (0.8 mm is two 0.4 mm nozzle lines). Its `thin_spots` say
    where each wall is too thin; check a doubtful one with `measure_entities`.
-3. `export_stl`.
+3. `export_stl`. For a smoother mesh than the user's STL options give, pass
+   `deviation_mm` (0.01 is fine for most prints) and `angle_deg`; `units`
+   and `binary` set the file's units and format. They apply to this file
+   only, and the user's options are put back.
 
 ## A bent plate or other wall from an open outline
 
