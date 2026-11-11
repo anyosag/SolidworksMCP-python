@@ -237,6 +237,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "exit_sketch": _sets("Exit Sketch"),
     "check_sketch_fully_defined": _reads("Check Sketch Fully Defined"),
     "add_arc": _adds("Add Sketch Arc"),
+    "add_outlines": _adds("Add Sketch Outlines"),
     "add_spline": _adds("Add Sketch Spline"),
     "add_centerline": _adds("Add Sketch Centerline"),
     "add_polygon": _adds("Add Sketch Polygon"),

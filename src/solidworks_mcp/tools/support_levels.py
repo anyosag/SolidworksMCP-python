@@ -218,6 +218,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "add_circle": _STABLE,
     "add_ellipse": _STABLE,
     "add_line": _STABLE,
+    "add_outlines": _UNCHECKED,
     "add_polygon": _STABLE,
     "add_rectangle": _STABLE,
     "add_sketch_constraint": _STABLE,

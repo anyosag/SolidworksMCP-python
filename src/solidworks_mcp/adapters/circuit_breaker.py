@@ -1016,6 +1016,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Add arc through circuit breaker.
 
@@ -1026,6 +1027,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             start_y (float): Arc start Y coordinate.
             end_x (float): Arc end X coordinate.
             end_y (float): Arc end Y coordinate.
+            direction (str): ``"ccw"`` (default) or ``"cw"``.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1039,6 +1041,7 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 start_y,
                 end_x,
                 end_y,
+                direction,
             ),
             input_dict={
                 "center_x": center_x,
@@ -1047,7 +1050,43 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
                 "start_y": start_y,
                 "end_x": end_x,
                 "end_y": end_y,
+                "direction": direction,
             },
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw outlines in the open sketch through circuit breaker.
+
+        Args:
+            outlines (list[dict[str, Any]]): The resolved outlines.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "add_sketch_outlines",
+            lambda: self.adapter.add_sketch_outlines(outlines),
+            input_dict={"outlines": outlines},
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set sketch entities' construction state through circuit breaker.
+
+        Args:
+            entity_ids (list[str]): The sketch entity ids.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_circuit_breaker(
+            "set_sketch_construction",
+            lambda: self.adapter.set_sketch_construction(entity_ids, construction),
+            input_dict={"entity_ids": entity_ids, "construction": construction},
         )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:

@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 156,
+  "total": 157,
   "by_level": {
    "stable": 106,
    "beta": 0,
-   "experimental": 10,
+   "experimental": 11,
    "planned": 40
   },
   "list": [
@@ -112,6 +112,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Place a text note on the active drawing sheet at a position in millimetres."
+   },
+   {
+    "name": "add_outlines",
+    "family": "sketching",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Draw whole outlines of lines and arcs in the open sketch in one call, in mm."
    },
    {
     "name": "add_polygon",
@@ -1105,11 +1112,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 215,
+   "covered": 216,
    "total": 2838
   },
   "api": {
-   "covered": 238,
+   "covered": 240,
    "total": 5985
   },
   "interfaces": [
@@ -1157,6 +1164,7 @@
      "CreateEllipse",
      "CreateLine",
      "CreateLinearSketchStepAndRepeat",
+     "EditDelete",
      "EditRebuild3",
      "EditSuppress2",
      "EditUndo",

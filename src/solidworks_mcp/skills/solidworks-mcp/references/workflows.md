@@ -36,6 +36,23 @@ a plane 10 mm up; its name (e.g. "Plane1") goes into `create_sketch`.
 - On or off a face, sloped or not: `face_point`, a point on the face in mm,
   with `offset` (0 puts the plane on the face).
 
+## Many holes or a whole outline in one call (a honeycomb deck)
+
+`add_outlines` draws any number of outlines in one call, so a deck of 25
+hexagonal holes is one call, not 150 `add_line` calls.
+
+1. Extrude the plate first (`create_sketch` on "Top", `add_rectangle`,
+   `exit_sketch`, `create_extrusion`).
+2. `create_sketch` on "Top" again. Its reply's `sketch.axes.summary` says
+   sketch y is model -Z there: work out the hole centres in sketch x and y.
+3. `add_outlines` with one `{"points": [[x, y], ...]}` per hexagon (six
+   corners; it closes them). For a shape with curves, give `start` and
+   `segments` instead, e.g. a slot: `{"start": [0, -5], "segments": [{"to":
+   [20, -5]}, {"type": "arc", "center": [20, 0], "to": [20, 5]}, {"to": [0,
+   5]}, {"type": "arc", "center": [0, 0], "to": [0, -5]}]}`.
+4. `exit_sketch`, then `create_cut_extrude` with `end_condition: "ThroughAll"`.
+   Check the volume fell by the holes' total area times the thickness.
+
 ## A bent plate or other wall from an open outline
 
 Draw the outline as an open chain of `add_line` (the plate's centreline or

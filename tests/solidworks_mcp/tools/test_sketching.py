@@ -107,11 +107,12 @@ class TestSketchingTools:
         """Test adding a line with start and end coordinates."""
         await register_sketching_tools(mcp_server, mock_adapter, mock_config)
 
-        mock_adapter.add_sketch_line = AsyncMock(
+        mock_adapter.add_line = AsyncMock(
             return_value=Mock(
                 is_success=True, data={"entity_id": "Line1"}, execution_time=0.2
             )
         )
+        mock_adapter.set_sketch_construction = AsyncMock()
 
         tool_func = None
         for tool in await mcp_server.list_tools():
@@ -128,16 +129,20 @@ class TestSketchingTools:
         assert result["line"]["start"] == {"x": 0.0, "y": 0.0}
         assert result["line"]["end"] == {"x": 50.0, "y": 50.0}
         assert result["line"]["construction"] is False
+        mock_adapter.set_sketch_construction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_add_construction_line(self, mcp_server, mock_adapter, mock_config):
         """Test adding a construction line."""
         await register_sketching_tools(mcp_server, mock_adapter, mock_config)
 
-        mock_adapter.add_sketch_line = AsyncMock(
+        mock_adapter.add_line = AsyncMock(
             return_value=Mock(
                 is_success=True, data={"entity_id": "Line2"}, execution_time=0.2
             )
+        )
+        mock_adapter.set_sketch_construction = AsyncMock(
+            return_value=AdapterResult(status=AdapterResultStatus.SUCCESS, data={})
         )
 
         tool_func = None
@@ -153,6 +158,34 @@ class TestSketchingTools:
 
         assert result["status"] == "success"
         assert result["line"]["construction"] is True
+        # CreateLine has no construction flag: the tool sets it on the line.
+        mock_adapter.set_sketch_construction.assert_awaited_once_with(["Line2"], True)
+
+    @pytest.mark.asyncio
+    async def test_a_line_that_cannot_be_made_construction_is_an_error(
+        self, mcp_server, mock_adapter, mock_config
+    ):
+        """The reply never says construction when SolidWorks drew normal geometry."""
+        await register_sketching_tools(mcp_server, mock_adapter, mock_config)
+        mock_adapter.add_line = AsyncMock(
+            return_value=AdapterResult(
+                status=AdapterResultStatus.SUCCESS, data="Line_7"
+            )
+        )
+        mock_adapter.set_sketch_construction = AsyncMock(
+            return_value=AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="SolidWorks did not make Line_7 construction geometry",
+            )
+        )
+        tool_func = await _tool(mcp_server, "add_line")
+
+        result = await tool_func(
+            AddLineInput(x1=0.0, y1=0.0, x2=10.0, y2=0.0, construction=True)
+        )
+
+        assert result["status"] == "error"
+        assert "The line Line_7 was drawn as normal geometry" in result["message"]
 
     @pytest.mark.asyncio
     async def test_add_circle_center_radius(
@@ -161,7 +194,7 @@ class TestSketchingTools:
         """Test adding a circle with center point and radius."""
         await register_sketching_tools(mcp_server, mock_adapter, mock_config)
 
-        mock_adapter.add_sketch_circle = AsyncMock(
+        mock_adapter.add_circle = AsyncMock(
             return_value=Mock(
                 is_success=True, data={"entity_id": "Circle1"}, execution_time=0.3
             )
@@ -188,7 +221,7 @@ class TestSketchingTools:
         """Test adding a rectangle with corner coordinates."""
         await register_sketching_tools(mcp_server, mock_adapter, mock_config)
 
-        mock_adapter.add_sketch_rectangle = AsyncMock(
+        mock_adapter.add_rectangle = AsyncMock(
             return_value=Mock(
                 is_success=True, data={"entity_id": "Rectangle1"}, execution_time=0.4
             )
@@ -320,9 +353,7 @@ class TestSketchingTools:
         await register_sketching_tools(mcp_server, mock_adapter, mock_config)
 
         # Mock adapter that raises exception
-        mock_adapter.add_sketch_circle = AsyncMock(
-            side_effect=Exception("Unexpected error")
-        )
+        mock_adapter.add_circle = AsyncMock(side_effect=Exception("Unexpected error"))
 
         tool_func = None
         for tool in await mcp_server.list_tools():
@@ -412,7 +443,7 @@ class TestSketchingToolsBranchCoverage:
 
     @pytest.mark.asyncio
     async def test_add_line_fallback_path(self, mcp_server, mock_config):
-        """Add_line must use adapter.add_line when add_sketch_line is absent."""
+        """add_line draws through adapter.add_line."""
         stub = SimpleNamespace()
         stub.add_line = AsyncMock(
             return_value=Mock(is_success=True, data="Line1", execution_time=0.1)
@@ -427,7 +458,7 @@ class TestSketchingToolsBranchCoverage:
 
     @pytest.mark.asyncio
     async def test_add_circle_fallback_path(self, mcp_server, mock_config):
-        """Add_circle must use adapter.add_circle when add_sketch_circle is absent."""
+        """add_circle draws through adapter.add_circle."""
         stub = SimpleNamespace()
         stub.add_circle = AsyncMock(
             return_value=Mock(is_success=True, data="Circle1", execution_time=0.1)
@@ -459,7 +490,7 @@ class TestSketchingToolsBranchCoverage:
 
     @pytest.mark.asyncio
     async def test_add_rectangle_fallback_path(self, mcp_server, mock_config):
-        """Add_rectangle must use adapter.add_rectangle when add_sketch_rectangle is absent."""
+        """add_rectangle draws through adapter.add_rectangle."""
         stub = SimpleNamespace()
         stub.add_rectangle = AsyncMock(
             return_value=Mock(is_success=True, data="Rect1", execution_time=0.1)
@@ -906,25 +937,17 @@ class _SketchAdapterStub:
         """Test helper for rename feature."""
         return _ok({"new_name": new})
 
-    async def add_sketch_line(self, *_args):
-        """Test helper for add sketch line."""
-        return _ok({"entity_id": "Line1"})
-
     async def add_line(self, *_args):
         """Test helper for add line."""
         return _ok("Line2")
-
-    async def add_sketch_circle(self, *_args):
-        """Test helper for add sketch circle."""
-        return _ok({"entity_id": "Circle1"})
 
     async def add_circle(self, *_args):
         """Test helper for add circle."""
         return _ok("Circle2")
 
-    async def add_sketch_rectangle(self, *_args):
-        """Test helper for add sketch rectangle."""
-        return _ok({"entity_id": "Rect1"})
+    async def add_sketch_circle(self, *_args):
+        """Test helper for add sketch circle (the tutorial tools use it)."""
+        return _ok({"entity_id": "Circle1"})
 
     async def add_rectangle(self, *_args):
         """Test helper for add rectangle."""
@@ -1217,14 +1240,14 @@ class TestSketchingExceptionPaths:
 
     @pytest.mark.asyncio
     async def test_add_line_adapter_error_result(self):
-        """Lines 416-419 — add_sketch_line returns error result → error dict."""
+        """add_line returns an error result → error dict."""
         from solidworks_mcp.tools.sketching import (
             AddLineInput,
             register_sketching_tools,
         )
 
         mcp = _make_mcp()
-        adapter = _error_result_adapter("add_sketch_line", "line failed")
+        adapter = _error_result_adapter("add_line", "line failed")
         await register_sketching_tools(mcp, adapter, _make_config())
 
         fn = await _get_tool(mcp, "add_line")
@@ -1241,7 +1264,7 @@ class TestSketchingExceptionPaths:
         )
 
         mcp = _make_mcp()
-        adapter = _error_adapter("add_sketch_line")
+        adapter = _error_adapter("add_line")
         await register_sketching_tools(mcp, adapter, _make_config())
 
         fn = await _get_tool(mcp, "add_line")
@@ -1257,7 +1280,7 @@ class TestSketchingExceptionPaths:
         )
 
         mcp = _make_mcp()
-        adapter = _error_adapter("add_sketch_circle")
+        adapter = _error_adapter("add_circle")
         await register_sketching_tools(mcp, adapter, _make_config())
 
         fn = await _get_tool(mcp, "add_circle")
@@ -1266,14 +1289,14 @@ class TestSketchingExceptionPaths:
 
     @pytest.mark.asyncio
     async def test_add_rectangle_adapter_error_result(self):
-        """Lines 563-566 — add_sketch_rectangle returns error → error dict."""
+        """add_rectangle returns an error result → error dict."""
         from solidworks_mcp.tools.sketching import (
             AddRectangleInput,
             register_sketching_tools,
         )
 
         mcp = _make_mcp()
-        adapter = _error_result_adapter("add_sketch_rectangle", "rect failed")
+        adapter = _error_result_adapter("add_rectangle", "rect failed")
         await register_sketching_tools(mcp, adapter, _make_config())
 
         fn = await _get_tool(mcp, "add_rectangle")
@@ -1289,7 +1312,7 @@ class TestSketchingExceptionPaths:
         )
 
         mcp = _make_mcp()
-        adapter = _error_adapter("add_sketch_rectangle")
+        adapter = _error_adapter("add_rectangle")
         await register_sketching_tools(mcp, adapter, _make_config())
 
         fn = await _get_tool(mcp, "add_rectangle")
@@ -1325,7 +1348,7 @@ class TestSketchingExceptionPaths:
 
 @pytest.mark.asyncio
 async def test_add_line_reports_the_id_from_the_legacy_line_wrapper():
-    """The mock's ``add_sketch_line`` returns ``{"id": ...}``; the tool must pass it on.
+    """The line's id reaches the reply, so it can be dimensioned or constrained.
 
     Reading only ``entity_id`` gave every line a ``None`` id, so the line
     could not be dimensioned or constrained afterwards.

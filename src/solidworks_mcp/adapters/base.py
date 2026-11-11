@@ -663,6 +663,7 @@ class SolidWorksAdapter(ABC):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Add an arc to the current sketch.
 
@@ -673,6 +674,8 @@ class SolidWorksAdapter(ABC):
             start_y (float): The start y value.
             end_x (float): The end x value.
             end_y (float): The end y value.
+            direction (str): ``"ccw"`` (default) or ``"cw"``, from start to end
+                as seen looking at the sketch.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -680,6 +683,45 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="add_arc is not implemented by this adapter",
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw whole outlines of lines and arcs in the open sketch, in one call.
+
+        Args:
+            outlines (list[dict[str, Any]]): Each ``{"segments": [...],
+                "construction": bool}``. A segment is ``{"type": "line",
+                "start": [x, y], "end": [x, y]}`` or ``{"type": "arc",
+                "center": [x, y], "start": [x, y], "end": [x, y],
+                "direction": "ccw" | "cw"}``, in mm.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``outlines`` (each with the segment
+            ``ids``), ``segment_count``, ``line_count`` and ``arc_count``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="add_sketch_outlines is not implemented by this adapter",
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Make entities in the open sketch construction (or normal) geometry.
+
+        Args:
+            entity_ids (list[str]): Ids returned by the ``add_*`` calls.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``entity_ids``, ``segment_count``
+            and ``construction``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_sketch_construction is not implemented by this adapter",
         )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:

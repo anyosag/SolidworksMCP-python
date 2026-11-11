@@ -4,10 +4,11 @@ Provides tools for creating and editing sketches, including geometric entities l
 lines, circles, rectangles, arcs, and constraints.
 """
 
-from typing import Any, TypeVar
+import math
+from typing import Annotated, Any, Literal, Self, TypeVar
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..adapters.base import SolidWorksAdapter
 from .input_compat import CompatInput
@@ -32,7 +33,10 @@ class CreateSketchInput(CompatInput):
     """
 
     plane: str = Field(
-        description="Sketch plane name (e.g., 'Top', 'Front', 'Right', 'XY', 'XZ', 'YZ')"
+        description=(
+            "Plane to sketch on: 'Front' (or 'XY'), 'Top' ('XZ'), 'Right' "
+            "('YZ'), or the exact name of a plane in the part, e.g. 'Plane1'"
+        )
     )
     sketch_name: str | None = Field(
         default=None,
@@ -205,6 +209,235 @@ class AddArcInput(BaseModel):
     start_y: float = Field(description="Arc start point Y coordinate in mm")
     end_x: float = Field(description="Arc end point X coordinate in mm")
     end_y: float = Field(description="Arc end point Y coordinate in mm")
+    direction: Literal["ccw", "cw"] = Field(
+        default="ccw",
+        description=(
+            "Which way the arc runs from start to end, looking at the sketch "
+            "(x right, y up): 'ccw' counter-clockwise (the default) or 'cw'"
+        ),
+    )
+
+
+#: An outline's points closer than this (mm) are the same point: the last
+#: segment of a closed outline that ends this close to its start ends on it.
+_SAME_POINT_MM = 1e-3
+
+#: How far an arc's end may be from the circle through its start (mm).
+#: SolidWorks puts the end on that circle, so a larger miss would leave a gap
+#: between the arc and the next segment.
+_ARC_RADIUS_TOLERANCE_MM = 1e-3
+
+Point2 = Annotated[
+    list[float],
+    Field(min_length=2, max_length=2, description="A point [x, y] in sketch mm"),
+]
+
+
+def _distance(a: list[float], b: list[float]) -> float:
+    """Distance between two sketch points, mm."""
+    return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def arc_sweep_deg(
+    center: list[float], start: list[float], end: list[float], direction: str
+) -> float:
+    """The angle an arc turns through from start to end, degrees in [0, 360).
+
+    Args:
+        center: The arc's centre [x, y].
+        start: Its start point.
+        end: Its end point.
+        direction: ``"ccw"`` or ``"cw"``.
+
+    Returns:
+        float: 90 for a quarter arc either way round; a ``"cw"`` arc from
+        (10, 0) to (0, 10) about the origin turns through 270.
+    """
+    start_angle = math.atan2(start[1] - center[1], start[0] - center[0])
+    end_angle = math.atan2(end[1] - center[1], end[0] - center[0])
+    sweep = math.degrees(end_angle - start_angle) % 360.0
+    return (360.0 - sweep) % 360.0 if direction == "cw" else sweep
+
+
+class OutlineSegment(BaseModel):
+    """One segment of an outline, drawn from where the previous one ended.
+
+    Attributes:
+        type (str): ``"line"`` or ``"arc"``.
+        to (list[float]): The segment's end point [x, y], mm.
+        center (list[float] | None): The arc's centre [x, y], mm.
+        direction (str): The arc's direction, ``"ccw"`` or ``"cw"``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["line", "arc"] = Field(
+        default="line", description="'line' (the default) or 'arc'"
+    )
+    to: Point2 = Field(
+        description=(
+            "End point [x, y] in mm. The segment starts where the previous one "
+            "ended (the first at the outline's 'start')"
+        )
+    )
+    center: Point2 | None = Field(
+        default=None,
+        description="Arc centre [x, y] in mm; required for an arc, not given for a line",
+    )
+    direction: Literal["ccw", "cw"] = Field(
+        default="ccw",
+        description="Arc direction from its start to 'to': 'ccw' (default) or 'cw'",
+    )
+
+    @model_validator(mode="after")
+    def _center_matches_type(self) -> Self:
+        if self.type == "arc" and self.center is None:
+            raise ValueError("an arc needs 'center'")
+        if self.type == "line" and self.center is not None:
+            raise ValueError("a line takes no 'center'; set type to 'arc'")
+        return self
+
+
+class Outline(BaseModel):
+    """One outline: a chain of lines and arcs, or a polyline through points.
+
+    Attributes:
+        start (list[float] | None): Where ``segments`` begins, mm.
+        segments (list[OutlineSegment] | None): The chain, each from the last.
+        points (list[list[float]] | None): Corner points joined by lines.
+        closed (bool): Join the end back to the start.
+        construction (bool): Draw it as construction geometry.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: Point2 | None = Field(
+        default=None, description="Start point [x, y] in mm; required with 'segments'"
+    )
+    segments: list[OutlineSegment] | None = Field(
+        default=None,
+        description="Lines and arcs in order, each starting where the last ended",
+    )
+    points: list[Point2] | None = Field(
+        default=None,
+        description=(
+            "Instead of 'start' and 'segments': corner points [x, y] in mm, "
+            "joined by straight lines"
+        ),
+    )
+    closed: bool = Field(
+        default=True,
+        description=(
+            "Join the last point back to the first (the default), as a profile "
+            "for an extrude or cut needs; false leaves an open chain"
+        ),
+    )
+    construction: bool = Field(
+        default=False, description="Draw the outline as construction geometry"
+    )
+
+    @model_validator(mode="after")
+    def _one_form(self) -> Self:
+        if (self.points is None) == (self.segments is None):
+            raise ValueError("give either 'points' or 'start' with 'segments'")
+        if self.segments is not None and self.start is None:
+            raise ValueError("'segments' needs 'start'")
+        if self.points is not None and self.start is not None:
+            raise ValueError("'start' goes with 'segments', not 'points'")
+        self.resolve()  # refuses a degenerate outline before anything is drawn
+        return self
+
+    def resolve(self) -> list[dict[str, Any]]:
+        """The outline as the segments the adapter draws.
+
+        Each segment starts at exactly the previous one's end, and a closed
+        outline ends at exactly its start, so SolidWorks sees one connected
+        loop. A closed outline whose last point is (within 0.001 mm) its
+        first ends there; otherwise a closing line is added.
+
+        Returns:
+            list[dict[str, Any]]: ``{"type", "start", "end"}`` per segment,
+            plus ``center`` and ``direction`` for an arc.
+
+        Raises:
+            ValueError: For a zero-length segment, an arc whose end isn't on
+                its circle, or too few points.
+        """
+        if self.points is not None:
+            points = [list(map(float, p)) for p in self.points]
+            if (
+                self.closed
+                and len(points) > 1
+                and _distance(points[0], points[-1]) < _SAME_POINT_MM
+            ):
+                points.pop()
+            needed = 3 if self.closed else 2
+            if len(points) < needed:
+                raise ValueError(
+                    f"a {'closed' if self.closed else 'open'} outline needs at "
+                    f"least {needed} distinct points"
+                )
+            steps: list[OutlineSegment] = [OutlineSegment(to=p) for p in points[1:]]
+            start = points[0]
+        else:
+            steps = list(self.segments or [])
+            start = [float(v) for v in (self.start or [])]
+            if not steps:
+                raise ValueError("'segments' is empty")
+
+        resolved: list[dict[str, Any]] = []
+        here = start
+        for index, step in enumerate(steps):
+            end = [float(v) for v in step.to]
+            last = index == len(steps) - 1
+            if self.closed and last and _distance(end, start) < _SAME_POINT_MM:
+                end = start
+            if _distance(here, end) < _SAME_POINT_MM:
+                raise ValueError(
+                    f"segment {index} ends where it starts, at {end}"
+                    + (
+                        "; draw a full circle with add_circle"
+                        if step.type == "arc"
+                        else ""
+                    )
+                )
+            segment: dict[str, Any] = {"type": step.type, "start": here, "end": end}
+            if step.type == "arc":
+                center = [float(v) for v in step.center or []]
+                radius = _distance(center, here)
+                if radius < _SAME_POINT_MM:
+                    raise ValueError(f"segment {index}: the arc's centre is its start")
+                miss = abs(_distance(center, end) - radius)
+                if miss > _ARC_RADIUS_TOLERANCE_MM:
+                    raise ValueError(
+                        f"segment {index}: the arc's end is {miss:.4g} mm off the "
+                        f"circle of radius {radius:.6g} mm through its start; "
+                        "put 'to' on that circle"
+                    )
+                segment["center"] = center
+                segment["direction"] = step.direction
+            resolved.append(segment)
+            here = end
+        if self.closed and _distance(here, start) >= _SAME_POINT_MM:
+            resolved.append({"type": "line", "start": here, "end": start})
+        return resolved
+
+
+class AddOutlinesInput(CompatInput):
+    """Input schema for drawing whole outlines in one call.
+
+    Attributes:
+        outlines (list[Outline]): The outlines to draw.
+    """
+
+    outlines: list[Outline] = Field(
+        min_length=1,
+        description=(
+            "One or more outlines, each a closed loop by default. Give each "
+            "either 'points' (a polygon) or 'start' plus 'segments' (lines and "
+            "arcs)"
+        ),
+    )
 
 
 class AddSplineInput(BaseModel):
@@ -349,18 +582,40 @@ async def register_sketching_tools(
     # SolidWorks' name -> the name asked for.
     names_on_exit: dict[str, str] = {}
 
+    async def _make_construction(entity_id: Any, construction: bool, what: str) -> None:
+        """Turn a just-drawn entity into construction geometry when asked.
+
+        The ``Create*`` calls have no construction flag, so it is set on the
+        entity afterwards.
+
+        Raises:
+            ToolOperationError: The entity was drawn as normal geometry and
+                could not be changed.
+        """
+        if not construction:
+            return
+        result = await adapter.set_sketch_construction([str(entity_id)], True)
+        require_success(
+            result,
+            context=(
+                f"The {what} {entity_id} was drawn as normal geometry, not construction"
+            ),
+        )
+
     @mcp.tool()
     async def create_sketch(input_data: CreateSketchInput) -> dict[str, Any]:
         """Open a new sketch on a plane of the active part, ready for lines, circles and other sketch entities.
 
         Use it first in every feature: sketch, draw, `exit_sketch`, then
-        `create_extrusion` or `create_cut_extrude`. Planes: Front, Top, Right (or XY,
-        XZ, YZ), or a plane made by `create_reference_plane`. Coordinates in the sketch
-        are mm from the origin. Needs: an open part. Changes: adds a sketch and opens it
-        for editing; give `sketch_name` and `exit_sketch` names it that when it closes
-        it (SolidWorks won't rename an open sketch). Returns: `sketch` with `name` (the
-        name in the feature tree now) and `plane`, plus `name_on_exit` when you gave
-        `sketch_name`.
+        `create_extrusion` or `create_cut_extrude`. Planes: Front (XY), Top (XZ), Right
+        (YZ), or a plane made by `create_reference_plane`; a plane not in the part is an
+        error. Coordinates in the sketch are mm from its origin. Needs: an open part.
+        Changes: adds a sketch and opens it for editing; give `sketch_name` and
+        `exit_sketch` names it that when it closes it (SolidWorks won't rename an open
+        sketch). Returns: `sketch` with `name` (the name in the feature tree now),
+        `plane` (the plane used) and `axes`: where sketch x and y point in the model
+        (`x`, `y`, `normal`, `origin_mm`, `summary`; on Top, sketch y is model -Z), plus
+        `name_on_exit` when you gave `sketch_name`.
 
         Args:
             input_data: The sketch. `plane` is required; `sketch_name` names it.
@@ -377,15 +632,22 @@ async def register_sketching_tools(
             if isinstance(result.data, dict)
             else result.data
         )
+        metadata = getattr(result, "metadata", None)
+        found = metadata if isinstance(metadata, dict) else {}
+        plane_used = found.get("plane") or input_data.plane
         reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Created sketch '{sketch_name}' on {input_data.plane} plane",
+            "message": f"Created sketch '{sketch_name}' on {plane_used}",
             "sketch": {
                 "name": sketch_name,
-                "plane": input_data.plane,
+                "plane": plane_used,
             },
             "execution_time": result.execution_time,
         }
+        axes = found.get("axes")
+        if isinstance(axes, dict):
+            reply["sketch"]["axes"] = axes
+            reply["message"] += f" ({axes['summary']})"
         names_on_exit.clear()  # a sketch left open is abandoned with its name
         wanted = (input_data.sketch_name or "").strip()
         if wanted and wanted != sketch_name:
@@ -412,21 +674,12 @@ async def register_sketching_tools(
             dict[str, Any]: The line added.
         """
         input_data = normalize_input(input_data, AddLineInput)
-        if hasattr(adapter, "add_sketch_line"):
-            result = await adapter.add_sketch_line(
-                input_data.x1,
-                input_data.y1,
-                input_data.x2,
-                input_data.y2,
-                input_data.construction,
-            )
-        else:
-            result = await adapter.add_line(
-                input_data.x1,  # type: ignore[arg-type]
-                input_data.y1,  # type: ignore[arg-type]
-                input_data.x2,  # type: ignore[arg-type]
-                input_data.y2,  # type: ignore[arg-type]
-            )
+        result = await adapter.add_line(
+            input_data.x1,  # type: ignore[arg-type]
+            input_data.y1,  # type: ignore[arg-type]
+            input_data.x2,  # type: ignore[arg-type]
+            input_data.y2,  # type: ignore[arg-type]
+        )
 
         require_success(result, context="Failed to add line")
         line_id = (
@@ -434,6 +687,7 @@ async def register_sketching_tools(
             if isinstance(result.data, dict)
             else result.data
         )
+        await _make_construction(line_id, input_data.construction, "line")
         x1, y1 = input_data.x1 or 0.0, input_data.y1 or 0.0
         x2, y2 = input_data.x2 or 0.0, input_data.y2 or 0.0
         return {
@@ -466,17 +720,9 @@ async def register_sketching_tools(
             dict[str, Any]: The circle added.
         """
         input_data = normalize_input(input_data, AddCircleInput)
-        if hasattr(adapter, "add_sketch_circle"):
-            result = await adapter.add_sketch_circle(
-                input_data.center_x,
-                input_data.center_y,
-                input_data.radius,
-                input_data.construction,
-            )
-        else:
-            result = await adapter.add_circle(
-                input_data.center_x, input_data.center_y, input_data.radius
-            )
+        result = await adapter.add_circle(
+            input_data.center_x, input_data.center_y, input_data.radius
+        )
 
         require_success(result, context="Failed to add circle")
         circle_id = (
@@ -484,6 +730,7 @@ async def register_sketching_tools(
             if isinstance(result.data, dict)
             else result.data
         )
+        await _make_construction(circle_id, input_data.construction, "circle")
         return {
             "status": "success",
             "message": f"Added circle at ({input_data.center_x}, {input_data.center_y}) with radius {input_data.radius}mm",
@@ -514,21 +761,12 @@ async def register_sketching_tools(
             dict[str, Any]: The rectangle added.
         """
         input_data = normalize_input(input_data, AddRectangleInput)
-        if hasattr(adapter, "add_sketch_rectangle"):
-            result = await adapter.add_sketch_rectangle(
-                input_data.x1,
-                input_data.y1,
-                input_data.x2,
-                input_data.y2,
-                input_data.construction,
-            )
-        else:
-            result = await adapter.add_rectangle(
-                input_data.x1,  # type: ignore[arg-type]
-                input_data.y1,  # type: ignore[arg-type]
-                input_data.x2,  # type: ignore[arg-type]
-                input_data.y2,  # type: ignore[arg-type]
-            )
+        result = await adapter.add_rectangle(
+            input_data.x1,  # type: ignore[arg-type]
+            input_data.y1,  # type: ignore[arg-type]
+            input_data.x2,  # type: ignore[arg-type]
+            input_data.y2,  # type: ignore[arg-type]
+        )
 
         require_success(result, context="Failed to add rectangle")
         rect_id = (
@@ -536,6 +774,7 @@ async def register_sketching_tools(
             if isinstance(result.data, dict)
             else result.data
         )
+        await _make_construction(rect_id, input_data.construction, "rectangle")
         rx1, ry1 = input_data.x1 or 0.0, input_data.y1 or 0.0
         rx2, ry2 = input_data.x2 or 0.0, input_data.y2 or 0.0
         width = abs(rx2 - rx1)
@@ -629,14 +868,16 @@ async def register_sketching_tools(
     async def add_arc(input_data: AddArcInput) -> dict[str, Any]:
         """Draw a circular arc in the open sketch from its centre, start point and end point, in mm.
 
-        Use it for rounded ends and curved edges of a profile. Needs: an open sketch
-        (`create_sketch`). Changes: adds an arc. Returns: `arc` with `id`, `center`,
-        `start_point` and `end_point`. Its `id` is what `add_sketch_constraint` and
-        `add_sketch_dimension` take.
+        Use it for rounded ends and curved edges of a profile; for a whole outline in
+        one call, use `add_outlines`. The arc runs counter-clockwise from start to end
+        unless `direction` is "cw". Needs: an open sketch (`create_sketch`). Changes:
+        adds an arc. Returns: `arc` with `id`, `center`, `start_point`, `end_point`,
+        `direction`, `radius` and `sweep_deg`. Its `id` is what `add_sketch_constraint`
+        and `add_sketch_dimension` take.
 
         Args:
             input_data: The arc. `center_x`, `center_y`, `start_x`, `start_y`,
-                `end_x` and `end_y` (mm) are all required.
+                `end_x` and `end_y` (mm) are all required; `direction` is "ccw".
 
         Returns:
             dict[str, Any]: The arc added.
@@ -649,13 +890,20 @@ async def register_sketching_tools(
             input_data.start_y,
             input_data.end_x,
             input_data.end_y,
+            input_data.direction,
         )
 
         require_success(result, context="Failed to add arc")
         arc_id = result.data
+        center = [input_data.center_x, input_data.center_y]
+        start = [input_data.start_x, input_data.start_y]
+        end = [input_data.end_x, input_data.end_y]
         return {
             "status": "success",
-            "message": f"Added arc centered at ({input_data.center_x}, {input_data.center_y})",
+            "message": (
+                f"Added {input_data.direction} arc centered at "
+                f"({input_data.center_x}, {input_data.center_y})"
+            ),
             "arc": {
                 "id": arc_id,
                 "center": {"x": input_data.center_x, "y": input_data.center_y},
@@ -664,7 +912,68 @@ async def register_sketching_tools(
                     "y": input_data.start_y,
                 },
                 "end_point": {"x": input_data.end_x, "y": input_data.end_y},
+                "direction": input_data.direction,
+                "radius": round(_distance(center, start), 6),
+                "sweep_deg": round(
+                    arc_sweep_deg(center, start, end, input_data.direction), 6
+                ),
             },
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def add_outlines(input_data: AddOutlinesInput) -> dict[str, Any]:
+        """Draw whole outlines of lines and arcs in the open sketch in one call, in mm.
+
+        Use it instead of many `add_line` and `add_arc` calls: a honeycomb of 25
+        hexagons is one call with 25 `points` lists. Each outline is either `points`
+        (a polygon) or `start` plus `segments`, each a line or an arc (`center`,
+        `direction`) to `to`. Outlines close by default (`closed`), each segment
+        starting exactly where the last ended, so the loop is connected. Needs: an
+        open sketch (`create_sketch`). Changes: adds the segments; if SolidWorks
+        refuses one, the call removes what it drew and says which failed. Returns:
+        `outlines` with each one's segment `ids`, plus `segment_count`, `line_count`
+        and `arc_count`.
+
+        Args:
+            input_data: The outlines. `outlines` is required: each needs `points`,
+                or `start` and `segments`; `closed` is on, `construction` off.
+
+        Returns:
+            dict[str, Any]: The segments drawn.
+        """
+        input_data = normalize_input(input_data, AddOutlinesInput)
+        outlines = [
+            {"segments": outline.resolve(), "construction": outline.construction}
+            for outline in input_data.outlines
+        ]
+        result = await adapter.add_sketch_outlines(outlines)
+        require_success(result, context="Failed to draw outlines")
+        data = result.data or {}
+        drawn = data.get("outlines") or []
+        replies = [
+            {
+                "index": index,
+                "ids": reply.get("ids", []),
+                "segment_count": len(reply.get("ids", [])),
+                "closed": source.closed,
+                "construction": source.construction,
+            }
+            for index, (reply, source) in enumerate(
+                zip(drawn, input_data.outlines, strict=False)
+            )
+        ]
+        count = data.get("segment_count", 0)
+        return {
+            "status": "success",
+            "message": (
+                f"Drew {len(replies)} outline(s): {count} segments "
+                f"({data.get('line_count', 0)} lines, {data.get('arc_count', 0)} arcs)"
+            ),
+            "outlines": replies,
+            "segment_count": count,
+            "line_count": data.get("line_count", 0),
+            "arc_count": data.get("arc_count", 0),
             "execution_time": result.execution_time,
         }
 

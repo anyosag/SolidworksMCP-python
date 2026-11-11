@@ -32,7 +32,13 @@ from .base import (
 from .solidworks.drawing_standard import gtol_problem
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
-from .solidworks.sketch import RELATION_NAME_MAP
+from .solidworks.sketch import (
+    ARC_DIRECTION_FLAGS,
+    MAX_OUTLINE_SEGMENTS,
+    RELATION_NAME_MAP,
+    default_plane_axes,
+    plane_candidates_for,
+)
 
 #: Orientations the mock accepts for a drawing view. Kept in step with
 #: ``_NAMED_VIEWS`` in ``adapters/solidworks/io.py`` by a test — the two lists
@@ -1433,6 +1439,20 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             # Legacy tests start sketching immediately after connect.
             await self.create_part()
 
+        # Like the live adapter: a default plane by any of its names, or a
+        # plane create_reference_plane made - never a fallback to another.
+        default_key, candidates = plane_candidates_for(plane)
+        plane_used = candidates[0]
+        if default_key is None and plane_used not in self._reference_planes:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Plane '{plane}' not found in the part. Use Front, Top "
+                    "or Right, or a plane made by create_reference_plane "
+                    "(list_features names them)"
+                ),
+            )
+
         await asyncio.sleep(self._delays["sketch_operation"])
         self._operation_count += 1
 
@@ -1449,6 +1469,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "plane": plane,
             },
             execution_time=self._delays["sketch_operation"],
+            metadata={
+                "plane": plane_used,
+                # The mock knows the default planes' axes; a reference
+                # plane's would need its geometry, which it doesn't keep.
+                "axes": default_plane_axes(default_key) if default_key else None,
+            },
         )
 
     async def add_sketch_line(
@@ -1659,6 +1685,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Mock adding a circular arc to sketch.
 
@@ -1669,6 +1696,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             start_y (float): Arc start point Y.
             end_x (float): Arc end point X.
             end_y (float): Arc end point Y.
+            direction (str): ``"ccw"`` (default) or ``"cw"``.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -1676,6 +1704,11 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if not self._current_sketch:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        if direction not in ARC_DIRECTION_FLAGS:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=f"direction must be 'ccw' or 'cw', not {direction!r}",
             )
 
         await asyncio.sleep(self._delays["sketch_operation"] / 2)
@@ -1688,6 +1721,112 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             status=AdapterResultStatus.SUCCESS,
             data=arc_id,
             execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    def _new_sketch_entity_id(self, prefix: str) -> str:
+        """A ``<prefix>_<n>`` id no entity in the mock sketch has yet."""
+        number = len(self._sketch_entity_ids) + 1
+        while f"{prefix}_{number}" in self._sketch_entity_ids:
+            number += 1
+        entity_id = f"{prefix}_{number}"
+        self._sketch_entity_ids.add(entity_id)
+        return entity_id
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock drawing whole outlines of lines and arcs in one call.
+
+        Refuses what the live adapter refuses (no open sketch, no segments,
+        more than ``MAX_OUTLINE_SEGMENTS``) with the same messages, and gives
+        each segment an id the way the live adapter does (``Line_N``,
+        ``Arc_N``).
+
+        Args:
+            outlines (list[dict[str, Any]]): The resolved outlines.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``outlines`` with segment ``ids``,
+            ``segment_count``, ``line_count`` and ``arc_count``.
+        """
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        total = sum(len(outline.get("segments") or []) for outline in outlines)
+        if total == 0:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="outlines contain no segments"
+            )
+        if total > MAX_OUTLINE_SEGMENTS:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"{total} segments in one call; the most is "
+                    f"{MAX_OUTLINE_SEGMENTS}. Split the outlines over several calls"
+                ),
+            )
+
+        await asyncio.sleep(self._delays["sketch_operation"] / 2)
+        self._operation_count += 1
+
+        replies = []
+        counts = {"line": 0, "arc": 0}
+        for outline in outlines:
+            ids = []
+            for segment in outline["segments"]:
+                prefix = "Arc" if segment["type"] == "arc" else "Line"
+                ids.append(self._new_sketch_entity_id(prefix))
+                counts[segment["type"]] += 1
+            replies.append(
+                {"ids": ids, "construction": bool(outline.get("construction", False))}
+            )
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "outlines": replies,
+                "segment_count": total,
+                "line_count": counts["line"],
+                "arc_count": counts["arc"],
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock making sketch entities construction (or normal) geometry.
+
+        Args:
+            entity_ids (list[str]): Ids the ``add_*`` calls returned.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``entity_ids``, ``segment_count``
+            (four for a rectangle) and ``construction``.
+        """
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        missing = [i for i in entity_ids if i not in self._sketch_entity_ids]
+        if missing:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Sketch entity {', '.join(missing)} not found in the open sketch"
+                ),
+            )
+        self._operation_count += 1
+        segment_count = sum(4 if i.startswith("Rectangle") else 1 for i in entity_ids)
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "entity_ids": list(entity_ids),
+                "segment_count": segment_count,
+                "construction": construction,
+            },
+            execution_time=0.0,
         )
 
     async def add_rectangle(

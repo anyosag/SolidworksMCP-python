@@ -919,6 +919,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         start_y: float,
         end_x: float,
         end_y: float,
+        direction: str = "ccw",
     ) -> AdapterResult[str]:
         """Add arc using pool.
 
@@ -929,6 +930,7 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             start_y (float): Arc start Y coordinate.
             end_x (float): Arc end X coordinate.
             end_y (float): Arc end Y coordinate.
+            direction (str): ``"ccw"`` (default) or ``"cw"``.
 
         Returns:
             AdapterResult[str]: The result produced by the operation.
@@ -942,7 +944,41 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
                 start_y,
                 end_x,
                 end_y,
+                direction,
             ),
+        )
+
+    async def add_sketch_outlines(
+        self, outlines: list[dict[str, Any]]
+    ) -> AdapterResult[dict[str, Any]]:
+        """Draw outlines in the open sketch using pool.
+
+        Args:
+            outlines (list[dict[str, Any]]): The resolved outlines.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "add_sketch_outlines",
+            lambda adapter: adapter.add_sketch_outlines(outlines),
+        )
+
+    async def set_sketch_construction(
+        self, entity_ids: list[str], construction: bool = True
+    ) -> AdapterResult[dict[str, Any]]:
+        """Set sketch entities' construction state using pool.
+
+        Args:
+            entity_ids (list[str]): The sketch entity ids.
+            construction (bool): True for construction geometry.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The result produced by the operation.
+        """
+        return await self._execute_with_pool(
+            "set_sketch_construction",
+            lambda adapter: adapter.set_sketch_construction(entity_ids, construction),
         )
 
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:

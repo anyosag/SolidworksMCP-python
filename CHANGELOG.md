@@ -12,6 +12,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`add_outlines`** draws whole outlines in the open sketch in one call:
+  polygons from `points`, or chains of lines and arcs from `start` and
+  `segments`, closed by default, any number per call (up to 2,000
+  segments). A honeycomb deck of 25 hexagons was about 150 `add_line`
+  calls; it is now one, with one settle pause instead of 150. Each segment
+  starts exactly where the last ended, so the loop is connected, and a call
+  SolidWorks refuses partway removes what it drew. Experimental until its
+  live test runs.
+- **`add_arc` takes `direction`** (`"ccw"`, the default, or `"cw"`), and its
+  reply gives the `radius` and `sweep_deg`.
+- **`create_sketch` reports the sketch's axes**: `sketch.axes` has sketch x,
+  sketch y and the normal as model vectors, the origin in mm, and a summary
+  ("sketch x = model +X, sketch y = model -Z" on Top). It is read from the
+  sketch, so it holds for reference planes too.
+
+### Fixed
+
+- **`create_sketch` on a plane the part doesn't have** sketched on the Top
+  Plane and reported success. It is now a `not_found` error, and the reply's
+  `plane` is the plane actually used.
+- **`create_sketch` with `"XY"` or `"XZ"`** opened the wrong plane: XY gave
+  the Top Plane and XZ the Front. In SolidWorks, and now here, XY is the
+  Front Plane and XZ the Top Plane (YZ was already the Right Plane).
+- **`construction: true` on `add_line`, `add_circle` and `add_rectangle`**
+  was ignored on SolidWorks: the reply said construction, but the geometry
+  was normal and split the profile. The tools now set
+  `ISketchSegment.ConstructionGeometry` on what they drew, and fail if
+  SolidWorks won't take it.
+
 ## [2.0.0] - 2026-11-09
 
 ### Added
