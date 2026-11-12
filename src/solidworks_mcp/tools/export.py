@@ -562,13 +562,15 @@ async def register_export_tools(
         turns the model to it and zooms so the whole model fits. `current` keeps the
         view exactly as it is, zoom included: set up a close-up first (or with an
         earlier call) and it comes out as that close-up. `zoom_to_fit` overrides the
-        zoom either way, and `zoom_box_mm` zooms to a box of the model instead. `hide`
+        zoom either way, and `zoom_box_mm` zooms to a box of the model instead (model
+        coordinates in any view). `hide`
         hides planes, sketches and the like for this picture only. The picture keeps
         the graphics area's shape, padded out to `width` x `height`. Needs: an open,
         active document. Changes: writes the image file; a standard view or a zoom
         also turns or zooms the model on screen. Returns: `data` with `file_path`,
         `format`, `dimensions` (the size written), `requested_dimensions`, `view`,
-        `zoomed_to_fit`, `zoom_box_mm`, `hidden` and `window_state`.
+        `zoomed_to_fit`, `zoom_box_mm`, `zoom_box_view_mm` (that box in the view's
+        coordinates, as zoomed to), `hidden` and `window_state`.
 
         Args:
             input_data: The image. `file_path` (or `output_path`) is needed; the

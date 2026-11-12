@@ -35,6 +35,7 @@ from .solidworks import (
     saving,
     stl_settings,
     visibility,
+    zoom_box,
 )
 from .solidworks.dialogs import DialogInfo, DialogWatchdog
 from .solidworks.features import _null_callout, _select_feature_by_name
@@ -3156,17 +3157,36 @@ class PyWin32Adapter(
                 exc,
             )
 
-    def _zoom_to_box(self, target_doc: Any, box_mm: list[float]) -> None:
+    def _zoom_to_box(self, target_doc: Any, box_mm: list[float]) -> list[float] | None:
         """Zoom the view to a box of the model, two corners in mm (``ViewZoomTo2``).
+
+        ``ViewZoomTo2`` takes view coordinates, so the box is turned into the
+        view's first (``zoom_box.in_view``); when the view's orientation
+        can't be read it is passed as given, which is right in the front view.
+
+        Returns:
+            list[float] | None: The box zoomed to in view coordinates, mm, or
+            None when it was passed in model coordinates.
 
         Raises:
             Exception: When SolidWorks refuses the zoom; the picture is not
                 taken rather than taken at the wrong zoom.
         """
-        x1, y1, z1, x2, y2, z2 = (float(v) / 1000.0 for v in box_mm)
         self._redraw(target_doc)
+        viewed = zoom_box.in_view(self, target_doc, box_mm)
+        if viewed is None:
+            logger.warning(
+                "[export_image] The view's orientation can't be read; zoom box "
+                "passed in model coordinates"
+            )
+        x1, y1, z1, x2, y2, z2 = (
+            viewed if viewed is not None else tuple(float(v) / 1000.0 for v in box_mm)
+        )
         target_doc.ViewZoomTo2(x1, y1, z1, x2, y2, z2)
         self._redraw(target_doc)
+        if viewed is None:
+            return None
+        return [round(v * 1000.0, 6) + 0.0 for v in viewed]
 
     def _zoom_to_fit(self, target_doc: Any) -> bool:
         """Redraw, zoom the model to fit its viewport, and redraw again.
@@ -3439,8 +3459,9 @@ class PyWin32Adapter(
 
                 # Zoom to fit so the model fills the viewport before capture;
                 # "current" keeps the view as it is (a close-up stays one).
+                view_box = None
                 if zoom_box is not None:
-                    self._zoom_to_box(target_doc, zoom_box)
+                    view_box = self._zoom_to_box(target_doc, zoom_box)
                     zoomed = False
                 elif zoom_to_fit:
                     zoomed = self._zoom_to_fit(target_doc)
@@ -3476,6 +3497,7 @@ class PyWin32Adapter(
                     "view": orientation,
                     "zoomed_to_fit": zoomed,
                     "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
+                    "zoom_box_view_mm": view_box,
                     "hidden": sorted(hidden),
                     "window_state": self._window_state(),
                 }

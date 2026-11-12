@@ -116,8 +116,41 @@ async def test_a_zoom_box_zooms_there_in_metres(
         0.0, 0.0, 0.0, 0.02, 0.01, 0.005
     )
     assert result.data["zoom_box_mm"] == box
+    assert result.data["zoom_box_view_mm"] is None  # no view orientation to read
     assert result.data["zoomed_to_fit"] is False
     assert result.data["hidden"] == []
+
+
+async def test_a_zoom_box_in_the_right_view_is_turned_into_view_coordinates(
+    adapter: PyWin32Adapter, tmp_path: Path
+) -> None:
+    """ViewZoomTo2 takes view coordinates: the Cellvis right-view close-up."""
+    right_view = SimpleNamespace(Orientation3="right")
+    adapter.currentModel.ActiveView = right_view
+    adapter.currentModel.ShowNamedView2 = Mock()
+
+    class _Point:
+        def __init__(self, data: Any) -> None:
+            self.ArrayData = tuple(getattr(data, "value", data))
+
+        def MultiplyTransform(self, _orientation: Any) -> Any:  # noqa: N802
+            x, y, z = self.ArrayData
+            return _Point([-z, y, x])
+
+    adapter.swApp.GetMathUtility = lambda: SimpleNamespace(CreatePoint=_Point)
+
+    result = await adapter.export_image(
+        {
+            "file_path": str(tmp_path / "latch.tif"),
+            "view_orientation": "right",
+            "zoom_box_mm": [29, -2, -11, 31, 22, 11],
+        }
+    )
+
+    assert result.is_success, result.error
+    args = adapter.currentModel.ViewZoomTo2.call_args.args
+    assert args == pytest.approx((-0.011, -0.002, 0.029, 0.011, 0.022, 0.031))
+    assert result.data["zoom_box_view_mm"] == [-11.0, -2.0, 29.0, 11.0, 22.0, 31.0]
 
 
 async def test_an_unknown_type_to_hide_takes_no_picture(
