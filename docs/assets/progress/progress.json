@@ -489,7 +489,7 @@
     "family": "sketching",
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
-    "summary": "Delete lines, arcs and other entities of the open sketch by id."
+    "summary": "Delete lines, arcs and other entities of the open sketch by id, or all of them."
    },
    {
     "name": "discover_solidworks_docs",
@@ -797,7 +797,7 @@
     "family": "file_management",
     "level": "stable",
     "reason": "",
-    "summary": "List the feature tree of the active part or assembly, in order."
+    "summary": "List the feature tree of the active part or assembly, in tree order (oldest first)."
    },
    {
     "name": "list_model_dimensions",
