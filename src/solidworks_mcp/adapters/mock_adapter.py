@@ -984,12 +984,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         """
         from .solidworks.edge_rules import (
             MAX_DESCRIBED_EDGES,
-            describe_source,
-            filter_edges,
-            no_match_message,
+            describe_sources,
+            expand_query,
+            match_rules,
+            no_match_message_rules,
             validate_edge_query,
         )
-        from .solidworks.face_selection import side_vector
 
         problem = validate_edge_query(query)
         if problem:
@@ -1005,29 +1005,62 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             )
         await asyncio.sleep(self._delays["feature_operation"] / 4)
 
+        rules = expand_query(query)
+        try:
+            kept, counts = match_rules(rules, self._mock_rule_edges)
+        except LookupError as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
+        if not kept:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=no_match_message_rules(rules, counts),
+            )
+        if not append:
+            self._selection.clear()
+        self._selection.extend(f"Edge{i}" for i in range(len(kept)))
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "source": describe_sources(rules),
+                "matched": counts[0] if len(rules) == 1 else {"rules": counts},
+                "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
+                "selected_edges": len(kept),
+                "selection_count": len(self._selection),
+            },
+            execution_time=self._delays["feature_operation"] / 4,
+        )
+
+    def _mock_rule_edges(
+        self, rule: dict[str, Any]
+    ) -> list[tuple[Any, dict[str, Any]]]:
+        """The canned block's edges for one rule's source.
+
+        Any feature in the mock tree made the whole block; a face source
+        keeps the edges lying on that face.
+
+        Raises:
+            LookupError: The feature, face or plane isn't there.
+        """
+        from .solidworks.face_selection import side_vector
+
         normal: tuple[float, float, float] | None = None
-        if query.get("feature"):
-            name = str(query["feature"])
+        if rule.get("feature"):
+            name = str(rule["feature"])
             if not any(f.name == name for f in self._features.values()):
-                return AdapterResult(
-                    status=AdapterResultStatus.ERROR,
-                    error=f"Feature {name!r} not found; list_features names the features.",
+                raise LookupError(
+                    f"Feature {name!r} not found; list_features names the features."
                 )
-        elif query.get("face_point") is not None:
-            normal = self._mock_face_at(query["face_point"])
+        elif rule.get("face_point") is not None:
+            normal = self._mock_face_at(rule["face_point"])
             if normal is None:
-                return AdapterResult(
-                    status=AdapterResultStatus.ERROR,
-                    error=f"No face found at point {list(query['face_point'])} mm.",
+                raise LookupError(
+                    f"No face found at point {list(rule['face_point'])} mm."
                 )
-        elif query.get("side"):
-            normal = side_vector(str(query["side"]))
-        elif query.get("plane"):
-            if query["plane"] != "Front Plane":
-                return AdapterResult(
-                    status=AdapterResultStatus.ERROR,
-                    error=f"No body face lies on {query['plane']!r}.",
-                )
+        elif rule.get("side"):
+            normal = side_vector(str(rule["side"]))
+        elif rule.get("plane"):
+            if rule["plane"] != "Front Plane":
+                raise LookupError(f"No body face lies on {rule['plane']!r}.")
             normal = (0.0, 0.0, -1.0)
 
         edges = self._mock_block_edges()
@@ -1043,25 +1076,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                     if p is not None
                 )
             ]
-        kept, counts = filter_edges([(None, e) for e in edges], query)
-        if not kept:
-            return AdapterResult(
-                status=AdapterResultStatus.ERROR, error=no_match_message(query, counts)
-            )
-        if not append:
-            self._selection.clear()
-        self._selection.extend(f"Edge{i}" for i in range(len(kept)))
-        return AdapterResult(
-            status=AdapterResultStatus.SUCCESS,
-            data={
-                "source": describe_source(query),
-                "matched": counts,
-                "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
-                "selected_edges": len(kept),
-                "selection_count": len(self._selection),
-            },
-            execution_time=self._delays["feature_operation"] / 4,
-        )
+        return [(None, e) for e in edges]
 
     def _mock_feature_kind(self, name: str) -> str | None:
         """``IFeature.GetTypeName2`` of a mock tree name, or None when absent."""

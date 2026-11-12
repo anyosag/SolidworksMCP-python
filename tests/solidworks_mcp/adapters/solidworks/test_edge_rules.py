@@ -441,6 +441,144 @@ async def test_select_edges_refusals(
     assert fragment in (result.error or "")
 
 
+# ---- any_of: several rules in one call -------------------------------------------
+
+
+def test_any_of_rules_are_laid_over_the_shared_keys() -> None:
+    query = {
+        "feature": "Boss-Extrude1",
+        "edge_type": "all",
+        "any_of": [{"parallel_to": "x"}, {"edge_type": " Circular ", "side": None}],
+    }
+
+    assert er.expand_query(query) == [
+        {"feature": "Boss-Extrude1", "edge_type": "all", "parallel_to": "x"},
+        {"feature": "Boss-Extrude1", "edge_type": "circular", "side": None},
+    ]
+    assert er.expand_query({"side": "top", "any_of": None}) == [{"side": "top"}]
+    assert er.validate_edge_query(query) is None
+
+
+@pytest.mark.parametrize(
+    ("any_of", "fragment"),
+    [
+        ([], "any_of must be a list of 1 to 20 rules"),
+        ([{}] * 21, "any_of must be a list of 1 to 20 rules"),
+        ("top", "any_of must be a list"),
+        ([{}, "top"], "any_of[1] must be a rule"),
+        (
+            [{"box": [0, 0, 0]}],
+            "any_of[0] has unknown key(s) box; a rule takes feature",
+        ),
+        ([{}, {"side": "top"}], "any_of[1]: Give at most one of feature"),
+        ([{"edge_type": "curvy"}], "any_of[0]: edge_type must be one of"),
+    ],
+)
+def test_bad_any_of_rules_are_explained(any_of: Any, fragment: str) -> None:
+    query = {"feature": "Boss-Extrude1", "any_of": any_of}
+
+    assert fragment in (er.validate_edge_query(query) or "")
+
+
+def test_rules_on_one_source_read_its_edges_once_and_keep_each_edge_once() -> None:
+    """Cellvis: six select_edges calls on one part took about 70 s."""
+    reads: list[dict[str, Any]] = []
+    x_line = (None, _line_info([0, 0, 10], [60, 0, 10]))
+    y_line = (None, _line_info([0, 0, 0], [0, 40, 0]))
+    rim = (None, _rim_info(0))
+
+    def candidates(rule: dict[str, Any]) -> list[tuple[Any, dict[str, Any]]]:
+        reads.append(rule)
+        return [x_line, y_line, rim] if rule.get("feature") else [rim]
+
+    rules = er.expand_query(
+        {
+            "feature": "Boss-Extrude1",
+            "any_of": [
+                {"parallel_to": "x"},
+                {"edge_type": "linear"},  # the x line again, and the y line
+                {"side": "top", "feature": None},
+            ],
+        }
+    )
+    kept, counts = er.match_rules(rules, candidates)
+
+    assert [info for _edge, info in kept] == [x_line[1], y_line[1], rim[1]]
+    assert len(reads) == 2  # the feature once, the face once
+    assert counts == [
+        {"candidates": 3, "parallel_to": 1},
+        {"candidates": 3, "edge_type": 2},
+        {"candidates": 1},
+    ]
+
+
+def test_edges_without_a_key_are_kept_once_per_reading() -> None:
+    spline = (None, {"curve": "other"})
+
+    kept, _counts = er.match_rules([{}, {"edge_type": "all"}], lambda _r: [spline])
+
+    assert kept == [spline]
+
+
+def test_no_rule_matching_names_each_rules_counts() -> None:
+    rules = [{"feature": "Cut-Extrude1"}, {"side": "top"}]
+    counts = [{"candidates": 2, "length": 0}, {"candidates": 5, "inside_box": 0}]
+
+    assert er.no_match_message_rules(rules, counts) == (
+        "No matching edges found for any rule: rule 0: feature 'Cut-Extrude1' has "
+        "2 edge(s); 0 pass length | rule 1: the top face has 5 edge(s); 0 pass "
+        "inside_box."
+    )
+    assert er.no_match_message_rules(rules[:1], counts[:1]) == er.no_match_message(
+        rules[0], counts[0]
+    )
+    assert er.describe_sources([*rules, {"feature": "Cut-Extrude1"}]) == (
+        "feature 'Cut-Extrude1' and the top face"
+    )
+
+
+async def test_any_of_selects_edges_in_two_places_in_one_call() -> None:
+    harness = _Harness(_model())
+
+    result = await harness.select_edges(
+        {
+            "feature": "Boss-Extrude1",
+            "any_of": [
+                {"inside_box": [[-1, -1, 9], [61, 1, 11]]},  # the shared front edge
+                {"inside_box": [[59, -1, -1], [61, 1, 11]]},  # the right front edge
+            ],
+        }
+    )
+
+    assert result.is_success, result.error
+    data = result.data or {}
+    assert data["selected_edges"] == 2
+    assert data["source"] == "feature 'Boss-Extrude1'"
+    assert data["matched"] == {
+        "rules": [
+            {"candidates": 8, "inside_box": 1},
+            {"candidates": 8, "inside_box": 1},
+        ]
+    }
+
+
+async def test_any_of_with_no_match_names_each_rule() -> None:
+    result = await _Harness(_model()).select_edges(
+        {
+            "any_of": [
+                {"side": "+z", "min_length": 100},
+                {"feature": "Cut-Extrude1", "edge_type": "linear"},
+            ]
+        }
+    )
+
+    assert result.error == (
+        "No matching edges found for any rule: rule 0: the +z face has 5 edge(s); "
+        "0 pass length | rule 1: feature 'Cut-Extrude1' has 2 edge(s); 0 pass "
+        "edge_type."
+    )
+
+
 def test_reading_edges_stops_when_the_client_has_gone() -> None:
     selector = er.EdgeRuleSelector(_Harness(_model()))
     limits.mark_client_gone("test")

@@ -211,9 +211,10 @@ class SolidWorksSelectionMixin:
         from .edge_rules import (
             MAX_DESCRIBED_EDGES,
             EdgeRuleSelector,
-            describe_source,
-            filter_edges,
-            no_match_message,
+            describe_sources,
+            expand_query,
+            match_rules,
+            no_match_message_rules,
             validate_edge_query,
         )
 
@@ -236,15 +237,17 @@ class SolidWorksSelectionMixin:
                 ),
             )
 
+        rules = expand_query(query)
+
         def _select() -> dict[str, Any]:
             selector = EdgeRuleSelector(self)
-            kept, counts = filter_edges(selector.candidates(query), query)
+            kept, counts = match_rules(rules, selector.candidates)
             if not kept:
-                raise LookupError(no_match_message(query, counts))
+                raise LookupError(no_match_message_rules(rules, counts))
             count = selector.select(kept, append)
             return {
-                "source": describe_source(query),
-                "matched": counts,
+                "source": describe_sources(rules),
+                "matched": counts[0] if len(rules) == 1 else {"rules": counts},
                 "edges": [info for _edge, info in kept[:MAX_DESCRIBED_EDGES]],
                 "selected_edges": len(kept),
                 "selection_count": count,

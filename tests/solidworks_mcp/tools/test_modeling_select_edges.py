@@ -65,3 +65,22 @@ def test_the_query_leaves_out_what_was_not_given() -> None:
         "edge_type": "circular",
         "parallel_tolerance_deg": 1.0,
     }
+
+
+async def test_several_rules_in_one_call(tools: dict[str, Any]) -> None:
+    result = await tools["select_edges"](
+        {"any_of": [{"side": "top"}, {"side": "bottom", "edge_type": "Linear"}]}
+    )
+
+    assert result["status"] == "success", result
+    assert result["data"]["selected_edges"] == 8
+    assert len(result["data"]["matched"]["rules"]) == 2
+
+
+async def test_an_unknown_rule_key_is_invalid_input(tools: dict[str, Any]) -> None:
+    result = await tools["select_edges"](
+        {"any_of": [{"inside": [[0, 0, 0], [1, 1, 1]]}]}
+    )
+
+    assert result["error_type"] == "invalid_input"
+    assert "any_of[0] has unknown key(s) inside" in result["message"]

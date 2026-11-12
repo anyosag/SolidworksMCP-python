@@ -915,6 +915,19 @@ class SelectEdgesInput(CompatInput):
     max_length: float | None = Field(
         default=None, ge=0, description="Keep only edges at most this long, mm"
     )
+    any_of: list[dict[str, Any]] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=20,
+        description=(
+            "Several rules in one call: select the edges any of them matches. Each "
+            "rule takes the keys above (a source and filters) and is laid over the "
+            "ones given outside any_of, e.g. {'feature': 'Boss-Extrude1', 'any_of': "
+            "[{'inside_box': [[0,0,0],[5,5,5]]}, {'inside_box': [[20,0,0],[25,5,5]]}]}. "
+            "Each source's edges are read once, so this is much faster than one call "
+            "per rule"
+        ),
+    )
     append: bool = Field(
         default=False,
         description="Add to the current selection instead of replacing it",
@@ -2492,15 +2505,18 @@ async def register_modeling_tools(
         a cut's rims), a face (`face_point`, `side` or `plane`), or, with none, the
         whole part. Then keep those that pass every filter given: `edge_type`,
         `parallel_to` (straight edges along x, y, z or a direction), `inside_box` (mm)
-        and `min_length`/`max_length` (mm). Needs: an open part. Changes: the
+        and `min_length`/`max_length` (mm). For edges in several places, give the
+        rules as `any_of` in one call: reading a part's edges is the slow part (about
+        10 s for 130 edges), and each source is read once; a `feature` source reads
+        far fewer edges than the whole part. Needs: an open part. Changes: the
         selection only, all or nothing. Returns: `data` with `source`, `matched` (how
-        many edges were left after each rule; when none match, the error names the
-        rule that removed them), `edges` (up to 50), `selected_edges` and
-        `selection_count`.
+        many edges were left after each rule, or with `any_of` `{"rules": [...]}`, one
+        such count per rule; when none match, the error names the rule that removed
+        them), `edges` (up to 50), `selected_edges` and `selection_count`.
 
         Args:
             input_data: The rules. Nothing is required: at most one source, any
-                filters; `append` is off.
+                filters, or `any_of`; `append` is off.
 
         Returns:
             dict[str, Any]: The edges selected.

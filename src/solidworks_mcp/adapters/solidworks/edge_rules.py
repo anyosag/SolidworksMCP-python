@@ -67,6 +67,40 @@ def axis_vector(value: str | list[float]) -> tuple[float, float, float]:
     return (x, y, z)
 
 
+#: The keys one rule of ``any_of`` may give.
+RULE_KEYS = (
+    *EDGE_SOURCES,
+    "edge_type",
+    "parallel_to",
+    "parallel_tolerance_deg",
+    "inside_box",
+    "min_length",
+    "max_length",
+)
+
+#: The most rules one ``any_of`` takes.
+MAX_RULES = 20
+
+
+def expand_query(query: dict[str, Any]) -> list[dict[str, Any]]:
+    """The rules a query asks for: itself, or each ``any_of`` rule.
+
+    Each ``any_of`` rule is laid over the query's own keys, so a source or
+    filter given once applies to every rule that doesn't give its own.
+    """
+    shared = {k: v for k, v in query.items() if k != "any_of"}
+    rules = query.get("any_of")
+    if not rules:
+        return [shared]
+    expanded = []
+    for rule in rules:
+        merged = {**shared, **rule}
+        if rule.get("edge_type") is not None:
+            merged["edge_type"] = str(rule["edge_type"]).strip().lower()
+        expanded.append(merged)
+    return expanded
+
+
 def validate_edge_query(query: dict[str, Any]) -> str | None:
     """Check an edge query; return what is wrong with it, or None.
 
@@ -74,11 +108,38 @@ def validate_edge_query(query: dict[str, Any]) -> str | None:
         query: ``feature``, ``face_point``, ``side`` or ``plane`` (at most
             one; none means every edge), plus the filters ``edge_type``,
             ``parallel_to``, ``inside_box``, ``min_length`` and
-            ``max_length`` (mm), and ``parallel_tolerance_deg``.
+            ``max_length`` (mm), and ``parallel_tolerance_deg``. Or
+            ``any_of``: rules with those keys, each laid over the query's
+            own (:func:`expand_query`); an edge any of them matches is kept.
 
     Returns:
         str | None: The problem, in words an agent can act on.
     """
+    rules = query.get("any_of")
+    if rules is None:
+        return _rule_problem(query)
+    if not isinstance(rules, list) or not 1 <= len(rules) <= MAX_RULES:
+        return f"any_of must be a list of 1 to {MAX_RULES} rules."
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            return (
+                f"any_of[{index}] must be a rule: an object of {', '.join(RULE_KEYS)}."
+            )
+        unknown = sorted(set(rule) - set(RULE_KEYS))
+        if unknown:
+            return (
+                f"any_of[{index}] has unknown key(s) {', '.join(unknown)}; a rule "
+                f"takes {', '.join(RULE_KEYS)}."
+            )
+    for index, rule in enumerate(expand_query(query)):
+        problem = _rule_problem(rule)
+        if problem:
+            return f"any_of[{index}]: {problem}"
+    return None
+
+
+def _rule_problem(query: dict[str, Any]) -> str | None:
+    """What is wrong with one rule (one source and its filters), or None."""
     sources = [s for s in EDGE_SOURCES if query.get(s) not in (None, "")]
     if len(sources) > 1:
         return (
@@ -239,11 +300,86 @@ def describe_source(query: dict[str, Any]) -> str:
     return "the part"
 
 
-def no_match_message(query: dict[str, Any], counts: dict[str, int]) -> str:
-    """Why nothing matched: the source's edge count, then each rule's."""
+def describe_sources(rules: list[dict[str, Any]]) -> str:
+    """The sources of the rules in words, each once."""
+    named = list(dict.fromkeys(describe_source(rule) for rule in rules))
+    return " and ".join(named)
+
+
+def _steps(query: dict[str, Any], counts: dict[str, int]) -> str:
     steps = [f"{describe_source(query)} has {counts['candidates']} edge(s)"]
     steps += [f"{counts[rule]} pass {rule}" for rule in counts if rule != "candidates"]
-    return "No matching edges found: " + "; ".join(steps) + "."
+    return "; ".join(steps)
+
+
+def no_match_message(query: dict[str, Any], counts: dict[str, int]) -> str:
+    """Why nothing matched: the source's edge count, then each rule's."""
+    return f"No matching edges found: {_steps(query, counts)}."
+
+
+def no_match_message_rules(
+    rules: list[dict[str, Any]], counts: list[dict[str, int]]
+) -> str:
+    """Why no rule matched: :func:`no_match_message` for each."""
+    if len(rules) == 1:
+        return no_match_message(rules[0], counts[0])
+    parts = [
+        f"rule {index}: {_steps(rule, rule_counts)}"
+        for index, (rule, rule_counts) in enumerate(zip(rules, counts, strict=True))
+    ]
+    return "No matching edges found for any rule: " + " | ".join(parts) + "."
+
+
+def _source_key(rule: dict[str, Any]) -> tuple[Any, ...]:
+    """Equal for rules that read the same edges."""
+
+    def hashable(value: Any) -> Any:
+        return tuple(value) if isinstance(value, list) else value
+
+    return tuple(
+        (s, hashable(rule.get(s)))
+        for s in EDGE_SOURCES
+        if rule.get(s) not in (None, "")
+    )
+
+
+def match_rules(
+    rules: list[dict[str, Any]],
+    candidates: Any,
+) -> tuple[list[tuple[Any, dict[str, Any]]], list[dict[str, int]]]:
+    """The edges any rule keeps, each once, reading each source once.
+
+    Reading the edges is what takes the time (about a dozen COM calls an
+    edge: 11 s for a 134-edge part), and six calls that each picked one box
+    of the same part read them six times (Cellvis DishRack). Rules with the
+    same source share one reading.
+
+    Args:
+        rules: From :func:`expand_query`.
+        candidates: ``(rule) -> [(handle, description)]``, the source's edges.
+
+    Returns:
+        tuple: The kept pairs in rule order, and each rule's counts
+        (:func:`filter_edges`).
+    """
+    read: dict[tuple[Any, ...], list[tuple[Any, dict[str, Any]]]] = {}
+    kept_all: list[tuple[Any, dict[str, Any]]] = []
+    seen: set[Any] = set()
+    every_count = []
+    for rule in rules:
+        source = _source_key(rule)
+        if source not in read:
+            read[source] = candidates(rule)
+        kept, counts = filter_edges(read[source], rule)
+        every_count.append(counts)
+        for edge, info in kept:
+            key = edge_key(info)
+            identity = key if key is not None else ("edge", id(info))
+            if identity in seen:
+                continue
+            seen.add(identity)
+            kept_all.append((edge, info))
+    return kept_all, every_count
 
 
 def edge_key(info: dict[str, Any]) -> tuple[Any, ...] | None:

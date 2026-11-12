@@ -95,3 +95,35 @@ async def test_a_part_is_needed() -> None:
     assert (await mock.select_edges({})).error == (
         "select_edges requires an active part document."
     )
+
+
+async def test_any_of_unites_the_rules(part: MockSolidWorksAdapter) -> None:
+    result = await part.select_edges(
+        {
+            "any_of": [
+                {"side": "top"},
+                {"side": "bottom"},
+                {"parallel_to": "z"},  # already in the two faces: counted once
+                {"parallel_to": "y"},  # the uprights
+            ]
+        }
+    )
+
+    assert result.is_success, result.error
+    data = result.data or {}
+    assert data["selected_edges"] == 12  # 4 top, 4 bottom, 4 upright
+    assert data["source"] == "the top face and the bottom face and the part"
+    assert [counts["candidates"] for counts in data["matched"]["rules"]] == [
+        4,
+        4,
+        12,
+        12,
+    ]
+
+
+async def test_any_of_with_a_missing_feature_is_an_error(
+    part: MockSolidWorksAdapter,
+) -> None:
+    result = await part.select_edges({"any_of": [{"side": "top"}, {"feature": "Nope"}]})
+
+    assert result.error == "Feature 'Nope' not found; list_features names the features."
