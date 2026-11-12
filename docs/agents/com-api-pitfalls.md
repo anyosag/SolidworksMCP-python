@@ -1201,6 +1201,13 @@ The STL export options are application preferences (`ISldWorks.Get/SetUserPrefer
 
 Measured 2026-11-11 on SOLIDWORKS 2026 with `probe_stl_quality.py` (every value restored).
 
+- **An assembly splits into one file per component** while `swSTLComponentsIntoOneFile`
+  (toggle 72) is off: exporting to `X.stl` wrote `X - Assembly-1 Part-1.STL` and nine
+  more, and no `X.stl`, so the export looked failed (seen 2026-11-12 on a user's
+  assembly). `export_file` turns the toggle on for an assembly's export and puts the
+  user's value back, and names the per-component files when they appear anyway. Not
+  yet confirmed live that toggle 72 alone gives one file.
+
 ---
 
 ## Adapter wiring traps — not COM, same silent-failure shape

@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel, Field
 
 from ..adapters.base import SolidWorksAdapter
+from ..utils import stl_mesh
 from .input_compat import CompatInput
 from .modeling import DisplayType
 from .tool_boundary import (
@@ -271,6 +272,42 @@ def _file_input(input_data: Any, format_type: str) -> Any:
     return input_data.model_copy(update={"format_type": format_type})
 
 
+async def _stl_mesh_check(
+    adapter: Any, file_path: str, units: str | None, document_type: Any
+) -> dict[str, Any]:
+    """Read back the STL just written and, for a part, compare its volume.
+
+    The part's volume comes from ``get_model_geometry_summary``, which
+    doesn't rebuild or touch the selection. An assembly's would come from a
+    mass property that depends on the selection, so it is left out.
+
+    Args:
+        adapter: The active adapter.
+        file_path: The ``.stl`` file written.
+        units: The unit the file was written in, ``None`` when not known.
+        document_type: ``part``, ``assembly`` or ``None``, as the export said.
+
+    Returns:
+        dict[str, Any]: :func:`stl_mesh.check_stl`'s check, with
+        ``cad_volume_mm3`` and ``volume_ratio`` (mesh / model; ``None`` when
+        the model's volume isn't known); only ``error`` when the file
+        couldn't be read.
+    """
+    check = stl_mesh.check_stl(file_path, units)
+    if "error" in check:
+        return check
+    check["cad_volume_mm3"] = None
+    check["volume_ratio"] = None
+    if document_type != "part" or not hasattr(adapter, "get_model_geometry_summary"):
+        return check
+    summary = await adapter.get_model_geometry_summary()
+    volume = (summary.data or {}).get("volume_mm3") if summary.is_success else None
+    if isinstance(volume, int | float) and volume > 0:
+        check["cad_volume_mm3"] = round(float(volume), 3)
+        check["volume_ratio"] = round(check["volume_mm3"] / float(volume), 4)
+    return check
+
+
 async def register_export_tools(
     mcp: FastMCP, adapter: SolidWorksAdapter, config: dict[str, Any]
 ) -> int:
@@ -391,15 +428,19 @@ async def register_export_tools(
     async def export_stl(input_data: ExportStlInput) -> dict[str, Any]:
         """Export the active document to STL, like File > Save As with the STL type.
 
-        Use it for 3D printing. An assembly is exported whole, with lightweight
-        components resolved first. SolidWorks picks the format from the file's
-        extension, so end `file_path` in .stl. The mesh follows the user's STL
-        options unless this call gives `resolution`, `deviation_mm`, `angle_deg`,
-        `units` or `binary`; those apply to this file only, and the user's options
-        are put back afterwards. Needs: an open, active part or assembly. Changes:
-        writes the file, creating its folder and replacing a file already there; the
-        open document is unchanged. Returns: `export` with `file_path`, `format` and,
-        with mesh settings, `mesh` (`applied`, `restored`).
+        Use it for 3D printing. An assembly is exported whole into the one file,
+        with lightweight components resolved first. SolidWorks picks the format
+        from the file's extension, so end `file_path` in .stl. The mesh follows the
+        user's STL options unless this call gives `resolution`, `deviation_mm`,
+        `angle_deg`, `units` or `binary`; those apply to this file only, and the
+        user's options are put back afterwards. Needs: an open, active part or
+        assembly. Changes: writes the file, creating its folder and replacing a file
+        already there; the open document is unchanged. Returns: `export` with
+        `file_path`, `format`, `mesh_check` (the file read back: `triangles`,
+        `closed`, `open_edges`, `non_manifold_edges`, `volume_mm3`, `size_mm`,
+        `units`, and `cad_volume_mm3` and `volume_ratio` for a part; only `error`
+        when it couldn't be read) and, when the call changed STL options (mesh
+        settings, an assembly's one-file option), `mesh` (`applied`, `restored`).
 
         Args:
             input_data: The export. `file_path` (ending in .stl) is required;
@@ -411,6 +452,7 @@ async def register_export_tools(
         """
         input_data = _file_input(normalize_input(input_data, ExportStlInput), "stl")
         settings = input_data.mesh_settings()
+        native = False  # an adapter with its own export_stl
         if settings:
             require_capability(
                 adapter,
@@ -421,48 +463,50 @@ async def register_export_tools(
             result = await adapter.export_stl_with_settings(
                 input_data.file_path, settings
             )
-            require_success(result, context="Failed to export STL")
-            mesh = (result.data or {}).get("mesh", {})
-            reply: dict[str, Any] = {
-                "status": "success",
-                "message": f"Exported to STL format: {input_data.file_path}",
-                "export": {
-                    "file_path": input_data.file_path,
-                    "format": "STL",
-                    "mesh": mesh,
-                },
-                "execution_time": result.execution_time,
-            }
-            if mesh.get("restored") is False:
-                reply["warning"] = (
-                    "The file was written, but the user's STL options could not "
-                    "all be put back; check Tools > Options > Export > STL."
-                )
-            return reply
-        if hasattr(adapter, "export_stl"):
+        elif hasattr(adapter, "export_stl"):
+            native = True
             result = await adapter.export_stl(input_data.model_dump())
         else:
             result = await adapter.export_file(input_data.file_path, "stl")
-
         require_success(result, context="Failed to export STL")
-        if hasattr(adapter, "export_stl"):
+
+        data = result.data if isinstance(result.data, dict) else {}
+        mesh_check = await _stl_mesh_check(
+            adapter,
+            data.get("file_path") or input_data.file_path,
+            settings.get("units") or data.get("units"),
+            data.get("document_type"),
+        )
+        message = f"Exported to STL format: {input_data.file_path}"
+        export: dict[str, Any] = {"file_path": input_data.file_path, "format": "STL"}
+        if native:
+            export["mesh_check"] = mesh_check
             return {
                 "status": "success",
-                "message": f"Exported to STL format: {input_data.file_path}",
+                "message": message,
                 "data": result.data,
+                "export": export,
                 "execution_time": result.execution_time,
             }
-        return {
+        if not settings:
+            export["use_case"] = "3D printing and rapid prototyping"
+            export["size_estimate"] = "Unknown"
+        mesh = data.get("mesh", {} if settings else None)
+        if mesh is not None:
+            export["mesh"] = mesh
+        export["mesh_check"] = mesh_check
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Exported to STL format: {input_data.file_path}",
-            "export": {
-                "file_path": input_data.file_path,
-                "format": "STL",
-                "use_case": "3D printing and rapid prototyping",
-                "size_estimate": "Unknown",
-            },
+            "message": message,
+            "export": export,
             "execution_time": result.execution_time,
         }
+        if mesh is not None and mesh.get("restored") is False:
+            reply["warning"] = (
+                "The file was written, but the user's STL options could not "
+                "all be put back; check Tools > Options > Export > STL."
+            )
+        return reply
 
     @mcp.tool()
     async def export_pdf(input_data: ExportFileInput) -> dict[str, Any]:

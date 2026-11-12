@@ -264,6 +264,9 @@ def _settle_after(operation_name: str) -> None:
 #: Silent; 2 is Copy, so they could still show dialogs.
 _EXPORT_OPTIONS = saving.SAVE_SILENT | saving.SAVE_COPY
 
+#: ``swDocumentTypes_e`` values an STL export reports, by name.
+_STL_DOCUMENT_TYPES = {1: "part", 2: "assembly"}
+
 _FALSY = {"0", "false", "no", "off"}
 _DEFAULT_DIALOG_TIMEOUT_SECONDS = 5.0
 
@@ -3574,9 +3577,77 @@ class PyWin32Adapter(
                 "(tried Extension.SaveAs2 and SaveAs3)"
             )
 
-    async def export_file(
-        self, file_path: str, format_type: str
-    ) -> AdapterResult[None]:
+    def _export_stl(
+        self, target_doc: Any, ext: Any, resolved_path: str
+    ) -> dict[str, Any]:
+        """Write ``resolved_path`` as one STL file, a part or a whole assembly.
+
+        SolidWorks puts an assembly in one file only while the user's STL
+        option "all components in one file" (``swSTLComponentsIntoOneFile``)
+        is on; with it off it writes a file per component and no
+        ``resolved_path``. So for an assembly the option is turned on for the
+        export and the user's value put back afterwards, as
+        ``export_stl_with_settings`` does for the mesh options, and files
+        SolidWorks still wrote per component are named in the error.
+
+        Args:
+            target_doc: The document to export.
+            ext: Its ``IModelDocExtension``.
+            resolved_path: The absolute ``.stl`` path.
+
+        Returns:
+            dict[str, Any]: ``file_path``; ``units``, the unit the file was
+            written in (``swExportStlUnits``; ``None`` when unreadable);
+            ``document_type`` (``part``, ``assembly`` or ``None``); and for an
+            assembly ``mesh`` (``applied``, and whether the user's option was
+            ``restored``).
+
+        Raises:
+            RuntimeError: When SolidWorks wrote files per component instead.
+        """
+        app = self.swApp
+        doc_type = self._attempt(lambda: self._get_attr_or_call(target_doc, "GetType"))
+        applied = stl_settings.Applied()
+        if doc_type == 2 and app is not None:
+            # A refused option is put back by apply_changes; the export goes
+            # on, and split files are named below.
+            applied = (
+                self._attempt(
+                    lambda: stl_settings.apply_changes(app, [stl_settings.ONE_FILE])
+                )
+                or applied
+            )
+        units = stl_settings.unit_name(
+            self._attempt(
+                lambda: app.GetUserPreferenceIntegerValue(stl_settings.STL_UNITS)  # type: ignore[union-attr]
+            )
+        )
+        before = stl_settings.component_files(resolved_path)
+        try:
+            stl_data = self._prepare_stl_export_data()
+            if not self._save_stl_with_extension(ext, stl_data, resolved_path):
+                stl_settings.refuse_split_export(resolved_path, before)
+                try:
+                    self._save_stl_with_fallback(target_doc, resolved_path)
+                except Exception:
+                    stl_settings.refuse_split_export(resolved_path, before)
+                    raise
+        finally:
+            not_restored = (
+                stl_settings.restore(app, applied.previous) if applied.previous else []
+            )
+        data: dict[str, Any] = {
+            "file_path": resolved_path,
+            "units": units,
+            "document_type": (
+                _STL_DOCUMENT_TYPES.get(doc_type) if isinstance(doc_type, int) else None
+            ),
+        }
+        if applied.previous:
+            data["mesh"] = {"applied": applied.labels, "restored": not not_restored}
+        return data
+
+    async def export_file(self, file_path: str, format_type: str) -> AdapterResult[Any]:
         """Export the current model to a file.
 
         Args:
@@ -3584,7 +3655,9 @@ class PyWin32Adapter(
             format_type (str): The format type value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: For STL, ``data`` is what :meth:`_export_stl`
+            returns (``file_path``, ``units``, ``document_type``, and
+            ``mesh`` for an assembly); ``None`` for the other formats.
 
         Raises:
             Exception: If the operation cannot be completed.
@@ -3595,11 +3668,12 @@ class PyWin32Adapter(
                 status=AdapterResultStatus.ERROR, error="No active model"
             )
 
-        def _export_operation() -> None:
+        def _export_operation() -> dict[str, Any] | None:
             """Build internal export operation.
 
             Returns:
-                None: None.
+                dict[str, Any] | None: The STL export's details; ``None``
+                for the other formats.
 
             Raises:
                 Exception: If the operation cannot be completed.
@@ -3647,12 +3721,7 @@ class PyWin32Adapter(
                 if ext is None:
                     raise RuntimeError("No Extension object available for STL export")
 
-                stl_data = self._prepare_stl_export_data()
-                if not self._save_stl_with_extension(ext, stl_data, resolved_path):
-                    # SaveAs2 didn't produce file — try SaveAs3 fallback
-                    self._save_stl_with_fallback(target_doc, resolved_path)
-
-                return None
+                return self._export_stl(target_doc, ext, resolved_path)
 
             # ----------------------------------------------------------------
             # All other formats — classic SaveAs3 path.
@@ -3695,8 +3764,9 @@ class PyWin32Adapter(
                 ``angle_deg``, ``units`` and ``binary``.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
-            settings ``applied``, and whether the user's were ``restored``).
+            AdapterResult[dict[str, Any]]: ``file_path``, ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``),
+            and the export's ``units`` and ``document_type``.
         """
         try:
             changes = stl_settings.preference_changes(settings)
@@ -3726,12 +3796,17 @@ class PyWin32Adapter(
         )
         if not exported.is_success:
             return cast(AdapterResult[dict[str, Any]], exported)
+        # The export's own option (an assembly's one file) joins the settings.
+        data = dict(exported.data) if isinstance(exported.data, dict) else {}
+        own = data.pop("mesh", {"applied": [], "restored": True})
+        data["file_path"] = os.path.abspath(file_path)
+        data["mesh"] = {
+            "applied": labels + own["applied"],
+            "restored": not not_restored and own["restored"],
+        }
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={
-                "file_path": os.path.abspath(file_path),
-                "mesh": {"applied": labels, "restored": not not_restored},
-            },
+            data=data,
             execution_time=exported.execution_time,
         )
 
