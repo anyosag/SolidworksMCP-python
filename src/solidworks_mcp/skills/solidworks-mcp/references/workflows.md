@@ -120,7 +120,10 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
 
 ## Changing an existing model
 
-1. `open_model`, then `list_features` and `list_model_dimensions`.
+1. `open_model`, then `list_features` and `list_model_dimensions`. On a long
+   tree, `list_features` with `include_standard: false` leaves out the
+   folders, origin and default planes, and `last` gives only the newest
+   features.
 2. Change it where it stands; don't delete and re-create a feature, which
    takes its dependents (fillets, patterns) with it:
    - an extrude's or cut's depth, end condition or direction, a revolve's
