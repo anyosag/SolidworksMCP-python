@@ -868,6 +868,14 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict={"entity_ids": entity_ids},
         )
 
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Delete every entity of the open sketch through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "delete_all_sketch_entities",
+            lambda: self.adapter.delete_all_sketch_entities(),
+            input_dict={},
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:

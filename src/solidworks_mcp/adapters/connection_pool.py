@@ -783,6 +783,13 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             lambda adapter: adapter.delete_sketch_entities(entity_ids),
         )
 
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Delete every entity of the open sketch using pool."""
+        return await self._execute_with_pool(
+            "delete_all_sketch_entities",
+            lambda adapter: adapter.delete_all_sketch_entities(),
+        )
+
     async def rebuild_model(
         self, top_level_only: bool = False
     ) -> AdapterResult[dict[str, Any]]:

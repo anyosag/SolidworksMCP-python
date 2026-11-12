@@ -30,6 +30,7 @@ from .base import (
     SweepParameters,
 )
 from .solidworks.drawing_standard import gtol_problem
+from .solidworks.feature_editing import missing_ids_message
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
 from .solidworks.saving import confirmation_result
@@ -1273,9 +1274,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if missing:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR,
-                error=(
-                    f"Sketch entity {', '.join(missing)} not found in the open sketch."
-                ),
+                error=missing_ids_message(missing, sorted(self._sketch_entity_ids)),
             )
         for entity_id in entity_ids:
             self._sketch_entity_ids.discard(entity_id)
@@ -1285,6 +1284,26 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             data={
                 "deleted": list(entity_ids),
                 "remaining": sorted(self._sketch_entity_ids),
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Mock deleting every entity of the open sketch (none is ever skipped)."""
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        deleted = sorted(self._sketch_entity_ids)
+        self._sketch_entity_ids.clear()
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "deleted": deleted,
+                "deleted_count": len(deleted),
+                "skipped": [],
+                "remaining": [],
             },
             execution_time=self._delays["sketch_operation"] / 2,
         )

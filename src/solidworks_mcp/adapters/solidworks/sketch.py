@@ -178,6 +178,20 @@ class SolidWorksSketchMixin:
             lambda: delete_sketch_entities(self, entity_ids),
         )
 
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Delete every segment of the open sketch."""
+        from .feature_editing import delete_all_sketch_entities
+
+        if not self._adapter(self).currentSketchManager:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        return _sketch_edit_operation(
+            self,
+            "delete_all_sketch_entities",
+            lambda: delete_all_sketch_entities(self),
+        )
+
     async def add_spline(self, points: list[dict[str, float]]) -> AdapterResult[str]:
         return _add_spline_impl(self, points)
 

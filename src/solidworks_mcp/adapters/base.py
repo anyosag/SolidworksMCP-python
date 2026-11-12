@@ -1293,6 +1293,19 @@ class SolidWorksAdapter(ABC):
             error="delete_sketch_entities is not implemented by this adapter",
         )
 
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Delete every entity of the open sketch.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``deleted`` (ids), ``deleted_count``,
+            ``skipped`` (entities SolidWorks wouldn't select, left in the
+            sketch) and ``remaining`` (ids).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_all_sketch_entities is not implemented by this adapter",
+        )
+
     async def create_reference_plane(
         self,
         reference: str,

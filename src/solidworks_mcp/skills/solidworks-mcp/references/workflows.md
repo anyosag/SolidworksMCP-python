@@ -132,7 +132,9 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
      "D1@Boss-Extrude1") and the new value in its `units` (mm, degrees, or
      a count);
    - a profile: `edit_sketch`, `delete_sketch_entities` with the ids it
-     lists, the `add_*` tools for the new shape, then `exit_sketch`;
+     lists (ids change each time a sketch is opened, so use the latest
+     reply's; `all: true` deletes the whole profile), the `add_*` tools for
+     the new shape, then `exit_sketch`;
    - a new feature mid-tree: `set_rollback` with `after` the feature it
      builds on, add it, then `set_rollback` with no input.
 3. `rebuild_model`: an error names each failing feature and how to fix it.

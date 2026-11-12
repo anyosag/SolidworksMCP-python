@@ -14,7 +14,7 @@ dish rack lost two fillets that way). These change it where it stands:
 * :func:`open_sketch` / :func:`delete_sketch_entities`: open an existing
   sketch for editing (``IModelDoc2.EditSketch``) with an id for each of its
   segments, so the ``add_*`` tools draw into it and its segments can be
-  deleted by id.
+  deleted by id; :func:`delete_all_sketch_entities` deletes every segment.
 
 Enum values are from SolidWorks 2026's ``swconst.tlb``.
 """
@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .. import sw_type_info as _sw_type_info
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
@@ -363,6 +364,40 @@ def open_sketch(adapter: Any, name: str) -> dict[str, Any]:
     return {"sketch": name, "segments": segments}
 
 
+#: The most ids a not-found error lists.
+MAX_LISTED_IDS = 30
+
+
+def missing_ids_message(missing: list[str], known: list[str]) -> str:
+    """The error for ids the open sketch doesn't have: which it has, and why.
+
+    Args:
+        missing: The ids asked for that aren't there.
+        known: The ids the open sketch has, in the order to list them.
+
+    Returns:
+        str: The message, listing at most :data:`MAX_LISTED_IDS` known ids.
+    """
+    text = f"Sketch entity {', '.join(missing)} not found in the open sketch."
+    shown = ", ".join(known[:MAX_LISTED_IDS])
+    if not known:
+        text += " The open sketch has no entity ids."
+    elif len(known) == 1:
+        text += f" The open sketch has one id: {shown}."
+    elif len(known) <= MAX_LISTED_IDS:
+        text += f" The open sketch has {len(known)} ids: {shown}."
+    else:
+        text += (
+            f" The open sketch has {len(known)} ids; the first {MAX_LISTED_IDS}: "
+            f"{shown}."
+        )
+    return text + (
+        " Ids change each time a sketch is opened: use the ids in the latest "
+        "edit_sketch reply (and the add_* replies since), or all: true to "
+        "delete every entity."
+    )
+
+
 def delete_sketch_entities(adapter: Any, entity_ids: list[str]) -> dict[str, Any]:
     """Delete entities of the open sketch by id.
 
@@ -372,9 +407,7 @@ def delete_sketch_entities(adapter: Any, entity_ids: list[str]) -> dict[str, Any
     """
     missing = [i for i in entity_ids if i not in adapter._sketch_entities]
     if missing:
-        raise LookupError(
-            f"Sketch entity {', '.join(missing)} not found in the open sketch."
-        )
+        raise LookupError(missing_ids_message(missing, list(adapter._sketch_entities)))
     model = adapter.currentModel
     _flag(adapter, model, "ClearSelection2", "EditDelete")
     _attempt(adapter, lambda: model.ClearSelection2(True))
@@ -389,3 +422,79 @@ def delete_sketch_entities(adapter: Any, entity_ids: list[str]) -> dict[str, Any
         adapter._sketch_entities.pop(entity_id, None)
         adapter._sketch_entity_centers.pop(entity_id, None)
     return {"deleted": list(entity_ids), "remaining": sorted(adapter._sketch_entities)}
+
+
+def _among(entity: Any, segments: list[Any]) -> bool:
+    """Whether an id's entity is (or, for a rectangle's lines, has) one of ``segments``."""
+    members = list(entity) if isinstance(entity, (list, tuple)) else [entity]
+    return any(
+        _sw_type_info.same_com_object(member, segment)
+        for member in members
+        for segment in segments
+    )
+
+
+def delete_all_sketch_entities(adapter: Any) -> dict[str, Any]:
+    """Delete every segment of the open sketch, whatever its id.
+
+    Reads the segments from the sketch itself (``ISketch.GetSketchSegments``),
+    so it also deletes what has no id. A segment SolidWorks won't select is
+    left in the sketch and reported.
+
+    Returns:
+        dict[str, Any]: ``deleted`` (the ids of what went), ``deleted_count``
+        (segments deleted, with an id or not), ``skipped`` (each segment
+        left: its ``id`` when it has one, ``type`` and points) and
+        ``remaining`` (the ids still in the sketch). Every other id is
+        dropped: its geometry, relation or dimension is gone.
+
+    Raises:
+        RuntimeError: No sketch is open, or SolidWorks selected none of its
+            segments.
+    """
+    manager = adapter.currentSketchManager
+    sketch = _attempt(adapter, lambda: manager.ActiveSketch) or adapter.currentSketch
+    if sketch is None:
+        raise RuntimeError("No sketch is open in SolidWorks.")
+    _flag(adapter, sketch, "GetSketchSegments")
+    segments = as_list(_attempt(adapter, lambda: sketch.GetSketchSegments()))
+    model = adapter.currentModel
+    _flag(adapter, model, "ClearSelection2", "EditDelete")
+    _attempt(adapter, lambda: model.ClearSelection2(True))
+    selected: list[Any] = []
+    left: list[Any] = []
+    for segment in segments:
+        if adapter._select_sketch_entity(segment, bool(selected)):
+            selected.append(segment)
+        else:
+            left.append(segment)
+    if left and not selected:
+        raise RuntimeError(
+            f"SolidWorks could not select any of the open sketch's {len(left)} "
+            "segments, so none was deleted."
+        )
+    if selected:
+        adapter._get_attr_or_call(model, "EditDelete")
+    registry = adapter._sketch_entities
+    remaining = [i for i, entity in registry.items() if _among(entity, left)]
+    deleted = [
+        i
+        for i, entity in registry.items()
+        if i not in remaining and _among(entity, selected)
+    ]
+    skipped = [
+        {
+            "id": next((i for i in remaining if _among(registry[i], [segment])), None),
+            **describe_segment(adapter, segment),
+        }
+        for segment in left
+    ]
+    for entity_id in [i for i in registry if i not in remaining]:
+        registry.pop(entity_id)
+        adapter._sketch_entity_centers.pop(entity_id, None)
+    return {
+        "deleted": deleted,
+        "deleted_count": len(selected),
+        "skipped": skipped,
+        "remaining": sorted(remaining),
+    }
