@@ -1198,6 +1198,11 @@ The STL export options are application preferences (`ISldWorks.Get/SetUserPrefer
   resolution.
 - The deviation SolidWorks reports depends on the active document: 6.8e-5 with a 40 mm
   part open, 5.95e-4 with none. Compare before and after with the same document open.
+- **Coarse or fine moves the tolerances to their presets.** A user with custom 0.033 mm /
+  10 degrees, after an export at coarse, had coarse 0.068 mm / 30 degrees: putting back
+  only the resolution doesn't bring custom back, because the tolerances are now on the
+  presets. So an export that sets the resolution also keeps the user's tolerances and
+  puts them back first (measured 2026-11-12).
 
 Measured 2026-11-11 on SOLIDWORKS 2026 with `probe_stl_quality.py` (every value restored).
 

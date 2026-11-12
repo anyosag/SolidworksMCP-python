@@ -159,8 +159,10 @@ def test_custom_resolution_is_not_checked_and_comes_back_last() -> None:
     app.writes.clear()
     stl.restore(app, applied.previous)
 
+    # The deviation wasn't set, but the resolution was: it goes back too.
     assert [pref for pref, _value in app.writes] == [
         stl.STL_ANGLE_TOLERANCE,
+        stl.STL_DEVIATION,
         stl.STL_QUALITY,
     ]
 
@@ -189,6 +191,45 @@ def test_a_tolerance_solidworks_moves_is_reported_as_used() -> None:
     ]
     # Rounding is not a move: 0.005 mm read back as 0.005004 mm.
     assert stl.same_value("double", 5e-6, 5.004e-6)
+
+
+class _Presets(_App):
+    """SolidWorks 2026: coarse moves the tolerances to its presets, and
+    custom sticks only while a tolerance is off them (pitfall #40)."""
+
+    COARSE = {stl.STL_DEVIATION: 6.8e-5, stl.STL_ANGLE_TOLERANCE: 0.5236}
+
+    def __init__(self) -> None:
+        super().__init__()
+        # The user's custom options: 0.033 mm, 10 degrees.
+        self.values[("integer", stl.STL_QUALITY)] = 3
+        self.values[("double", stl.STL_DEVIATION)] = 3.26e-5
+        self.values[("double", stl.STL_ANGLE_TOLERANCE)] = 0.17453
+
+    def _set(self, kind: str, pref: int, value: Any) -> bool:
+        if pref == stl.STL_QUALITY and value == 1:
+            for tolerance, preset in self.COARSE.items():
+                self.values[("double", tolerance)] = preset
+        if pref == stl.STL_QUALITY and value == 3:
+            on_presets = all(
+                self.values[("double", t)] == p for t, p in self.COARSE.items()
+            )
+            if on_presets:
+                self.writes.append((pref, value))
+                return True
+        return super()._set(kind, pref, value)
+
+
+def test_a_users_custom_options_survive_a_coarse_export() -> None:
+    """The live failure: only the resolution was kept, so custom didn't stick."""
+    app = _Presets()
+    before = dict(app.values)
+
+    applied = stl.apply_changes(app, stl.preference_changes({"resolution": "coarse"}))
+    assert app.values[("integer", stl.STL_QUALITY)] == 1
+    assert stl.restore(app, applied.previous) == []
+
+    assert app.values == before
 
 
 def test_a_setting_that_cannot_be_put_back_is_counted() -> None:

@@ -242,6 +242,17 @@ def apply_changes(app: Any, changes: list[Change]) -> Applied:
     """
     applied = Applied()
     previous = applied.previous
+    given = {pref for _kind, pref, _value, _label in changes}
+    if STL_QUALITY in given:
+        # Coarse or fine moves the tolerances to their presets, and a custom
+        # resolution comes back only with its tolerances off them: keep the
+        # user's tolerances to put back even when this export doesn't set
+        # them (live, 2026-11-12: a user's custom 0.033 mm / 10 deg came back
+        # as coarse 0.068 mm / 30 deg).
+        for pref in (STL_DEVIATION, STL_ANGLE_TOLERANCE):
+            if pref not in given:
+                getter = PREFERENCE_METHODS["double"][0]
+                previous.append(("double", pref, getattr(app, getter)(pref)))
     for kind, pref, value, label in changes:
         getter, setter = PREFERENCE_METHODS[kind]
         old = getattr(app, getter)(pref)
