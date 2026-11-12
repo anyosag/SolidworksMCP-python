@@ -1066,7 +1066,8 @@ async def register_sketching_tools(
         an `add_*` tool just drew. Ids change each time a sketch is opened, so take
         them from the latest `edit_sketch` reply; an unknown id's error lists the
         ones the sketch has. To redraw a profile from scratch, `all: true` deletes
-        every entity, with an id or not. Needs: an open sketch. Changes: removes the
+        every entity, with an id or not; draw the new profile before `exit_sketch`,
+        as SolidWorks deletes a sketch exited empty. Needs: an open sketch. Changes: removes the
         entities from the sketch. Returns: `deleted` and `remaining` (the ids still
         in the sketch); with `all`, also `deleted_count` and `skipped` (entities
         SolidWorks wouldn't select, left in the sketch).

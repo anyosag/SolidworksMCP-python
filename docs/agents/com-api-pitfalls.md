@@ -1205,8 +1205,9 @@ Measured 2026-11-11 on SOLIDWORKS 2026 with `probe_stl_quality.py` (every value 
   (toggle 72) is off: exporting to `X.stl` wrote `X - Assembly-1 Part-1.STL` and nine
   more, and no `X.stl`, so the export looked failed (seen 2026-11-12 on a user's
   assembly). `export_file` turns the toggle on for an assembly's export and puts the
-  user's value back, and names the per-component files when they appear anyway. Not
-  yet confirmed live that toggle 72 alone gives one file.
+  user's value back, and names the per-component files when they appear anyway.
+  Measured 2026-11-12: with toggle 72 on, a two-part assembly wrote one closed STL
+  and the user's value came back.
 
 ---
 
@@ -1222,7 +1223,12 @@ bounding-box centre, (0, -6.75, +3.7) mm, and every part mated to it followed.
 - A fixed component (the first in an assembly is fixed) is floated for the move and
   fixed again, as a script that moved components on SolidWorks 2026 had to do.
 
-Reported 2026-11-12 by the Cellvis DishRack build; the move is not yet measured live.
+- `IMathUtility.CreateTransform` must be flagged as a method first: unflagged, late
+  binding reads it as a property and SolidWorks answers "Member not found".
+
+Reported 2026-11-12 by the Cellvis DishRack build. Measured the same day: two copies
+of a block whose origin is a corner landed with their origins at (0, 0, 0) and
+(50, 0, 10) mm.
 
 ---
 
@@ -1238,7 +1244,14 @@ coordinates. SolidWorks' "Zoom to Region" example multiplies each point by
 - `zoom_box.py` transforms the box's eight corners (`IMathPoint.MultiplyTransform`) and
   zooms to the box around them.
 
-Reported 2026-11-12 by the Cellvis DishRack build; the fix is not yet measured live.
+- `IMathUtility.CreatePoint` and `IMathPoint.MultiplyTransform` must be flagged as
+  methods first ("Member not found" otherwise).
+- Still open: the picture comes out a few mm off centre horizontally, in the front
+  view too (about 1 mm there, about 4 mm for a 12 x 20 mm face in the right view).
+
+Reported 2026-11-12 by the Cellvis DishRack build. Measured the same day: in the
+right view a box around the +X face zooms onto that face and fills the picture's
+height.
 
 ---
 
@@ -1269,7 +1282,21 @@ loaded as a component.
   `activate_document` (and every tool's `document` argument) does that first
   (`io._open_window`).
 
-Reported 2026-11-12 by the Cellvis DishRack build; the open is not yet measured live.
+Reported 2026-11-12 by the Cellvis DishRack build. Measured the same day: a part whose
+window was closed while its assembly stayed open was listed with `Visible` False,
+and `activate_document` opened and activated it.
+
+---
+
+## 45. A sketch exited with nothing in it is deleted
+
+Deleting every entity of an open sketch (`delete_sketch_entities` with `all`) and
+then exiting it removes the sketch: `edit_sketch` on its name then finds no such
+feature. To replace a sketch's contents, draw the new entities before
+`exit_sketch`.
+
+Measured 2026-11-12 on SOLIDWORKS 2026 (live test
+`test_live_sw_dishrack_fixes.py::test_a_whole_sketch_is_emptied`).
 
 ---
 
