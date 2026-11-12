@@ -43,18 +43,45 @@ ROLLBACK_TO_END = 1
 ROLLBACK_BEFORE = 3
 ROLLBACK_AFTER = 4
 
-#: Other ``GetTypeName2`` names of those types: SolidWorks 2026 names a
-#: cut-extrude "ICE" (first live run, 2026-11-11), not "Cut".
-TYPE_ALIASES: dict[str, str] = {"ICE": "Cut"}
+#: ``GetTypeName2`` of an extrude made with Instant3D, boss and cut alike
+#: (live, SolidWorks 2026: Boss-Extrudes and Cut-Extrudes). The API help
+#: says ``IFeature.GetTypeName`` gives such a feature's underlying type.
+INSTANT3D = "ICE"
+
+_EXTRUDE_EDITS = frozenset({"depth", "end_condition", "reverse_direction"})
 
 #: ``IFeature.GetTypeName2`` -> which parameters ``edit_feature`` changes.
+#: "ICE" stays only when ``GetTypeName`` gives no extrude type; boss and
+#: cut take the same changes.
 EDITABLE: dict[str, frozenset[str]] = {
-    "Extrusion": frozenset({"depth", "end_condition", "reverse_direction"}),
-    "Cut": frozenset({"depth", "end_condition", "reverse_direction"}),
+    "Extrusion": _EXTRUDE_EDITS,
+    "Cut": _EXTRUDE_EDITS,
+    INSTANT3D: _EXTRUDE_EDITS,
     "Revolution": frozenset({"angle", "reverse_direction"}),
     "RevCut": frozenset({"angle", "reverse_direction"}),
     "Fillet": frozenset({"radius"}),
 }
+
+_EXTRUDE_KINDS = ("Extrusion", "Cut", INSTANT3D)
+
+#: ``GetTypeName`` names of an Instant3D extrude's underlying type, lower
+#: case; it may not use ``GetTypeName2``'s capitals ("CUT" was reported).
+_UNDERLYING = {"extrusion": "Extrusion", "boss": "Extrusion", "cut": "Cut"}
+
+
+def feature_kind(adapter: Any, feature: Any) -> str:
+    """A feature's ``GetTypeName2``, or for an Instant3D extrude its real type.
+
+    Returns:
+        str: ``"Extrusion"`` or ``"Cut"`` for an "ICE" feature whose
+        ``GetTypeName`` names one, else ``GetTypeName2`` as given.
+    """
+    kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
+    if kind != INSTANT3D:
+        return kind
+    older = str(_attempt(adapter, lambda: feature.GetTypeName()) or "")
+    return _UNDERLYING.get(older.lower(), kind)
+
 
 #: ``swSketchSegments_e`` -> the id prefix a segment gets.
 SEGMENT_PREFIXES = {
@@ -121,14 +148,21 @@ def _feature(adapter: Any, name: str) -> Any:
     feature = _attempt(adapter, lambda: model.FeatureByName(name))
     if feature is None:
         raise LookupError(f"Feature {name!r} not found; list_features names them.")
-    _flag(adapter, feature, "GetTypeName2", "GetDefinition", "ModifyDefinition")
+    _flag(
+        adapter,
+        feature,
+        "GetTypeName2",
+        "GetTypeName",
+        "GetDefinition",
+        "ModifyDefinition",
+    )
     return feature
 
 
 def _read(adapter: Any, kind: str, data: Any) -> dict[str, Any]:
     """The editable values a definition holds, in mm and degrees."""
     values: dict[str, Any] = {}
-    if kind in ("Extrusion", "Cut"):
+    if kind in _EXTRUDE_KINDS:
         depth = _attempt(adapter, lambda: data.GetDepth(True))
         end = _attempt(adapter, lambda: data.GetEndCondition(True))
         values["depth"] = None if depth is None else round(float(depth) * 1000, 6)
@@ -136,7 +170,7 @@ def _read(adapter: Any, kind: str, data: Any) -> dict[str, Any]:
     if kind in ("Revolution", "RevCut"):
         angle = _attempt(adapter, lambda: data.GetRevolutionAngle(True))
         values["angle"] = None if angle is None else round(math.degrees(angle), 6)
-    if kind in ("Extrusion", "Cut", "Revolution", "RevCut"):
+    if kind in (*_EXTRUDE_KINDS, "Revolution", "RevCut"):
         reverse = _attempt(adapter, lambda: data.ReverseDirection)
         values["reverse_direction"] = None if reverse is None else bool(reverse)
     if kind == "Fillet":
@@ -184,8 +218,7 @@ def edit_feature(
     """
     model = adapter.currentModel
     feature = _feature(adapter, name)
-    raw_kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
-    kind = TYPE_ALIASES.get(raw_kind, raw_kind)
+    kind = feature_kind(adapter, feature)
     problem = check_changes(kind, changes, name)
     if problem:
         raise ValueError(problem)

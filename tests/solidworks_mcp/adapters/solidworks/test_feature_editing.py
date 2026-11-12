@@ -59,13 +59,24 @@ class _RevolveData:
 
 
 class _Feature:
-    def __init__(self, name: str, kind: str, data: Any, modify: bool = True) -> None:
+    def __init__(
+        self,
+        name: str,
+        kind: str,
+        data: Any,
+        modify: bool = True,
+        older: str | None = None,
+    ) -> None:
         self.Name, self._kind, self._data, self._modify = name, kind, data, modify
+        self._older = older  # GetTypeName: an Instant3D feature's real type
         self.rolled_back = False
         self.after: _Feature | None = None
 
     def GetTypeName2(self) -> str:  # noqa: N802
         return self._kind
+
+    def GetTypeName(self) -> str | None:  # noqa: N802
+        return self._older
 
     def GetDefinition(self) -> Any:  # noqa: N802
         return self._data
@@ -227,11 +238,23 @@ def test_a_cut_takes_depth_end_condition_and_direction() -> None:
 # ---- edit_feature ------------------------------------------------------------
 
 
-@pytest.mark.parametrize("type_name", ["Cut", "ICE"])
-def test_a_cuts_depth_and_direction_change_and_read_back(type_name: str) -> None:
-    """SolidWorks 2026 names a cut-extrude's type "ICE" (first live run)."""
+@pytest.mark.parametrize(
+    ("type_name", "older", "reported"),
+    [
+        ("Cut", None, "Cut"),
+        ("ICE", "Cut", "Cut"),
+        ("ICE", "CUT", "Cut"),
+        ("ICE", "Extrusion", "Extrusion"),
+        ("ICE", "Boss", "Extrusion"),
+        ("ICE", None, "ICE"),
+    ],
+)
+def test_a_cuts_depth_and_direction_change_and_read_back(
+    type_name: str, older: str | None, reported: str
+) -> None:
+    """An Instant3D extrude, boss or cut, is "ICE"; GetTypeName names which."""
     data = _ExtrudeData()
-    model = _Model([_Feature("Cut-Extrude1", type_name, data)])
+    model = _Model([_Feature("Cut-Extrude1", type_name, data, older=older)])
 
     reply = fe.edit_feature(
         _Adapter(model),
@@ -250,6 +273,7 @@ def test_a_cuts_depth_and_direction_change_and_read_back(type_name: str) -> None
         "end_condition": "ThroughAll",
         "reverse_direction": True,
     }
+    assert reply["type"] == reported
     assert data.accessed_with == (model, _NULL)
     assert model.calls == ["rebuild"]
 
