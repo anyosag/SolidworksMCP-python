@@ -41,8 +41,26 @@ from .solidworks.sketch import (
     default_plane_axes,
     plane_candidates_for,
 )
+from .solidworks.stl_settings import ONE_FILE as _STL_ONE_FILE
 from .solidworks.stl_settings import preference_changes as _stl_changes
 from .solidworks.visibility import unknown_types as _unknown_display_types
+
+#: The mock's STL: a closed tetrahedron with 10 mm legs, facing outwards.
+_MOCK_STL = (
+    "solid mock\n"
+    + "".join(
+        "  facet normal 0 0 0\n    outer loop\n"
+        + "".join(f"      vertex {corner}\n" for corner in facet)
+        + "    endloop\n  endfacet\n"
+        for facet in (
+            ("0 0 0", "0 10 0", "10 0 0"),
+            ("0 0 0", "10 0 0", "0 0 10"),
+            ("0 0 0", "0 0 10", "0 10 0"),
+            ("10 0 0", "0 10 0", "0 0 10"),
+        )
+    )
+    + "endsolid mock\n"
+)
 
 #: Orientations the mock accepts for a drawing view. Kept in step with
 #: ``_NAMED_VIEWS`` in ``adapters/solidworks/io.py`` by a test — the two lists
@@ -2987,8 +3005,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 ``angle_deg``, ``units`` and ``binary``.
 
         Returns:
-            AdapterResult[dict[str, Any]]: ``file_path`` and ``mesh`` (the
-            settings ``applied``, and whether the user's were ``restored``).
+            AdapterResult[dict[str, Any]]: ``file_path``, ``mesh`` (the
+            settings ``applied``, and whether the user's were ``restored``),
+            and the export's ``units`` and ``document_type``.
         """
         try:
             changes = _stl_changes(settings)
@@ -2997,29 +3016,33 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         exported = await self.export_file(file_path, "stl")
         if not exported.is_success:
             return cast(AdapterResult[dict[str, Any]], exported)
+        data: dict[str, Any] = dict(exported.data or {})
+        own = data.pop("mesh", {"applied": []})
+        data["units"] = settings.get("units", data.get("units"))
+        data["mesh"] = {
+            "applied": [label for *_rest, label in changes] + own["applied"],
+            "restored": True,
+        }
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={
-                "file_path": file_path,
-                "mesh": {
-                    "applied": [label for *_rest, label in changes],
-                    "restored": True,
-                },
-            },
+            data=data,
             execution_time=exported.execution_time,
         )
 
-    async def export_file(
-        self, file_path: str, format_type: str
-    ) -> AdapterResult[None]:
+    async def export_file(self, file_path: str, format_type: str) -> AdapterResult[Any]:
         """Mock exporting a file.
+
+        An STL export writes a closed tetrahedron (10 mm legs) and reports
+        what the real adapter does: ``file_path``, ``units`` (mm),
+        ``document_type`` and, for an assembly, the one-file option in
+        ``mesh``.
 
         Args:
             file_path (str): Path to the target file.
             format_type (str): The format type value.
 
         Returns:
-            AdapterResult[None]: The result produced by the operation.
+            AdapterResult[Any]: The STL details for STL, else ``None`` data.
         """
         if not self._current_model:
             return AdapterResult(
@@ -3043,36 +3066,25 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         await asyncio.sleep(delay)
         self._operation_count += 1
 
-        # Write a minimal placeholder file so callers that check existence get a valid result
+        data: dict[str, Any] | None = None
         if format_lower == "stl":
             import pathlib
 
             out = pathlib.Path(file_path)
             out.parent.mkdir(parents=True, exist_ok=True)
-            # Minimal ASCII STL — a single unit triangle (mock geometry placeholder)
-            out.write_text(
-                "solid mock\n"
-                "  facet normal 0 0 1\n"
-                "    outer loop\n"
-                "      vertex 0 0 0\n"
-                "      vertex 10 0 0\n"
-                "      vertex 5 10 0\n"
-                "    endloop\n"
-                "  endfacet\n"
-                "  facet normal 0 0 1\n"
-                "    outer loop\n"
-                "      vertex 0 0 0\n"
-                "      vertex 10 0 0\n"
-                "      vertex 5 0 10\n"
-                "    endloop\n"
-                "  endfacet\n"
-                "endsolid mock\n",
-                encoding="utf-8",
-            )
+            out.write_text(_MOCK_STL, encoding="utf-8")
+            document_type = self._current_model.type.lower()
+            data = {
+                "file_path": file_path,
+                "units": "mm",
+                "document_type": document_type,
+            }
+            if document_type == "assembly":
+                data["mesh"] = {"applied": [_STL_ONE_FILE[3]], "restored": True}
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data=None,
+            data=data,
             execution_time=delay,
             metadata={"exported_format": format_type, "file_path": file_path},
         )

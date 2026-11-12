@@ -23,11 +23,18 @@ custom resolution needs one of them, its read-back is not checked, and on
 restore the tolerances go back before the resolution. SolidWorks also keeps
 the deviation within limits that depend on the part, so a tolerance it moves
 is reported as used, not refused.
+
+An assembly goes into one file only while ``swSTLComponentsIntoOneFile``
+(toggle 72) is on. With it off, SolidWorks writes one file per component next
+to the one asked for (``X - Assembly-1 Part-1.STL``) and no ``X.stl``, so an
+assembly export turns it on for the export (:data:`ONE_FILE`) and
+:func:`refuse_split_export` names the files written when that didn't help.
 """
 
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,12 +50,79 @@ STL_DEVIATION = 2
 STL_ANGLE_TOLERANCE = 3
 STL_UNITS = 211
 STL_BINARY = 69
+STL_ONE_FILE = 72
 
 RESOLUTIONS = {"coarse": 1, "fine": 2, "custom": 3}
 UNITS = {"mm": 0, "cm": 1, "m": 2, "in": 3, "ft": 4}
 
 #: One preference to change: (kind, swUserPreference id, value, label).
 Change = tuple[str, int, Any, str]
+
+#: Every component of an assembly in the one file asked for.
+ONE_FILE: Change = ("toggle", STL_ONE_FILE, True, "all components in one file")
+
+#: How many split files an error names before "and N more".
+_NAMED_FILES = 12
+
+
+def unit_name(value: Any) -> str | None:
+    """The unit name (``mm``, ...) for an ``swExportStlUnits`` value, or ``None``."""
+    names = {number: name for name, number in UNITS.items()}
+    return names.get(value) if isinstance(value, int) else None
+
+
+def component_files(path: str) -> dict[str, int]:
+    """The per-component files SolidWorks writes for ``path``, with mtimes.
+
+    For ``X.stl`` those are ``X - <component>.stl`` next to it, any case.
+
+    Args:
+        path: The ``.stl`` file asked for; its folder must exist.
+
+    Returns:
+        dict[str, int]: Each such file's path and ``st_mtime_ns``.
+    """
+    folder, name = os.path.split(os.path.abspath(path))
+    prefix = os.path.splitext(name)[0].lower() + " - "
+    found: dict[str, int] = {}
+    with os.scandir(folder) as entries:
+        for entry in entries:
+            lowered = entry.name.lower()
+            split = lowered.startswith(prefix) and lowered.endswith(".stl")
+            if split and entry.is_file():
+                found[entry.path] = entry.stat().st_mtime_ns
+    return found
+
+
+def refuse_split_export(path: str, before: dict[str, int]) -> None:
+    """Raise when the export wrote per-component files instead of ``path``.
+
+    Args:
+        path: The ``.stl`` file asked for.
+        before: :func:`component_files` from before the export, so files an
+            earlier export left are not counted.
+
+    Raises:
+        RuntimeError: Naming the files written, so they can be deleted or
+            used; nothing when there are none.
+    """
+    written = sorted(
+        file
+        for file, mtime in component_files(path).items()
+        if before.get(file) != mtime
+    )
+    if not written:
+        return
+    names = [os.path.basename(file) for file in written]
+    shown = ", ".join(names[:_NAMED_FILES])
+    if len(names) > _NAMED_FILES:
+        shown += f" and {len(names) - _NAMED_FILES} more"
+    raise RuntimeError(
+        f"SolidWorks wrote {len(names)} STL files, one per component, in "
+        f"{os.path.dirname(written[0])} instead of {os.path.basename(path)}: "
+        f"{shown}. Its option to save all components in one file did not "
+        "take; delete those files, or use them."
+    )
 
 
 def preference_changes(settings: dict[str, Any]) -> list[Change]:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,6 +22,7 @@ class _App:
             ("double", stl.STL_ANGLE_TOLERANCE): 0.17,
             ("integer", stl.STL_UNITS): 3,
             ("toggle", stl.STL_BINARY): True,
+            ("toggle", stl.STL_ONE_FILE): False,
         }
         self.refuse = refuse or set()
         self.broken = broken or set()
@@ -194,3 +197,74 @@ def test_a_setting_that_cannot_be_put_back_is_counted() -> None:
 
     with pytest.raises(RuntimeError, match="1 setting\\(s\\) could not be put back"):
         stl.apply_changes(app, changes)
+
+
+@pytest.mark.parametrize(
+    ("value", "name"),
+    [(0, "mm"), (1, "cm"), (2, "m"), (3, "in"), (4, "ft"), (9, None), (None, None)],
+)
+def test_the_unit_an_stl_is_written_in(value: Any, name: str | None) -> None:
+    assert stl.unit_name(value) == name
+
+
+def test_the_one_file_option_is_set_for_the_export_and_put_back() -> None:
+    app = _App()
+
+    applied = stl.apply_changes(app, [stl.ONE_FILE])
+
+    assert applied.labels == ["all components in one file"]
+    assert app.values[("toggle", stl.STL_ONE_FILE)] is True
+    assert stl.restore(app, applied.previous) == []
+    assert app.values[("toggle", stl.STL_ONE_FILE)] is False
+
+
+def _touch(path: Path, mtime_ns: int | None = None) -> Path:
+    path.write_bytes(b"solid")
+    if mtime_ns is not None:
+        os.utime(path, ns=(mtime_ns, mtime_ns))
+    return path
+
+
+def test_files_written_per_component_are_named(tmp_path: Path) -> None:
+    target = tmp_path / "rack.stl"
+    stale = _touch(tmp_path / "rack - Old-1.STL", 1_000_000_000)
+    _touch(tmp_path / "rack.step")
+    (tmp_path / "rack - folder.stl").mkdir()
+    before = stl.component_files(str(target))
+    _touch(tmp_path / "rack - Assembly-1 Part-1.STL", 2_000_000_000)
+    _touch(tmp_path / "RACK - Part-2.stl", 2_000_000_000)
+    _touch(tmp_path / "racks - Part-3.stl", 2_000_000_000)
+
+    assert before == {str(stale): 1_000_000_000}
+    with pytest.raises(RuntimeError) as caught:
+        stl.refuse_split_export(str(target), before)
+
+    assert str(caught.value) == (
+        f"SolidWorks wrote 2 STL files, one per component, in {tmp_path} "
+        "instead of rack.stl: RACK - Part-2.stl, rack - Assembly-1 Part-1.STL. "
+        "Its option to save all components in one file did not take; delete "
+        "those files, or use them."
+    )
+
+
+def test_a_file_an_earlier_export_left_counts_once_rewritten(tmp_path: Path) -> None:
+    target = tmp_path / "rack.stl"
+    stale = _touch(tmp_path / "rack - Part-1.stl", 1_000_000_000)
+    before = stl.component_files(str(target))
+
+    stl.refuse_split_export(str(target), before)  # nothing new: no error
+    _touch(stale, 3_000_000_000)
+
+    with pytest.raises(RuntimeError, match="wrote 1 STL files"):
+        stl.refuse_split_export(str(target), before)
+
+
+def test_a_long_list_of_split_files_is_cut_short(tmp_path: Path) -> None:
+    target = tmp_path / "rack.stl"
+    for number in range(14):
+        _touch(tmp_path / f"rack - Part-{number:02d}.STL")
+
+    with pytest.raises(RuntimeError) as caught:
+        stl.refuse_split_export(str(target), {})
+
+    assert "rack - Part-11.STL and 2 more. Its option" in str(caught.value)
