@@ -1203,6 +1203,69 @@ Measured 2026-11-11 on SOLIDWORKS 2026 with `probe_stl_quality.py` (every value 
 
 ---
 
+## 41. `AddComponent4`/`AddComponent5` place a component by its centre, not its origin
+
+`IAssemblyDoc::AddComponent4(CompName, ConfigName, X, Y, Z)` puts the component's centre
+at `(X, Y, Z)`, not its origin. A part inserted at (0, 0, 0) landed offset by minus its
+bounding-box centre, (0, -6.75, +3.7) mm, and every part mated to it followed.
+
+- `insert_component` moves the component afterwards (`placement.py`). `IComponent2.Transform2`
+  gets the same rotation with the asked translation, through
+  `IMathUtility::CreateTransform` and a `VT_ARRAY | VT_R8` of the 16 `ArrayData` values.
+- A fixed component (the first in an assembly is fixed) is floated for the move and
+  fixed again, as a script that moved components on SolidWorks 2026 had to do.
+
+Reported 2026-11-12 by the Cellvis DishRack build; the move is not yet measured live.
+
+---
+
+## 42. `ViewZoomTo2` takes view coordinates
+
+`IModelDoc2::ViewZoomTo2(X1, Y1, Z1, X2, Y2, Z2)` takes its corners in the view's
+coordinates. SolidWorks' "Zoom to Region" example multiplies each point by
+`IModelView.Orientation3` first.
+
+- The front view's orientation is the identity, so a model box zooms right there.
+- In the right view, a box around the +X block zoomed onto the back block. Only the box
+  with model X and Z swapped zoomed where meant.
+- `zoom_box.py` transforms the box's eight corners (`IMathPoint.MultiplyTransform`) and
+  zooms to the box around them.
+
+Reported 2026-11-12 by the Cellvis DishRack build; the fix is not yet measured live.
+
+---
+
+## 43. Instant3D extrudes are `"ICE"`, boss and cut alike
+
+`IFeature.GetTypeName2` returns `"ICE"` for an extrude made with Instant3D, whether it is
+a boss or a cut. On SolidWorks 2026 that was every Boss-Extrude and Cut-Extrude the
+tools made.
+
+- `IFeature.GetTypeName` gives the underlying type ("the underlying type of feature of an
+  Instant3D feature", per the API help). Compare it case-insensitively: "CUT" has been
+  reported.
+- `feature_editing.feature_kind` does this. Mapping `"ICE"` to `"Cut"` reported bosses as
+  cuts.
+
+Found 2026-11-11/12 on SOLIDWORKS 2026 (first live run; Cellvis DishRack).
+
+---
+
+## 44. A part loaded only by an assembly has no window, and `ActivateDoc3` can't activate it
+
+`ISldWorks.GetDocuments` lists every loaded document, including a part an assembly
+loaded as a component.
+
+- Such a part is not visible (`IModelDoc2.Visible` False). `ActivateDoc3` on its title
+  leaves the last document active.
+- Opening its file with `OpenDoc6` (silent) gives it a window, and then it activates.
+  `activate_document` (and every tool's `document` argument) does that first
+  (`io._open_window`).
+
+Reported 2026-11-12 by the Cellvis DishRack build; the open is not yet measured live.
+
+---
+
 ## Adapter wiring traps — not COM, same silent-failure shape
 
 These are not SolidWorks issues, but they fail the same way: the code imports, the tests
