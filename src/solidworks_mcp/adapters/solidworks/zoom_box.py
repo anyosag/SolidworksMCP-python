@@ -19,6 +19,7 @@ from typing import Any
 
 from .com_utils import attempt as _attempt
 from .com_utils import double_array as _double_array
+from .com_utils import flag as _flag
 
 
 def corners_m(box_mm: Sequence[float]) -> list[tuple[float, float, float]]:
@@ -52,9 +53,13 @@ def in_view(
     utility = _attempt(adapter, lambda: adapter.swApp.GetMathUtility())
     if orientation is None or utility is None:
         return None
+    # Unflagged, late binding reads a method as a property: "Member not found"
+    # (live, 2026-11-12; CLAUDE.md "Method flagging via sw_type_info").
+    _flag(adapter, utility, "CreatePoint")
     points = []
     for corner in corners_m(box_mm):
         point = utility.CreatePoint(_double_array(list(corner)))
+        _flag(adapter, point, "MultiplyTransform")
         moved = point.MultiplyTransform(orientation)
         data = _attempt(adapter, lambda m=moved: m.ArrayData)
         if not isinstance(data, (list, tuple)) or len(data) < 3:

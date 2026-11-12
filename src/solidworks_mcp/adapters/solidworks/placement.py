@@ -21,6 +21,7 @@ from typing import Any
 from .. import sw_type_info as _sw_type_info
 from .com_utils import attempt as _attempt
 from .com_utils import double_array as _double_array
+from .com_utils import flag as _flag
 
 #: How far (metres) the read-back origin may be from the one asked.
 TOLERANCE_M = 1e-7
@@ -105,6 +106,9 @@ def place_origin(
     if fixed:
         _set_fixed(adapter, model, assembly, component, False)
     utility = adapter.swApp.GetMathUtility()
+    # Unflagged, late binding reads a method as a property: "Member not found"
+    # (live, 2026-11-12; CLAUDE.md "Method flagging via sw_type_info").
+    _flag(adapter, utility, "CreateTransform")
     transform = utility.CreateTransform(_double_array(translated(data, origin_m)))
     component.Transform2 = transform
     if fixed:

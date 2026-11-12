@@ -129,24 +129,28 @@ async def test_a_part_loaded_only_by_its_assembly_is_opened_and_activated(
     adapter = scratch.adapter
     tools = await _tools(adapter)
     part = await _off_centre_part(scratch, tools, tmp_path / "df_loaded.SLDPRT")
-    assembly = tmp_path / "df_loaded_asm.SLDASM"
     assert (await adapter.create_assembly()).is_success
+    scratch.written_files.append(str(tmp_path / "df_loaded_asm.SLDASM"))
     assert (await tools["insert_component"]({"file_path": part}))["status"] == "success"
-    saved = await adapter.save_file(str(assembly))
-    assert saved.is_success, saved.error
-    scratch.written_files.append(str(assembly))
-    # Close both, then open the assembly alone: it loads the part, windowless.
-    assert (await adapter.close_model()).is_success
+    # Close the part's window: the assembly keeps it loaded, windowless.
+    # (Reopening a saved assembly instead set off a SOLIDWORKS CAM dialog
+    # about lightweight parts on this install.)
     assert (await adapter.activate_document("df_loaded.SLDPRT")).is_success
     assert (await adapter.close_model()).is_success
-    assert (await adapter.open_model(str(assembly))).is_success
+    loaded = [
+        (str(adapter._get_attr_or_call(d, "GetTitle")), d.Visible)
+        for d in adapter.swApp.GetDocuments() or []
+        if "df_loaded" in str(adapter._get_attr_or_call(d, "GetTitle")).lower()
+    ]
 
     result = await tools["activate_document"]({"title_or_path": "df_loaded"})
     info = await adapter.get_model_info()
 
     evidence(
-        "activate the part the assembly loaded", {"result": result, "info": info.data}
+        "activate the part the assembly loaded",
+        {"loaded": loaded, "result": result, "info": info.data},
     )
+    assert loaded and all(visible is False for _title, visible in loaded), loaded
     assert result["status"] == "success", result
     assert (result.get("data") or result).get("opened_window") is True
     assert "df_loaded" in str((info.data or {}).get("title", "")).lower()
@@ -170,16 +174,32 @@ async def test_a_zoom_box_in_the_right_view_is_in_view_coordinates(
     in_right = await tools["export_image"](
         {"file_path": str(right), "view_orientation": "right", "zoom_box_mm": box}
     )
+    # The whole +X face (z -6..6, y -10..10): it should come out centred.
+    face = tmp_path / "right_face.png"
+    whole_face = await tools["export_image"](
+        {
+            "file_path": str(face),
+            "view_orientation": "right",
+            "zoom_box_mm": [19, -10, -6, 20, 10, 6],
+        }
+    )
+    view = adapter.currentModel.ActiveView
+    orientation = list(view.Orientation3.ArrayData)
+    translation = list(view.Translation3.ArrayData)
     kept = Path(__file__).parents[1] / ".generated" / "dishrack_fixes"
     kept.mkdir(parents=True, exist_ok=True)
-    for picture in (front, right):
-        shutil.copy(picture, kept / picture.name)
+    for picture in (front, right, face):
+        if picture.exists():
+            shutil.copy(picture, kept / picture.name)
 
     evidence(
         "the same model box zoomed in the front and the right view",
         {
             "front": in_front.get("data"),
             "right": in_right.get("data"),
+            "face": whole_face.get("data"),
+            "orientation3": orientation,
+            "translation3": translation,
             "kept": str(kept),
         },
     )
@@ -379,19 +399,30 @@ async def test_a_whole_sketch_is_emptied(scratch) -> None:
     opened = await tools["edit_sketch"]({"name": name})
     emptied = await tools["delete_sketch_entities"]({"all": True})
     stale = await tools["delete_sketch_entities"]({"ids": ["Line_9"]})
-    assert (await tools["exit_sketch"]())["status"] == "success"
+    # SolidWorks deletes a sketch exited empty (live, 2026-11-12): draw the
+    # replacement first.
+    redrawn = await tools["add_circle"]({"center_x": 5, "center_y": 5, "radius": 2})
+    first_exit = await tools["exit_sketch"]()
     reopened = await tools["edit_sketch"]({"name": name})
-    assert (await tools["exit_sketch"]())["status"] == "success"
+    second_exit = await tools["exit_sketch"]()
 
     evidence(
-        "a rectangle and a circle, then delete all",
-        {"opened": opened, "emptied": emptied, "stale": stale, "reopened": reopened},
+        "a rectangle and a circle, delete all, then one new circle",
+        {
+            "opened": opened,
+            "emptied": emptied,
+            "stale": stale,
+            "exits": [first_exit, second_exit],
+            "reopened": reopened,
+        },
     )
     assert len(opened["sketch"]["segments"]) == 5
     assert emptied["status"] == "success", emptied
     assert emptied.get("deleted_count", len(emptied["deleted"])) == 5
     assert stale["status"] == "error"
-    assert reopened["sketch"]["segments"] == []
+    assert redrawn["status"] == first_exit["status"] == "success", first_exit
+    assert reopened["status"] == second_exit["status"] == "success", reopened
+    assert [s["type"] for s in reopened["sketch"]["segments"]] == ["arc"]
 
 
 @pytest.mark.asyncio
