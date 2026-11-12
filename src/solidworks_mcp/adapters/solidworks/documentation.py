@@ -562,7 +562,10 @@ class SolidWorksDocumentationMixin:
         )
 
     async def check_wall_thickness(
-        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+        self,
+        min_wall_mm: float = 0.8,
+        max_rays: int = 5000,
+        exclude_boxes_mm: list[list[float]] | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the active part's wall thickness by casting rays inward.
 
@@ -573,6 +576,8 @@ class SolidWorksDocumentationMixin:
         Args:
             min_wall_mm: The thinnest wall the printer can make.
             max_rays: The most rays to cast (samples are thinned evenly).
+            exclude_boxes_mm: Regions left out of the verdict, each
+                ``[x1, y1, z1, x2, y2, z2]`` in mm; reported under ``excluded``.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``min_thickness_mm`` and where,
@@ -587,7 +592,9 @@ class SolidWorksDocumentationMixin:
             "AdapterResult[dict[str, Any]]",
             self._handle_com_operation(
                 "check_wall_thickness",
-                lambda: measure_wall_thickness(self, min_wall_mm, max_rays),
+                lambda: measure_wall_thickness(
+                    self, min_wall_mm, max_rays, exclude_boxes_mm
+                ),
             ),
         )
 

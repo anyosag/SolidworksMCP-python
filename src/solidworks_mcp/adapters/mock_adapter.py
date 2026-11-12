@@ -1309,13 +1309,18 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def check_wall_thickness(
-        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+        self,
+        min_wall_mm: float = 0.8,
+        max_rays: int = 5000,
+        exclude_boxes_mm: list[list[float]] | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock wall thickness of the canned 10 mm block: 10 mm everywhere.
 
-        One sample at the centre of each of the block's six faces, summarized
-        by the live adapter's own ``thickness.summarize``, so the reply has
-        the live shape and ``min_wall_mm`` above 10 finds every sample thin.
+        One sample at the centre of each of the block's six faces (the block
+        spans 0..10 mm on each axis), summarized by the live adapter's own
+        ``thickness.summarize``, so the reply has the live shape,
+        ``min_wall_mm`` above 10 finds every sample thin and
+        ``exclude_boxes_mm`` works as it does live.
         """
         from .solidworks.thickness import summarize
 
@@ -1342,7 +1347,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 samples.append((point, normal))
         samples = samples[: max(1, int(max_rays))]
         reply = summarize(
-            samples, dict.fromkeys(range(len(samples)), 0.01), min_wall_mm
+            samples,
+            dict.fromkeys(range(len(samples)), 0.01),
+            min_wall_mm,
+            exclude_boxes_mm,
         )
         reply.update({"bodies": 1, "faces": 6})
         self._operation_count += 1

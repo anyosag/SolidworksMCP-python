@@ -744,12 +744,17 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
         )
 
     async def check_wall_thickness(
-        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+        self,
+        min_wall_mm: float = 0.8,
+        max_rays: int = 5000,
+        exclude_boxes_mm: list[list[float]] | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure wall thickness using pool."""
         return await self._execute_with_pool(
             "check_wall_thickness",
-            lambda adapter: adapter.check_wall_thickness(min_wall_mm, max_rays),
+            lambda adapter: adapter.check_wall_thickness(
+                min_wall_mm, max_rays, exclude_boxes_mm
+            ),
         )
 
     async def edit_feature(

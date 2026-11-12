@@ -7,7 +7,7 @@ inspection, not for creating geometry. verify_model checks the finished model
 against expected values in one call.
 """
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from pydantic import BaseModel, ConfigDict, Field
@@ -87,6 +87,7 @@ class CheckWallThicknessInput(CompatInput):
     Attributes:
         min_wall_mm (float): The thinnest wall the printer can make, mm.
         max_rays (int): The most points to measure.
+        exclude_boxes_mm (list[list[float]] | None): Regions meant to be thin.
     """
 
     min_wall_mm: float = Field(
@@ -104,6 +105,18 @@ class CheckWallThicknessInput(CompatInput):
         description=(
             "The most points to measure; more finds thin spots on big parts, "
             "slower (default 5000)"
+        ),
+    )
+    exclude_boxes_mm: (
+        list[Annotated[list[float], Field(min_length=6, max_length=6)]] | None
+    ) = Field(
+        default=None,
+        max_length=100,
+        description=(
+            "Regions meant to be thin, such as a snap-fit flexure: each box is "
+            "[x1, y1, z1, x2, y2, z2], two opposite corners in the part's "
+            "coordinates, mm. Points inside a box (edges included) don't count "
+            "against ok, min_thickness_mm or thin_spots; data.excluded reports them"
         ),
     )
 
@@ -488,37 +501,56 @@ async def register_analysis_tools(
         goes straight inward (the wall's local thickness), then reports the thinnest
         and every spot under `min_wall_mm`. Points near edges and on fillets can read
         a little off, and a face with few display triangles gets few points: treat
-        it as a screen, then check a doubtful spot with `measure_entities`. Needs:
-        an open part. Read-only. Returns: `data` with `min_thickness_mm`, `at_mm` and
-        `normal` (where), `below_minimum`, `thin_spots` (up to 20), `ok`, `samples`
-        and `measured`.
+        it as a screen, then check a doubtful spot with `measure_entities`. A wall
+        meant to be thin (a snap-fit flexure) would fail it: give its region in
+        `exclude_boxes_mm`. Needs: an open part. Read-only. Returns: `data` with
+        `min_thickness_mm`, `at_mm` and `normal` (where), `below_minimum`,
+        `thin_spots` (up to 20), `ok`, `samples` and `measured`; with boxes, those
+        cover the points outside them and `excluded` the points inside.
 
         Args:
             input_data: The check. Nothing is required: `min_wall_mm` (0.8) and
-                `max_rays` (5000) have defaults.
+                `max_rays` (5000) have defaults; `exclude_boxes_mm` is off.
 
         Returns:
             dict[str, Any]: The thickness found.
         """
         input_data = normalize_input(input_data, CheckWallThicknessInput)
         result = await adapter.check_wall_thickness(
-            input_data.min_wall_mm, input_data.max_rays
+            input_data.min_wall_mm,
+            input_data.max_rays,
+            input_data.exclude_boxes_mm or None,
         )
         require_success(result, context="Failed to measure wall thickness")
         data = result.data if isinstance(result.data, dict) else {}
         thinnest = data.get("min_thickness_mm")
         below = data.get("below_minimum", 0)
+        # With boxes, the counts and the verdict are for the points outside them.
+        excluded = data.get("excluded") or {}
+        lead, measured = "Thinnest wall", data.get("measured")
+        if excluded:
+            lead = "Outside exclude_boxes_mm, the thinnest wall is"
+            measured = int(measured or 0) - int(excluded.get("measured") or 0)
         if thinnest is None:
-            message = "No wall could be measured"
+            message = (
+                "Every point measured is inside exclude_boxes_mm"
+                if excluded.get("measured")
+                else "No wall could be measured"
+            )
         elif below:
             message = (
-                f"Thinnest wall {thinnest:g} mm; {below} of {data.get('measured')} "
-                f"points are under {input_data.min_wall_mm:g} mm"
+                f"{lead} {thinnest:g} mm; {below} of {measured} points are under "
+                f"{input_data.min_wall_mm:g} mm"
             )
         else:
             message = (
-                f"Thinnest wall {thinnest:g} mm; every point is at least "
+                f"{lead} {thinnest:g} mm; every point is at least "
                 f"{input_data.min_wall_mm:g} mm"
+            )
+        if excluded.get("below_minimum"):
+            message += (
+                f"; {excluded['below_minimum']} points under "
+                f"{input_data.min_wall_mm:g} mm inside the boxes are not counted"
             )
         return {
             "status": "success",
