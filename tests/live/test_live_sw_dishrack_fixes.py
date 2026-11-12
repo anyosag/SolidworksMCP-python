@@ -6,8 +6,14 @@
   own, is opened and activated.
 - ``export_image``: ``zoom_box_mm`` in the right view is turned into the
   view's coordinates (``ViewZoomTo2`` takes those).
-- ``edit_feature``: an Instant3D boss reports ``Extrusion``, a cut ``Cut``.
+- ``edit_feature``: an Instant3D boss reports ``Extrusion``, a cut ``Cut``;
+  ``list_features`` lists them so, and leaves out the standard folders.
 - ``select_edges``: ``any_of`` takes edges in two places in one call.
+- ``export_stl``: an assembly is one file, closed, of the right size, and the
+  user's "one file" option is put back; a part's mesh volume matches it.
+- ``delete_sketch_entities``: ``all`` empties an open sketch.
+- ``check_wall_thickness``: a box around the thin floor excludes it.
+- ``execute_workflow``: a step's ``document`` runs on that document.
 
 Scratch documents only, saved under pytest's ``tmp_path``. Collected only
 with ``SOLIDWORKS_MCP_RUN_REAL_INTEGRATION=1`` on Windows (see
@@ -25,10 +31,15 @@ import pytest
 
 from tests.live.evidence import evidence
 
+#: swUserPreferenceToggle_e.swSTLComponentsIntoOneFile (SolidWorks 2026).
+_STL_ONE_FILE = 72
+
 
 async def _tools(adapter: Any) -> dict[str, Any]:
     from fastmcp import FastMCP
 
+    from solidworks_mcp.tools.analysis import register_analysis_tools
+    from solidworks_mcp.tools.automation import register_automation_tools
     from solidworks_mcp.tools.export import register_export_tools
     from solidworks_mcp.tools.file_management import register_file_management_tools
     from solidworks_mcp.tools.modeling import register_modeling_tools
@@ -39,6 +50,8 @@ async def _tools(adapter: Any) -> dict[str, Any]:
     await register_modeling_tools(mcp, adapter, {})
     await register_file_management_tools(mcp, adapter, {})
     await register_export_tools(mcp, adapter, {})
+    await register_analysis_tools(mcp, adapter, {})
+    await register_automation_tools(mcp, adapter, {})
     return {t.name: t.fn for t in await mcp.list_tools()}
 
 
@@ -238,3 +251,201 @@ async def test_edges_in_two_places_in_one_select_edges_call(scratch) -> None:
     assert together["data"]["selected_edges"] == 2
     assert len(together["data"]["matched"]["rules"]) == 2
     assert alone["data"]["selection_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_list_features_names_instant3d_types_and_drops_the_folders(
+    scratch,
+) -> None:
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    assert (await adapter.create_part()).is_success
+    await _box(tools, "Top", {"x1": -20, "y1": -15, "x2": 20, "y2": 15}, 10.0)
+    assert (await tools["create_sketch"]({"plane": "Top"}))["status"] == "success"
+    circle = {"center_x": 0, "center_y": 0, "radius": 3}
+    assert (await tools["add_circle"](circle))["status"] == "success"
+    assert (await tools["exit_sketch"]())["status"] == "success"
+    assert (await tools["create_cut_extrude"]({"depth": 4.0}))["status"] == "success"
+
+    everything = await tools["list_features"]({})
+    own = await tools["list_features"]({"include_standard": False})
+    cuts = await tools["list_features"]({"types": ["cut"]})
+    newest = await tools["list_features"]({"last": 1})
+
+    evidence(
+        "the tree, without the standard items, the cuts and the newest",
+        {
+            "all": [(f["name"], f["type"]) for f in everything["features"]],
+            "own": [(f["name"], f["type"]) for f in own["features"]],
+            "cuts": cuts["features"],
+            "newest": newest["features"],
+        },
+    )
+    types = {f["name"]: f["type"] for f in everything["features"]}
+    assert "ICE" not in types.values(), types
+    assert [f["type"] for f in own["features"]] == [
+        "ProfileFeature",
+        "Extrusion",
+        "ProfileFeature",
+        "Cut",
+    ]
+    assert [f["type"] for f in cuts["features"]] == ["Cut"]
+    assert [f["type"] for f in newest["features"]] == ["Cut"]
+    assert "assembly_tree" not in everything
+
+
+async def _two_block_assembly(
+    scratch: Any, tools: dict[str, Any], folder: Path
+) -> Path:
+    """Two 20 x 10 x 6 blocks, 50 mm apart in x, in a saved assembly."""
+    adapter = scratch.adapter
+    part = await _off_centre_part(scratch, tools, folder / "df_stl_block.SLDPRT")
+    assembly = folder / "df_stl_asm.SLDASM"
+    assert (await adapter.create_assembly()).is_success
+    for x in (0, 50):
+        placed = await tools["insert_component"]({"file_path": part, "x": x})
+        assert placed["status"] == "success", placed
+    saved = await adapter.save_file(str(assembly))
+    assert saved.is_success, saved.error
+    scratch.written_files.append(str(assembly))
+    return assembly
+
+
+@pytest.mark.asyncio
+async def test_an_assembly_exports_to_one_closed_stl(scratch, tmp_path: Path) -> None:
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    await _two_block_assembly(scratch, tools, tmp_path)
+    one_file_before = adapter.swApp.GetUserPreferenceToggle(_STL_ONE_FILE)
+    target = tmp_path / "df_stl_asm.stl"
+
+    result = await tools["export_stl"]({"file_path": str(target)})
+    one_file_after = adapter.swApp.GetUserPreferenceToggle(_STL_ONE_FILE)
+    split = sorted(p.name for p in tmp_path.glob("df_stl_asm - *"))
+
+    evidence(
+        "an assembly of two blocks to one STL",
+        {
+            "result": result,
+            "split_files": split,
+            "one_file": [one_file_before, one_file_after],
+        },
+    )
+    assert result["status"] == "success", result
+    assert target.exists() and split == []
+    check = result["export"]["mesh_check"]
+    assert check["closed"] is True, check
+    assert check["triangles"] >= 24  # two boxes, 12 triangles each
+    assert check["volume_mm3"] == pytest.approx(2 * 1200.0, rel=1e-3)
+    assert check["size_mm"] == pytest.approx([70.0, 10.0, 6.0], abs=1e-3)
+    assert one_file_after == one_file_before
+
+
+@pytest.mark.asyncio
+async def test_a_parts_stl_volume_matches_the_part(scratch, tmp_path: Path) -> None:
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    assert (await adapter.create_part()).is_success
+    await _box(tools, "Front", {"x1": 0, "y1": 0, "x2": 20, "y2": 10}, 6.0)
+    target = tmp_path / "df_block.stl"
+
+    result = await tools["export_stl"]({"file_path": str(target), "units": "in"})
+
+    evidence("a 1200 mm³ block written in inches", result)
+    assert result["status"] == "success", result
+    check = result["export"]["mesh_check"]
+    assert check["units"] == "in"
+    assert check["closed"] is True
+    assert check["volume_mm3"] == pytest.approx(1200.0, rel=1e-3)
+    assert check["cad_volume_mm3"] == pytest.approx(1200.0, rel=1e-4)
+    assert check["volume_ratio"] == pytest.approx(1.0, rel=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_a_whole_sketch_is_emptied(scratch) -> None:
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    assert (await adapter.create_part()).is_success
+    sketch = await tools["create_sketch"]({"plane": "Front"})
+    assert sketch["status"] == "success", sketch
+    rect = {"x1": 0, "y1": 0, "x2": 20, "y2": 10}
+    assert (await tools["add_rectangle"](rect))["status"] == "success"
+    assert (await tools["add_circle"]({"center_x": 30, "center_y": 5, "radius": 3}))[
+        "status"
+    ] == "success"
+    closed = await tools["exit_sketch"]()
+    name = str((closed.get("sketch") or sketch["sketch"])["name"])
+
+    opened = await tools["edit_sketch"]({"name": name})
+    emptied = await tools["delete_sketch_entities"]({"all": True})
+    stale = await tools["delete_sketch_entities"]({"ids": ["Line_9"]})
+    assert (await tools["exit_sketch"]())["status"] == "success"
+    reopened = await tools["edit_sketch"]({"name": name})
+    assert (await tools["exit_sketch"]())["status"] == "success"
+
+    evidence(
+        "a rectangle and a circle, then delete all",
+        {"opened": opened, "emptied": emptied, "stale": stale, "reopened": reopened},
+    )
+    assert len(opened["sketch"]["segments"]) == 5
+    assert emptied["status"] == "success", emptied
+    assert emptied.get("deleted_count", len(emptied["deleted"])) == 5
+    assert stale["status"] == "error"
+    assert reopened["sketch"]["segments"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_box_around_the_thin_floor_excludes_it(scratch) -> None:
+    from tests.live.test_live_sw_wall_thickness import _plate_with_pocket
+
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    await _plate_with_pocket(adapter, tools)
+
+    strict = await tools["check_wall_thickness"]({"min_wall_mm": 1.2})
+    excused = await tools["check_wall_thickness"](
+        {"min_wall_mm": 1.2, "exclude_boxes_mm": [[-11, -1, -6, 11, 2, 6]]}
+    )
+
+    evidence(
+        "the 1 mm floor, checked, then excluded", {"strict": strict, "excused": excused}
+    )
+    assert strict["status"] == excused["status"] == "success", (strict, excused)
+    assert strict["data"]["ok"] is False
+    assert excused["data"]["ok"] is True, excused
+    assert excused["data"]["excluded"]["below_minimum"] > 0
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_step_runs_on_the_document_it_names(
+    scratch, tmp_path: Path
+) -> None:
+    """Two parts open; the active one (30 mm long) is not the one named (20)."""
+    adapter = scratch.adapter
+    tools = await _tools(adapter)
+    first = await _off_centre_part(scratch, tools, tmp_path / "df_flow_a.SLDPRT")
+    second = tmp_path / "df_flow_b.SLDPRT"
+    assert (await adapter.create_part()).is_success
+    await _box(tools, "Front", {"x1": 0, "y1": 0, "x2": 30, "y2": 10}, 6.0)
+    assert (await adapter.save_file(str(second))).is_success
+    scratch.written_files.append(str(second))
+    target = tmp_path / "df_flow_a.stl"
+
+    result = await tools["execute_workflow"](
+        {
+            "detail": "full",
+            "steps": [
+                {
+                    "tool": "export_stl",
+                    "arguments": {"input_data": {"file_path": str(target)}},
+                    "document": Path(first).name,
+                },
+            ],
+        }
+    )
+
+    evidence("export the inactive part's STL by name", result)
+    assert result["status"] == "success", result
+    check = result["steps"][0]["result"]["export"]["mesh_check"]
+    assert check["size_mm"] == pytest.approx([20.0, 10.0, 6.0], abs=1e-3)
+    assert target.exists()
