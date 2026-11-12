@@ -1321,11 +1321,12 @@ async def register_file_management_tools(
         """Make an already-open document the active one, so the next tools act on it.
 
         Match it by window title, full path or file name (not case-sensitive); see
-        `list_open_documents`. To open a file that isn't open yet, use `open_model`.
-        Needs: the document open in SolidWorks. Changes: the active document. Returns:
-        `data` with `activated` (the title) and `verified` (read back from SolidWorks;
-        null when it couldn't be read). No match is an error that lists the open
-        documents.
+        `list_open_documents`. To open a file that isn't open yet, use `open_model`. A
+        part an assembly loaded, with no window of its own, is opened first. Needs:
+        the document open in SolidWorks. Changes: the active document. Returns: `data`
+        with `activated` (the title), `verified` (read back from SolidWorks; null when
+        it couldn't be read) and `opened_window`. No match is an error that lists the
+        open documents.
 
         Args:
             input_data: The document. `title_or_path` is required.
