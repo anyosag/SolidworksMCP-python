@@ -15,6 +15,7 @@ from typing import Any, cast
 
 from .. import sw_type_info as _sw_type_info
 from ..base import AdapterResult, AdapterResultStatus, MassProperties, SolidWorksModel
+from . import placement as _placement
 from . import saving
 from .face_selection import mate_entity_label
 
@@ -2884,10 +2885,25 @@ class SolidWorksIOMixin:
                 )
 
             added = [n for n in after if n not in before]
+            name = added[-1] if added else after[-1]
+            # AddComponent placed its centre at (x, y, z): move its origin there.
+            inserted = dict(_component_pairs(adapter, assembly)).get(name)
+            placement = (
+                _placement.place_origin(
+                    adapter,
+                    adapter.currentModel,
+                    assembly,
+                    inserted,
+                    (x / 1000.0, y / 1000.0, z / 1000.0),
+                )
+                if inserted is not None
+                else {"placed": False, "moved": False}
+            )
             return {
-                "component": added[-1] if added else after[-1],
+                "component": name,
                 "file_path": path,
                 "position": {"x": x, "y": y, "z": z},
+                "placement": placement,
                 "components_before": len(before),
                 "components_after": len(after),
             }

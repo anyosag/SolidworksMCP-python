@@ -3967,10 +3967,40 @@ class TestAssemblyAndDrawingSuccessPaths:
         assert result.is_success, result.error
         assert result.data["component"] == "bracket-1"
         assert result.data["position"] == {"x": 10.0, "y": 0.0, "z": -5.0}
+        assert result.data["placement"] == {"placed": False, "moved": False}
         assert (result.data["components_before"], result.data["components_after"]) == (
             1,
             2,
         )
+
+    @pytest.mark.asyncio
+    async def test_insert_component_moves_the_new_component_to_its_origin(
+        self, monkeypatch
+    ) -> None:
+        """AddComponent4 took the centre: the inserted component is moved."""
+        adapter = self._document(monkeypatch, 2)
+        adapter.swApp = MagicMock()
+        snapshots = iter([[], ["bracket-1"]])
+        monkeypatch.setattr(
+            _io_module, "_component_names", lambda _a, _asm: next(snapshots)
+        )
+        bracket = object()
+        monkeypatch.setattr(
+            _io_module, "_component_pairs", lambda _a, _asm: [("bracket-1", bracket)]
+        )
+        moves: list[tuple[Any, ...]] = []
+
+        def place(_adapter, model, assembly, component, origin):
+            moves.append((model, component, origin))
+            return {"placed": True, "moved": True, "origin_mm": [10.0, 0.0, -5.0]}
+
+        monkeypatch.setattr(_io_module._placement, "place_origin", place)
+
+        result = await adapter.insert_component(__file__, 10.0, 0.0, -5.0)
+
+        assert result.is_success, result.error
+        assert moves == [(adapter.currentModel, bracket, (0.01, 0.0, -0.005))]
+        assert result.data["placement"]["placed"] is True
 
     @pytest.mark.asyncio
     async def test_add_mate_reports_which_components_moved(self, monkeypatch) -> None:

@@ -869,7 +869,43 @@ class TestAssemblyTools:
         assert result["component"]["component"] == "component-1"
         assert result["component"]["components_before"] == 0
         assert result["component"]["components_after"] == 1
+        assert result["component"]["placement"]["placed"] is True
+        assert "warning" not in result
         assert "execution_time" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("placement", "where"),
+        [
+            ({"placed": False, "moved": True, "origin_mm": [0, -6.75, 3.7]}, True),
+            ({"placed": False, "moved": False}, False),
+        ],
+    )
+    async def test_an_origin_that_could_not_be_placed_is_a_warning(
+        self, mcp_server, mock_adapter, mock_config, placement, where
+    ):
+        """The component is in, but SolidWorks left it at its box centre."""
+        await register_modeling_tools(mcp_server, mock_adapter, mock_config)
+        mock_adapter.insert_component = AsyncMock(
+            return_value=AdapterResult(
+                status=AdapterResultStatus.SUCCESS,
+                data={"component": "base-1", "placement": placement},
+            )
+        )
+        tool_func = next(
+            t.fn for t in await mcp_server.list_tools() if t.name == "insert_component"
+        )
+
+        result = await tool_func(
+            InsertComponentInput(file_path="C:/parts/a.sldprt", z=10)
+        )
+
+        assert result["status"] == "success"
+        assert result["warning"].startswith(
+            "The component is in the assembly, but its origin could not be moved "
+            "to (0, 0, 10) mm"
+        )
+        assert ("it is at [0, -6.75, 3.7] mm" in result["warning"]) is where
 
     @pytest.mark.asyncio
     async def test_add_mate_success(self, mcp_server, mock_adapter, mock_config):

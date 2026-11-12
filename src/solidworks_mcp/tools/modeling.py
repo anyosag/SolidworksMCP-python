@@ -2138,13 +2138,17 @@ async def register_modeling_tools(
 
     @mcp.tool()
     async def insert_component(input_data: InsertComponentInput) -> dict[str, Any]:
-        """Insert a part or sub-assembly file into the active assembly at a position in mm.
+        """Insert a part or sub-assembly file into the active assembly with its origin at a point in mm.
 
         Use it after `create_assembly`, then position components with `add_mate`. The
-        file must contain solid geometry; an empty or missing file is an error. Needs:
-        an open, active assembly and the file on disk. Changes: adds a component.
+        component's own origin goes at `x`, `y`, `z`, unrotated (SolidWorks places a
+        new component by its centre; it is moved so its origin is there). The file
+        must contain solid geometry; an empty or missing file is an error. Needs: an
+        open, active assembly and the file on disk. Changes: adds a component.
         Returns: `component` with its instance name (`component`, which `add_mate`
-        takes), `file_path`, `position` and the counts before and after.
+        takes), `file_path`, `position`, `placement` (`placed`, and the
+        `origin_mm` and `rotation` read back) and the counts before and after; a
+        `warning` when the origin could not be put there.
 
         Args:
             input_data: The component. `file_path` is required; `x`, `y`, `z` (mm
@@ -2159,12 +2163,22 @@ async def register_modeling_tools(
         )
         require_success(result, context="Failed to insert component")
         data = result.data if isinstance(result.data, dict) else {}
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
             "message": f"Inserted {data.get('component', 'component')}",
             "component": data,
             "execution_time": result.execution_time,
         }
+        placement = data.get("placement")
+        if isinstance(placement, dict) and placement.get("placed") is False:
+            at = placement.get("origin_mm")
+            reply["warning"] = (
+                "The component is in the assembly, but its origin could not be "
+                f"moved to ({input_data.x:g}, {input_data.y:g}, {input_data.z:g}) mm"
+                + (f"; it is at {at} mm" if at else "")
+                + ". Mate it into place, or check it with list_components."
+            )
+        return reply
 
     @mcp.tool()
     async def add_mate(input_data: AddMateInput) -> dict[str, Any]:

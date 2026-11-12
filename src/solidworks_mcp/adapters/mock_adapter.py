@@ -3237,6 +3237,12 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "component": self._components[-1],
                 "file_path": file_path,
                 "position": {"x": x, "y": y, "z": z},
+                "placement": {
+                    "placed": True,
+                    "moved": True,
+                    "origin_mm": [x, y, z],
+                    "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                },
                 "components_before": len(self._components) - 1,
                 "components_after": len(self._components),
             },

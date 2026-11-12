@@ -35,6 +35,19 @@ def as_list(value: Any) -> list[Any]:
     return [value]
 
 
+def double_array(values: list[float]) -> Any:
+    """``VARIANT(VT_ARRAY | VT_R8)`` for array-valued COM arguments (tuple when pywin32 is absent)."""
+    try:
+        import pythoncom
+        import win32com.client as w32
+
+        return w32.VARIANT(
+            pythoncom.VT_ARRAY | pythoncom.VT_R8, [float(v) for v in values]
+        )
+    except ImportError:  # non-Windows
+        return tuple(values)
+
+
 def selection_count(adapter: Any, model: Any) -> int | None:
     """Number of entities currently selected in ``model``, or None."""
     sel_mgr = attempt(adapter, lambda: model.SelectionManager)
