@@ -310,9 +310,10 @@ class WorkflowInput(CompatInput):
         default="summary",
         description=(
             "'summary': each step that worked gives its status, message and "
-            "small facts (the scalar values of its reply and of its `data`, and "
-            "`measured_change`); 'full': each step's whole reply, as `result`. "
-            "A failed step always gives its whole reply."
+            "small facts (the scalar values of its reply and of each object in "
+            "it, such as `extrusion.name`, and `measured_change`); 'full': each "
+            "step's whole reply, as `result`. A failed step always gives its "
+            "whole reply."
         ),
     )
 
@@ -535,15 +536,25 @@ def _small_facts(mapping: dict[str, Any]) -> dict[str, Any]:
 
 
 def _summary(entry: dict[str, Any], reply: dict[str, Any]) -> dict[str, Any]:
-    """A successful step's entry with its reply's small facts, but no warning."""
+    """A successful step's entry with its reply's small facts, but no warning.
+
+    The scalars of each object in the reply are kept too (``data``, or a
+    tool's own key such as ``extrusion``), so the name of what a step made
+    is still there: ``extrusion.name``, ``fillet.name``.
+    """
     facts = {
         key: value
         for key, value in _small_facts(reply).items()
         if key not in entry and key != "warning"
     }
-    data = reply.get("data")
-    small_data = _small_facts(data) if isinstance(data, dict) else {}
-    return {**entry, **facts, **({"data": small_data} if small_data else {})}
+    objects = {
+        key: small
+        for key, value in reply.items()
+        if key not in entry and key not in facts and isinstance(value, dict)
+        for small in [_small_facts(value)]
+        if small
+    }
+    return {**entry, **facts, **objects}
 
 
 def _warning_parts(tool: str, warning: Any) -> list[str]:

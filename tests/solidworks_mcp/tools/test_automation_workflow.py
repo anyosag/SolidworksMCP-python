@@ -78,7 +78,8 @@ async def test_a_box_in_one_call(part: Any) -> None:
     assert result["completed"] == 4
     assert result["warnings"] == []
     assert [s["tool"] for s in result["steps"]] == [s["tool"] for s in _BOX]
-    # The summary: the reply's scalars and measured_change, not `extrusion`.
+    # The summary: the reply's scalars, `extrusion`'s scalars (its name) and
+    # measured_change, but no lists.
     assert result["steps"][3] == {
         "index": 3,
         "tool": "create_extrusion",
@@ -86,7 +87,12 @@ async def test_a_box_in_one_call(part: Any) -> None:
         "message": "Created extrusion: Boss-Extrude1",
         "execution_time": ANY,
         "measured_change": ANY,
+        "extrusion": ANY,
     }
+    assert result["steps"][3]["extrusion"]["name"] == "Boss-Extrude1"
+    assert not any(
+        isinstance(v, (list, dict)) for v in result["steps"][3]["extrusion"].values()
+    )
     assert any(f.type == "Extrusion" for f in adapter._features.values())
 
 
