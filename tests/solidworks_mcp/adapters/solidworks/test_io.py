@@ -298,7 +298,66 @@ async def test_activate_document_edge_cases() -> None:
     assert blank.error == "title_or_path is required"
     assert "could not read its title" in (no_title.error or "")
     assert unverified.is_success and unverified.data["verified"] is None
+    assert unverified.data["opened_window"] is False
     assert "activation did not take" in (wrong.error or "")
+    assert "open its file with open_model" in (wrong.error or "")
+
+
+class _ComponentOnlyDoc(_Doc):
+    """A part an assembly loaded as a component: no window of its own."""
+
+    Visible = False
+
+
+@pytest.mark.asyncio
+async def test_a_document_loaded_only_in_an_assembly_gets_a_window_first() -> None:
+    """Cellvis: DishRack_Base was loaded by the assembly, not opened."""
+    # SolidWorks titled it without the extension, as Windows hid it.
+    base = _ComponentOnlyDoc("DishRack_Base", "C:/rack/DishRack_Base.SLDPRT")
+    opened: list[tuple[Any, ...]] = []
+
+    def open_doc(*args: Any) -> Any:
+        opened.append(args[:4])
+        return base
+
+    app = SimpleNamespace(
+        GetDocuments=lambda: [base],
+        OpenDoc6=open_doc,
+        ActivateDoc3=lambda *_a: base,
+        ActiveDoc=base,
+    )
+
+    result = await _DocsHarness(None, app).activate_document("DishRack_Base")
+
+    assert result.is_success, result.error
+    assert opened == [("C:/rack/DishRack_Base.SLDPRT", 1, 1, "")]
+    assert result.data == {
+        "activated": "DishRack_Base",
+        "verified": True,
+        "opened_window": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "fragment"),
+    [
+        ("C:/rack/DishRack_Base.SLDPRT", "would not open it from C:/rack/"),
+        (None, "would not open it; open it with open_model."),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_component_only_document_solidworks_will_not_open_is_refused(
+    path: str | None, fragment: str
+) -> None:
+    base = _ComponentOnlyDoc("DishRack_Base.SLDPRT", path)
+    app = SimpleNamespace(
+        GetDocuments=lambda: [base], OpenDoc6=lambda *_a: None, ActiveDoc=None
+    )
+
+    result = await _DocsHarness(None, app).activate_document("DishRack_Base.SLDPRT")
+
+    assert "is loaded only inside an assembly" in (result.error or "")
+    assert fragment in (result.error or "")
 
 
 # ---- auto_center_marks -------------------------------------------------------

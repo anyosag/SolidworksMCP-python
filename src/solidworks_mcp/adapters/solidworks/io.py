@@ -514,6 +514,45 @@ def activate_doc(adapter: Any, app: Any, title: str) -> Any:
     return activated
 
 
+def _open_window(adapter: Any, app: Any, doc: Any, title: str) -> bool:
+    """Give a document loaded only inside an assembly a window of its own.
+
+    ``ISldWorks.GetDocuments`` lists every loaded document, also a part an
+    assembly loaded as a component. Such a document is not visible
+    (``IModelDoc2.Visible`` False) and ``ActivateDoc3`` can't activate it:
+    the active document stayed the last one (Cellvis DishRack, 2026-11-12).
+    Opening its file (``OpenDoc6``, silent) gives it a window, as
+    ``open_model`` did there.
+
+    Returns:
+        bool: Whether a window was opened (False for a visible document).
+
+    Raises:
+        Exception: SolidWorks would not open it.
+    """
+    if adapter._attempt(lambda: doc.Visible, default=None) is not False:
+        return False
+    path = adapter._attempt(lambda: adapter._get_attr_or_call(doc, "GetPathName"))
+    doc_type = adapter._attempt(lambda: adapter._get_attr_or_call(doc, "GetType"))
+    opened = (
+        adapter._attempt(
+            lambda: app.OpenDoc6(
+                str(path), int(doc_type), 1, "", _byref_int(), _byref_int()
+            )
+        )
+        if path and isinstance(doc_type, (int, float))
+        else None
+    )
+    if not opened:
+        raise Exception(
+            f"{title!r} is loaded only inside an assembly, with no window of its "
+            "own, and SolidWorks would not open it"
+            + (f" from {path}" if path else "")
+            + "; open it with open_model."
+        )
+    return True
+
+
 def _byref_variant() -> Any:
     """Return a byref VARIANT for an array/variant out-parameter.
 
@@ -2307,6 +2346,7 @@ class SolidWorksIOMixin:
                     "activate it"
                 )
 
+            opened = _open_window(adapter, app, match, str(match_title))
             activated = activate_doc(adapter, app, match_title)
             model = activated or adapter._attempt(
                 lambda: getattr(app, "ActiveDoc", None), default=None
@@ -2342,9 +2382,15 @@ class SolidWorksIOMixin:
                 if not verified:
                     raise Exception(
                         f"Requested {match_title!r} but ActiveDoc is "
-                        f"{now_title!r} after ActivateDoc3; activation did not take."
+                        f"{now_title!r} after ActivateDoc3; activation did not "
+                        "take. A document loaded only inside an assembly has no "
+                        "window to activate: open its file with open_model."
                     )
-            return {"activated": str(match_title), "verified": verified}
+            return {
+                "activated": str(match_title),
+                "verified": verified,
+                "opened_window": opened,
+            }
 
         return cast(
             AdapterResult[dict[str, Any]],
