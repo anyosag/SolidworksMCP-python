@@ -141,10 +141,49 @@ def exit_distances(
     return found
 
 
+def _inside(box: list[float], at_mm: list[float]) -> bool:
+    """Whether a point is in a box ``[x1, y1, z1, x2, y2, z2]`` (any two
+    opposite corners), edges included."""
+    return all(
+        min(box[axis], box[axis + 3]) <= at_mm[axis] <= max(box[axis], box[axis + 3])
+        for axis in range(3)
+    )
+
+
+def _mm(point: list[float]) -> list[float]:
+    """A point in metres as the reply gives it: mm, to the micrometre."""
+    return [round(c * 1000, 3) for c in point]
+
+
+def _findings(
+    measured: list[tuple[int, float]], min_wall_mm: float, spot: Any
+) -> dict[str, Any]:
+    """The thinnest of ``measured`` (thinnest first) and what is under the minimum.
+
+    Args:
+        measured: ``(ray, distance)`` pairs, thinnest first.
+        min_wall_mm: The thinnest wall the printer can make.
+        spot: Describes one ``(ray, distance)``.
+    """
+    if not measured:
+        return {}
+    thinnest = spot(*measured[0])
+    below = [(r, d) for r, d in measured if d * 1000 < min_wall_mm]
+    return {
+        "min_thickness_mm": thinnest["thickness_mm"],
+        "at_mm": thinnest["at_mm"],
+        "normal": thinnest["normal"],
+        "below_minimum": len(below),
+        "thin_spots": [spot(r, d) for r, d in below[:MAX_THIN_SPOTS]],
+        "ok": not below,
+    }
+
+
 def summarize(
     samples: list[tuple[list[float], list[float]]],
     distances: dict[int, float],
     min_wall_mm: float,
+    exclude_boxes_mm: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """The check's reply: the thinnest wall, where it is, and what is too thin.
 
@@ -152,13 +191,20 @@ def summarize(
         samples: The ``(point, normal)`` pairs, metres.
         distances: :func:`exit_distances`.
         min_wall_mm: The thinnest wall the printer can make.
+        exclude_boxes_mm: Regions left out of the verdict, each
+            ``[x1, y1, z1, x2, y2, z2]`` in mm. A point is in one when its
+            ``at_mm`` (as reported, to the micrometre) is, edges included.
 
     Returns:
         dict[str, Any]: ``min_thickness_mm``, ``at_mm`` and ``normal`` of the
         thinnest sample, ``samples``, ``measured``, ``below_minimum`` (count),
         ``thin_spots`` (the thinnest, up to 20), ``min_wall_mm`` and ``ok``.
+        With boxes, those describe the points outside them, and ``excluded``
+        has ``boxes``, ``measured``, ``min_thickness_mm``, ``below_minimum``
+        and ``thin_spots`` for the points inside.
     """
     measured = sorted(distances.items(), key=lambda item: item[1])
+    boxes = list(exclude_boxes_mm or [])
     reply: dict[str, Any] = {
         "samples": len(samples),
         "measured": len(measured),
@@ -168,34 +214,39 @@ def summarize(
         "thin_spots": [],
         "ok": None,
     }
-    if not measured:
-        return reply
 
     def _spot(ray: int, distance: float) -> dict[str, Any]:
         point, normal = samples[ray]
         return {
             "thickness_mm": round(distance * 1000, 4),
-            "at_mm": [round(c * 1000, 3) for c in point],
+            "at_mm": _mm(point),
             "normal": [round(c, 4) + 0.0 for c in normal],
         }
 
-    thinnest = _spot(*measured[0])
-    below = [(r, d) for r, d in measured if d * 1000 < min_wall_mm]
-    reply.update(
-        {
-            "min_thickness_mm": thinnest["thickness_mm"],
-            "at_mm": thinnest["at_mm"],
-            "normal": thinnest["normal"],
-            "below_minimum": len(below),
-            "thin_spots": [_spot(r, d) for r, d in below[:MAX_THIN_SPOTS]],
-            "ok": not below,
+    counted: list[tuple[int, float]] = []
+    ignored: list[tuple[int, float]] = []
+    for ray, distance in measured:
+        at_mm = _mm(samples[ray][0]) if boxes else None
+        inside = at_mm is not None and any(_inside(box, at_mm) for box in boxes)
+        (ignored if inside else counted).append((ray, distance))
+    reply.update(_findings(counted, min_wall_mm, _spot))
+    if boxes:
+        found = _findings(ignored, min_wall_mm, _spot)
+        reply["excluded"] = {
+            "boxes": len(boxes),
+            "measured": len(ignored),
+            "min_thickness_mm": found.get("min_thickness_mm"),
+            "below_minimum": found.get("below_minimum", 0),
+            "thin_spots": found.get("thin_spots", []),
         }
-    )
     return reply
 
 
 def measure_wall_thickness(
-    adapter: Any, min_wall_mm: float, max_rays: int = MAX_RAYS
+    adapter: Any,
+    min_wall_mm: float,
+    max_rays: int = MAX_RAYS,
+    exclude_boxes_mm: list[list[float]] | None = None,
 ) -> dict[str, Any]:
     """Cast the rays on the active part and summarize the wall thickness.
 
@@ -203,6 +254,8 @@ def measure_wall_thickness(
         adapter: A connected adapter with a part as ``currentModel``.
         min_wall_mm: The thinnest wall the printer can make.
         max_rays: The most rays to cast.
+        exclude_boxes_mm: Regions left out of the verdict (see
+            :func:`summarize`).
 
     Returns:
         dict[str, Any]: :func:`summarize`'s reply plus ``bodies`` and ``faces``.
@@ -260,6 +313,8 @@ def measure_wall_thickness(
             "the part, so no thickness could be measured."
         )
     hits = model.GetRayIntersectionsPoints()
-    reply = summarize(samples, exit_distances(hits, samples), min_wall_mm)
+    reply = summarize(
+        samples, exit_distances(hits, samples), min_wall_mm, exclude_boxes_mm
+    )
     reply.update({"bodies": len(bodies), "faces": face_count})
     return reply

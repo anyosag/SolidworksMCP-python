@@ -1209,18 +1209,26 @@ class SolidWorksAdapter(ABC):
         )
 
     async def check_wall_thickness(
-        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+        self,
+        min_wall_mm: float = 0.8,
+        max_rays: int = 5000,
+        exclude_boxes_mm: list[list[float]] | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Measure the active part's wall thickness, for 3D printing.
 
         Args:
             min_wall_mm (float): The thinnest wall the printer can make.
             max_rays (int): The most rays to cast.
+            exclude_boxes_mm (list[list[float]] | None): Regions meant to be
+                thin, each ``[x1, y1, z1, x2, y2, z2]`` in model mm; points
+                inside are left out of the verdict and reported under
+                ``excluded``.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``min_thickness_mm``, ``at_mm``,
             ``normal``, ``below_minimum``, ``thin_spots``, ``ok``,
-            ``samples``, ``measured``, ``bodies`` and ``faces``.
+            ``samples``, ``measured``, ``bodies`` and ``faces``; with boxes,
+            also ``excluded``.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
@@ -1291,6 +1299,19 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="delete_sketch_entities is not implemented by this adapter",
+        )
+
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Delete every entity of the open sketch.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``deleted`` (ids), ``deleted_count``,
+            ``skipped`` (entities SolidWorks wouldn't select, left in the
+            sketch) and ``remaining`` (ids).
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="delete_all_sketch_entities is not implemented by this adapter",
         )
 
     async def create_reference_plane(

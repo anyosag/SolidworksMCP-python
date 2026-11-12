@@ -18,6 +18,7 @@ from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
         ("set_rollback", ("Cut1", None)),
         ("edit_sketch", ("Sketch1",)),
         ("delete_sketch_entities", (["Line_1"],)),
+        ("delete_all_sketch_entities", ()),
     ],
 )
 async def test_the_breaker_passes_the_arguments(method: str, args: tuple) -> None:

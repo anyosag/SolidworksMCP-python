@@ -30,6 +30,7 @@ from .base import (
     SweepParameters,
 )
 from .solidworks.drawing_standard import gtol_problem
+from .solidworks.feature_editing import missing_ids_message
 from .solidworks.features import _AXIS_PLANE_PAIRS
 from .solidworks.io import _normalise_unit_system as _normalise_mock_unit_system
 from .solidworks.saving import confirmation_result
@@ -1288,9 +1289,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         if missing:
             return AdapterResult(
                 status=AdapterResultStatus.ERROR,
-                error=(
-                    f"Sketch entity {', '.join(missing)} not found in the open sketch."
-                ),
+                error=missing_ids_message(missing, sorted(self._sketch_entity_ids)),
             )
         for entity_id in entity_ids:
             self._sketch_entity_ids.discard(entity_id)
@@ -1304,14 +1303,39 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
             execution_time=self._delays["sketch_operation"] / 2,
         )
 
+    async def delete_all_sketch_entities(self) -> AdapterResult[dict[str, Any]]:
+        """Mock deleting every entity of the open sketch (none is ever skipped)."""
+        if not self._current_sketch:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active sketch"
+            )
+        deleted = sorted(self._sketch_entity_ids)
+        self._sketch_entity_ids.clear()
+        self._operation_count += 1
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "deleted": deleted,
+                "deleted_count": len(deleted),
+                "skipped": [],
+                "remaining": [],
+            },
+            execution_time=self._delays["sketch_operation"] / 2,
+        )
+
     async def check_wall_thickness(
-        self, min_wall_mm: float = 0.8, max_rays: int = 5000
+        self,
+        min_wall_mm: float = 0.8,
+        max_rays: int = 5000,
+        exclude_boxes_mm: list[list[float]] | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock wall thickness of the canned 10 mm block: 10 mm everywhere.
 
-        One sample at the centre of each of the block's six faces, summarized
-        by the live adapter's own ``thickness.summarize``, so the reply has
-        the live shape and ``min_wall_mm`` above 10 finds every sample thin.
+        One sample at the centre of each of the block's six faces (the block
+        spans 0..10 mm on each axis), summarized by the live adapter's own
+        ``thickness.summarize``, so the reply has the live shape,
+        ``min_wall_mm`` above 10 finds every sample thin and
+        ``exclude_boxes_mm`` works as it does live.
         """
         from .solidworks.thickness import summarize
 
@@ -1338,7 +1362,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 samples.append((point, normal))
         samples = samples[: max(1, int(max_rays))]
         reply = summarize(
-            samples, dict.fromkeys(range(len(samples)), 0.01), min_wall_mm
+            samples,
+            dict.fromkeys(range(len(samples)), 0.01),
+            min_wall_mm,
+            exclude_boxes_mm,
         )
         reply.update({"bodies": 1, "faces": 6})
         self._operation_count += 1

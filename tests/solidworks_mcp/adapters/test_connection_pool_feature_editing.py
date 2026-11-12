@@ -18,6 +18,7 @@ from solidworks_mcp.adapters.connection_pool import ConnectionPoolAdapter
         ("set_rollback", (None, "Cut1")),
         ("edit_sketch", ("Sketch1",)),
         ("delete_sketch_entities", (["Line_1"],)),
+        ("delete_all_sketch_entities", ()),
     ],
 )
 async def test_the_pool_passes_the_arguments(method: str, args: tuple) -> None:

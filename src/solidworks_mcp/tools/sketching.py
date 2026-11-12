@@ -442,13 +442,34 @@ class DeleteSketchEntitiesInput(CompatInput):
     """Input schema for deleting entities of the open sketch.
 
     Attributes:
-        ids (list[str]): Entity ids from ``edit_sketch`` or the ``add_*`` tools.
+        ids (list[str] | None): Entity ids from ``edit_sketch`` or the ``add_*``
+            tools.
+        all (bool): Delete every entity of the open sketch instead.
     """
 
-    ids: list[str] = Field(
+    ids: list[str] | None = Field(
+        default=None,
         min_length=1,
-        description="Ids of the entities to delete, from edit_sketch or the add_* tools",
+        description=(
+            "Ids of the entities to delete, from the latest edit_sketch reply or "
+            "the add_* tools since (ids change each time a sketch is opened)"
+        ),
     )
+    all: bool = Field(
+        default=False,
+        description=(
+            "true deletes every entity of the open sketch, ids or not; give it "
+            "instead of ids"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _ids_or_all(self) -> Self:
+        if self.all and self.ids:
+            raise ValueError("give ids or all: true, not both")
+        if not self.all and not self.ids:
+            raise ValueError("give the ids to delete, or all: true")
+        return self
 
 
 class AddOutlinesInput(CompatInput):
@@ -1039,30 +1060,53 @@ async def register_sketching_tools(
     async def delete_sketch_entities(
         input_data: DeleteSketchEntitiesInput,
     ) -> dict[str, Any]:
-        """Delete lines, arcs and other entities of the open sketch by id.
+        """Delete lines, arcs and other entities of the open sketch by id, or all of them.
 
         Use it after `edit_sketch` (whose reply lists the ids) or to remove something
-        an `add_*` tool just drew. Needs: an open sketch. Changes: removes the entities
-        from the sketch. Returns: `deleted` and `remaining` (the ids still in the
-        sketch).
+        an `add_*` tool just drew. Ids change each time a sketch is opened, so take
+        them from the latest `edit_sketch` reply; an unknown id's error lists the
+        ones the sketch has. To redraw a profile from scratch, `all: true` deletes
+        every entity, with an id or not. Needs: an open sketch. Changes: removes the
+        entities from the sketch. Returns: `deleted` and `remaining` (the ids still
+        in the sketch); with `all`, also `deleted_count` and `skipped` (entities
+        SolidWorks wouldn't select, left in the sketch).
 
         Args:
-            input_data: The entities. `ids` (one or more) is required.
+            input_data: The entities: `ids` (one or more), or `all: true`.
 
         Returns:
             dict[str, Any]: What was deleted.
         """
         input_data = normalize_input(input_data, DeleteSketchEntitiesInput)
-        result = await adapter.delete_sketch_entities(list(input_data.ids))
+        if input_data.all:
+            result = await adapter.delete_all_sketch_entities()
+        else:
+            result = await adapter.delete_sketch_entities(list(input_data.ids or []))
         require_success(result, context="Failed to delete sketch entities")
         data = result.data if isinstance(result.data, dict) else {}
-        return {
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Deleted {', '.join(input_data.ids)}",
-            "deleted": data.get("deleted", list(input_data.ids)),
+            "message": f"Deleted {', '.join(input_data.ids or [])}",
+            "deleted": data.get("deleted", list(input_data.ids or [])),
             "remaining": data.get("remaining", []),
-            "execution_time": result.execution_time,
         }
+        if input_data.all:
+            count = int(data.get("deleted_count", len(reply["deleted"])))
+            skipped = list(data.get("skipped") or [])
+            if skipped:
+                reply["message"] = (
+                    f"Deleted {count} of the open sketch's {count + len(skipped)} "
+                    f"entities; SolidWorks could not select the other "
+                    f"{len(skipped)} (see skipped)"
+                )
+            elif count:
+                reply["message"] = f"Deleted every entity of the open sketch ({count})"
+            else:
+                reply["message"] = "The open sketch had no entities to delete"
+            reply["deleted_count"] = count
+            reply["skipped"] = skipped
+        reply["execution_time"] = result.execution_time
+        return reply
 
     @mcp.tool()
     async def add_spline(input_data: AddSplineInput) -> dict[str, Any]:

@@ -54,6 +54,7 @@ async def test_errors_lose_the_operation_prefix(
         "set_rollback",
         "open_sketch",
         "delete_sketch_entities",
+        "delete_all_sketch_entities",
     ):
         monkeypatch.setattr(feature_editing, name, refuse)
     harness = _Harness(model=SimpleNamespace(), sketch_manager=object())
@@ -63,6 +64,7 @@ async def test_errors_lose_the_operation_prefix(
         await harness.set_rollback(after="Cut9"),
         await harness.edit_sketch("Cut9"),
         await harness.delete_sketch_entities(["Line_1"]),
+        await harness.delete_all_sketch_entities(),
     ):
         assert result.error == "Feature 'Cut9' not found; list_features names them."
 
@@ -82,6 +84,9 @@ async def test_success_passes_the_reply_through(
 
 
 async def test_deleting_entities_needs_an_open_sketch() -> None:
-    result = await _Harness(model=SimpleNamespace()).delete_sketch_entities(["Line_1"])
+    harness = _Harness(model=SimpleNamespace())
 
-    assert result.error == "No active sketch"
+    assert (await harness.delete_sketch_entities(["Line_1"])).error == (
+        "No active sketch"
+    )
+    assert (await harness.delete_all_sketch_entities()).error == "No active sketch"

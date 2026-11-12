@@ -172,6 +172,58 @@ def test_a_summary_of_nothing_measured_says_unknown() -> None:
     assert summary["min_thickness_mm"] is None
     assert summary["ok"] is None
     assert summary["measured"] == 0
+    assert "excluded" not in summary
+
+
+def _row_of_walls() -> tuple[list[Any], dict[int, float]]:
+    """30 points 1 mm apart along x (0..29 mm), 0.1 .. 3.0 mm thick."""
+    samples = [([0.001 * i, 0, 0], [0, 0, 1]) for i in range(30)]
+    return samples, {i: 0.0001 * (i + 1) for i in range(30)}
+
+
+def test_points_in_an_excluded_box_are_reported_apart() -> None:
+    samples, distances = _row_of_walls()
+    # Corners in either order; x = 0 .. 4 mm, both ends included.
+    box = [4, 1, 1, 0, -1, -1]
+
+    summary = th.summarize(samples, distances, 2.5, [box])
+
+    assert summary["min_thickness_mm"] == 0.6
+    assert summary["at_mm"] == [5.0, 0.0, 0.0]
+    assert summary["below_minimum"] == 19
+    assert summary["ok"] is False
+    assert summary["measured"] == 30
+    excluded = summary["excluded"]
+    assert (excluded["boxes"], excluded["measured"]) == (1, 5)
+    assert (excluded["min_thickness_mm"], excluded["below_minimum"]) == (0.1, 5)
+    assert [s["at_mm"][0] for s in excluded["thin_spots"]] == [0, 1, 2, 3, 4]
+
+
+def test_a_flexure_alone_under_the_minimum_leaves_the_part_ok() -> None:
+    samples, distances = _row_of_walls()
+
+    summary = th.summarize(samples, distances, 0.6, [[0, -1, -1, 4, 1, 1]])
+
+    assert summary["ok"] is True
+    assert summary["below_minimum"] == 0
+    assert summary["excluded"]["below_minimum"] == 5
+
+
+def test_when_every_point_is_excluded_there_is_no_verdict() -> None:
+    samples, distances = _row_of_walls()
+
+    everything = th.summarize(samples, distances, 2.5, [[-1, -1, -1, 30, 1, 1]])
+    nothing = th.summarize(samples, {}, 2.5, [[0, 0, 0, 1, 1, 1]])
+
+    assert (everything["min_thickness_mm"], everything["ok"]) == (None, None)
+    assert everything["excluded"]["measured"] == 30
+    assert nothing["excluded"] == {
+        "boxes": 1,
+        "measured": 0,
+        "min_thickness_mm": None,
+        "below_minimum": 0,
+        "thin_spots": [],
+    }
 
 
 # ---- the ray cast ------------------------------------------------------------
@@ -196,6 +248,23 @@ def test_a_wall_under_the_minimum_is_listed() -> None:
     assert reply["ok"] is False
     assert reply["below_minimum"] == 8
     assert reply["thin_spots"][0]["thickness_mm"] == pytest.approx(2.0, abs=1e-3)
+
+
+async def test_the_top_face_can_be_excluded() -> None:
+    top_face = [0, 0, 1.5, 10, 10, 2.5]  # the plate's top face is at z = 2 mm
+
+    reply = th.measure_wall_thickness(_Harness(_Model()), 3.0, 10, [top_face])
+    through_the_mixin = await _Harness(_Model()).check_wall_thickness(
+        3.0, 10, [top_face]
+    )
+
+    assert reply["below_minimum"] == 4
+    assert all(spot["at_mm"][2] == 0 for spot in reply["thin_spots"])
+    assert (reply["excluded"]["measured"], reply["excluded"]["below_minimum"]) == (
+        4,
+        4,
+    )
+    assert through_the_mixin.data["excluded"] == reply["excluded"]
 
 
 @pytest.mark.parametrize(

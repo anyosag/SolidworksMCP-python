@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ..adapters.base import SolidWorksAdapter
+from ..adapters.solidworks.feature_editing import TYPE_ALIASES
 from ..utils.feature_tree_classifier import (
     build_component_tree,
     classify_feature_tree_snapshot,
@@ -228,6 +229,10 @@ class ListFeaturesInput(CompatInput):
         include_suppressed (bool): The include suppressed value.
         max_assembly_depth (int): Sub-assembly recursion depth for Assembly
             documents.
+        include_standard (bool): Keep the folders, origin and default planes
+            every tree has.
+        types (list[str] | None): Feature types to keep.
+        last (int | None): Keep only the newest N features of each document.
     """
 
     include_suppressed: bool = Field(
@@ -242,6 +247,144 @@ class ListFeaturesInput(CompatInput):
             "Part documents."
         ),
     )
+    include_standard: bool = Field(
+        default=True,
+        description=(
+            "false drops what every tree has: the Origin, the three default "
+            "planes, the Mates folder and the system folders (History, "
+            "Sensors, Annotations, Solid Bodies, Equations, Material, Lights "
+            "Cameras and Scene, Favorites, Selection Sets and so on). Folders "
+            "you made stay."
+        ),
+    )
+    types: list[str] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Keep only features of these types (the `type` each entry shows, "
+            "any case), e.g. ['Extrusion', 'Cut', 'Fillet', 'ProfileFeature']; "
+            "a sketch is 'ProfileFeature', and 'Cut' also matches 'ICE', "
+            "SolidWorks 2026's cut-extrude"
+        ),
+    )
+    last: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Keep only the newest N features: the bottom of the tree (the list "
+            "stays in tree order, oldest first). In an assembly, the newest N "
+            "of each document. Applied after include_standard and types"
+        ),
+    )
+
+    @field_validator("types")
+    @classmethod
+    def _named_types(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        names = [str(name).strip() for name in value]
+        if not all(names):
+            raise ValueError("each type must be a non-empty name")
+        return names
+
+
+#: ``GetTypeName2`` values of the items SolidWorks puts in every feature tree
+#: that don't end in "Folder" (those are matched by ``_is_standard_item``).
+_STANDARD_TYPES = frozenset(
+    {"DetailCabinet", "OriginProfileFeature", "MateGroup", "MateReferenceGroup"}
+)
+#: The folder a user makes to group features: not standard.
+_USER_FOLDER_TYPE = "FtrFolder"
+#: SolidWorks always puts the three default planes first in a document's tree.
+_DEFAULT_PLANE_COUNT = 3
+
+
+def _is_standard_item(feature_type: str) -> bool:
+    """Whether a type is tree furniture (a system folder, the origin)."""
+    if feature_type in _STANDARD_TYPES:
+        return True
+    return feature_type.endswith("Folder") and feature_type != _USER_FOLDER_TYPE
+
+
+def _drop_standard_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop each document's system folders, origin and three default planes.
+
+    The default planes are matched by position (the first three ``RefPlane``
+    rows of each document), so it works in any SolidWorks language.
+    """
+    planes_seen: dict[Any, int] = {}
+    kept = []
+    for row in rows:
+        kind = str(row.get("type") or "")
+        if kind == "RefPlane":
+            document = row.get("component")
+            planes_seen[document] = planes_seen.get(document, 0) + 1
+            if planes_seen[document] <= _DEFAULT_PLANE_COUNT:
+                continue
+        elif _is_standard_item(kind):
+            continue
+        kept.append(row)
+    return kept
+
+
+def _keep_types(rows: list[dict[str, Any]], types: list[str]) -> list[dict[str, Any]]:
+    """Keep the rows whose type (or its other SolidWorks name) is in ``types``."""
+    wanted = {name.casefold() for name in types}
+
+    def matches(kind: str) -> bool:
+        return kind.casefold() in wanted or (
+            TYPE_ALIASES.get(kind, kind).casefold() in wanted
+        )
+
+    return [row for row in rows if matches(str(row.get("type") or ""))]
+
+
+def _keep_newest(rows: list[dict[str, Any]], last: int) -> list[dict[str, Any]]:
+    """Keep each document's newest ``last`` rows, in the order listed.
+
+    Newest is the highest tree ``position``, or the latest in the list for a
+    row without one; the adapter's fallback walk can list rows newest first.
+    """
+
+    def tree_order(index: int) -> int:
+        position = rows[index].get("position")
+        return position if isinstance(position, int) else index
+
+    by_document: dict[Any, list[int]] = {}
+    for index, row in enumerate(rows):
+        by_document.setdefault(row.get("component"), []).append(index)
+    keep: set[int] = set()
+    for indices in by_document.values():
+        keep.update(sorted(indices, key=tree_order)[-last:])
+    return [row for index, row in enumerate(rows) if index in keep]
+
+
+def filter_features(
+    rows: list[dict[str, Any]],
+    include_standard: bool = True,
+    types: list[str] | None = None,
+    last: int | None = None,
+) -> list[dict[str, Any]]:
+    """Apply ``list_features``' filters, in order: standard items, types, last.
+
+    Args:
+        rows: The adapter's flat ``list_features`` rows.
+        include_standard: False drops the system folders, origin and default
+            planes of each document.
+        types: Feature types to keep (any case), or None for all.
+        last: Keep each document's newest N rows, or None for all.
+
+    Returns:
+        list[dict[str, Any]]: The rows kept, in the order given.
+    """
+    kept = list(rows)
+    if not include_standard:
+        kept = _drop_standard_items(kept)
+    if types:
+        kept = _keep_types(kept, types)
+    if last is not None:
+        kept = _keep_newest(kept, last)
+    return kept
 
 
 class ClassifyFeatureTreeInput(CompatInput):
@@ -771,18 +914,23 @@ async def register_file_management_tools(
 
     @mcp.tool()
     async def list_features(input_data: ListFeaturesInput) -> dict[str, Any]:
-        """List the feature tree of the active part or assembly, in order.
+        """List the feature tree of the active part or assembly, in tree order (oldest first).
 
         Use it before editing a model, to find a feature's exact name for
-        `delete_feature`, `suppress_feature` or `rename_feature`. For an assembly it
-        also lists each component's features, down to `max_assembly_depth` levels.
-        Needs: an open part or assembly. Read-only. Returns: `features` (each with
-        `name`, `type`, `suppressed` and, in an assembly, `component`), `count`, and
-        `assembly_tree`, the same list grouped by component.
+        `delete_feature`, `suppress_feature` or `rename_feature`. Keep the reply
+        short: `include_standard: false` drops the folders, origin and default
+        planes every tree has, `types` keeps only some kinds (e.g. ["Extrusion",
+        "Cut", "Fillet"]) and `last` only the newest N; they apply in that order.
+        For an assembly it also lists each component's features, down to
+        `max_assembly_depth` levels. Needs: an open part or assembly. Read-only.
+        Returns: `features` (each with `name`, `type`, `suppressed` and, in an
+        assembly, `component`), `count`, `total` (before the filters) and, when
+        components are listed, `assembly_tree`, the same list grouped by component.
 
         Args:
             input_data: What to list. Nothing is required: `include_suppressed`
-                (off) and `max_assembly_depth` (2) have defaults.
+                (off), `max_assembly_depth` (2) and `include_standard` (on) have
+                defaults; `types` and `last` are off unless given.
 
         Returns:
             dict[str, Any]: The feature list.
@@ -796,18 +944,25 @@ async def register_file_management_tools(
             max_assembly_depth=input_data.max_assembly_depth,
         )
         require_success(result, "Failed to list features")
-        return {
+        rows = list(result.data or [])
+        features = filter_features(
+            rows,
+            include_standard=input_data.include_standard,
+            types=input_data.types,
+            last=input_data.last,
+        )
+        reply: dict[str, Any] = {
             "status": "success",
-            "features": result.data or [],
-            "count": len(result.data or []),
-            # Additive, derived view of the same flat "features"
-            # list above - grouped by component/sub-component
-            # for callers that want the assembly structure
-            # rather than a flat tag-and-scan. Does not change
-            # the meaning of "features"/"count".
-            "assembly_tree": build_component_tree(result.data),
-            "execution_time": result.execution_time,
+            "features": features,
+            "count": len(features),
+            "total": len(rows),
         }
+        # A part's tree is just ``features`` again; the grouped view is only
+        # worth its size when there are components to group by.
+        if any(row.get("component") is not None for row in rows):
+            reply["assembly_tree"] = build_component_tree(features)
+        reply["execution_time"] = result.execution_time
+        return reply
 
     @mcp.tool()
     async def get_selected_entities() -> dict[str, Any]:

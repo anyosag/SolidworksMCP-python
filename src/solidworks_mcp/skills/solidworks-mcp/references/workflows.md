@@ -83,6 +83,9 @@ build on it; `undo`, then fix the plane or depth, or use `"UpToNext"` or
 2. `check_wall_thickness` with your printer's thinnest wall as
    `min_wall_mm` (0.8 mm is two 0.4 mm nozzle lines). Its `thin_spots` say
    where each wall is too thin; check a doubtful one with `measure_entities`.
+   A wall meant to be thin (a snap-fit flexure) goes in `exclude_boxes_mm`
+   as a box around it: its points are reported under `excluded` and don't
+   count against `ok`.
 3. `export_stl`. For a smoother mesh than the user's STL options give, pass
    `deviation_mm` (0.01 is fine for most prints) and `angle_deg`; `units`
    and `binary` set the file's units and format. They apply to this file
@@ -120,7 +123,10 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
 
 ## Changing an existing model
 
-1. `open_model`, then `list_features` and `list_model_dimensions`.
+1. `open_model`, then `list_features` and `list_model_dimensions`. On a long
+   tree, `list_features` with `include_standard: false` leaves out the
+   folders, origin and default planes, and `last` gives only the newest
+   features.
 2. Change it where it stands; don't delete and re-create a feature, which
    takes its dependents (fillets, patterns) with it:
    - an extrude's or cut's depth, end condition or direction, a revolve's
@@ -129,7 +135,9 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
      "D1@Boss-Extrude1") and the new value in its `units` (mm, degrees, or
      a count);
    - a profile: `edit_sketch`, `delete_sketch_entities` with the ids it
-     lists, the `add_*` tools for the new shape, then `exit_sketch`;
+     lists (ids change each time a sketch is opened, so use the latest
+     reply's; `all: true` deletes the whole profile), the `add_*` tools for
+     the new shape, then `exit_sketch`;
    - a new feature mid-tree: `set_rollback` with `after` the feature it
      builds on, add it, then `set_rollback` with no input.
 3. `rebuild_model`: an error names each failing feature and how to fix it.

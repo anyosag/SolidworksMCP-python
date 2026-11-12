@@ -488,3 +488,116 @@ def test_sketch_entities_are_deleted_by_id() -> None:
     keep.selectable = False
     with pytest.raises(RuntimeError, match="could not select Line_1"):
         fe.delete_sketch_entities(adapter, ["Line_1"])
+
+
+def test_an_unknown_id_names_the_ids_the_sketch_has() -> None:
+    adapter = _Adapter(_Model([]))
+    adapter._sketch_entities = {f"Line_{n}": _Segment(0) for n in range(1, 41)}
+
+    with pytest.raises(LookupError) as caught:
+        fe.delete_sketch_entities(adapter, ["Line_50", "Arc_99"])
+
+    first_30 = ", ".join(f"Line_{n}" for n in range(1, 31))
+    assert str(caught.value) == (
+        "Sketch entity Line_50, Arc_99 not found in the open sketch. The open "
+        f"sketch has 40 ids; the first 30: {first_30}. Ids change each time a "
+        "sketch is opened: use the ids in the latest edit_sketch reply (and the "
+        "add_* replies since), or all: true to delete every entity."
+    )
+
+
+@pytest.mark.parametrize(
+    ("known", "fragment"),
+    [
+        (["Line_1", "Arc_2"], "The open sketch has 2 ids: Line_1, Arc_2. Ids"),
+        (["Line_1"], "The open sketch has one id: Line_1. Ids"),
+        ([], "The open sketch has no entity ids. Ids"),
+    ],
+)
+def test_the_not_found_message_for_a_short_sketch(
+    known: list[str], fragment: str
+) -> None:
+    assert fragment in fe.missing_ids_message(["Line_5"], known)
+
+
+def _open(adapter: _Adapter, *segments: _Segment) -> None:
+    sketch = SimpleNamespace(GetSketchSegments=lambda: segments)
+    adapter.currentSketchManager = SimpleNamespace(ActiveSketch=sketch)
+
+
+def test_every_segment_of_the_open_sketch_is_deleted() -> None:
+    model = _Model([])
+    adapter = _Adapter(model)
+    line, arc, no_id, side = _Segment(0), _Segment(1), _Segment(3), _Segment(0)
+    _open(adapter, line, arc, no_id, side)
+    adapter._sketch_entities = {
+        "Line_1": line,
+        "Arc_2": arc,
+        "Rectangle_3": [side, _Segment(0)],
+        "Dimension_4": object(),
+    }
+    adapter._sketch_entity_centers = {"Arc_2": [0.0, 0.0]}
+
+    reply = fe.delete_all_sketch_entities(adapter)
+
+    assert reply == {
+        "deleted": ["Line_1", "Arc_2", "Rectangle_3"],
+        "deleted_count": 4,
+        "skipped": [],
+        "remaining": [],
+    }
+    assert model.calls == ["clear", "EditDelete"]
+    assert adapter._sketch_entities == {}
+    assert adapter._sketch_entity_centers == {}
+
+
+def test_a_segment_that_will_not_select_is_left_and_reported() -> None:
+    model = _Model([])
+    adapter = _Adapter(model)
+    line, stuck, stuck_no_id = _Segment(0), _Segment(1), _Segment(3)
+    stuck.selectable = stuck_no_id.selectable = False
+    # No sketch manager: the sketch create_sketch or edit_sketch kept is used.
+    adapter.currentSketch = SimpleNamespace(
+        GetSketchSegments=lambda: (stuck, line, stuck_no_id)
+    )
+    adapter._sketch_entities = {"Arc_1": stuck, "Line_2": line}
+
+    reply = fe.delete_all_sketch_entities(adapter)
+
+    assert reply == {
+        "deleted": ["Line_2"],
+        "deleted_count": 1,
+        "skipped": [
+            {"id": "Arc_1", "type": "arc", "construction": False},
+            {"id": None, "type": "spline", "construction": False},
+        ],
+        "remaining": ["Arc_1"],
+    }
+    assert adapter._sketch_entities == {"Arc_1": stuck}
+
+
+def test_deleting_everything_needs_a_sketch_that_selects() -> None:
+    model = _Model([])
+    adapter = _Adapter(model)
+    with pytest.raises(RuntimeError, match="No sketch is open"):
+        fe.delete_all_sketch_entities(adapter)
+
+    stuck = _Segment(0)
+    stuck.selectable = False
+    _open(adapter, stuck)
+    with pytest.raises(RuntimeError, match="could not select any of the open"):
+        fe.delete_all_sketch_entities(adapter)
+    assert "EditDelete" not in model.calls
+
+
+def test_an_empty_sketch_deletes_nothing_and_forgets_stale_ids() -> None:
+    model = _Model([])
+    adapter = _Adapter(model)
+    _open(adapter)
+    adapter._sketch_entities = {"Line_1": _Segment(0)}
+
+    reply = fe.delete_all_sketch_entities(adapter)
+
+    assert reply == {"deleted": [], "deleted_count": 0, "skipped": [], "remaining": []}
+    assert "EditDelete" not in model.calls
+    assert adapter._sketch_entities == {}

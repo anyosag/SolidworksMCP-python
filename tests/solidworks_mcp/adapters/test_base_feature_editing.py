@@ -15,6 +15,7 @@ from solidworks_mcp.adapters.mock_adapter import MockSolidWorksAdapter
         ("set_rollback", ()),
         ("edit_sketch", ("Sketch1",)),
         ("delete_sketch_entities", (["Line_1"],)),
+        ("delete_all_sketch_entities", ()),
     ],
 )
 async def test_an_adapter_without_them_says_so(method: str, args: tuple) -> None:
