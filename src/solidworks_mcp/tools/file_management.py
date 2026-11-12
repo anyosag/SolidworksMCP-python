@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 from pydantic import Field, field_validator
 
 from ..adapters.base import SolidWorksAdapter
-from ..adapters.solidworks.feature_editing import TYPE_ALIASES
+from ..adapters.solidworks.feature_editing import INSTANT3D
 from ..utils.feature_tree_classifier import (
     build_component_tree,
     classify_feature_tree_snapshot,
@@ -263,8 +263,8 @@ class ListFeaturesInput(CompatInput):
         description=(
             "Keep only features of these types (the `type` each entry shows, "
             "any case), e.g. ['Extrusion', 'Cut', 'Fillet', 'ProfileFeature']; "
-            "a sketch is 'ProfileFeature', and 'Cut' also matches 'ICE', "
-            "SolidWorks 2026's cut-extrude"
+            "a sketch is 'ProfileFeature'. An Instant3D extrude whose kind "
+            "SolidWorks doesn't say ('ICE') matches 'Extrusion' and 'Cut'"
         ),
     )
     last: int | None = Field(
@@ -328,13 +328,17 @@ def _drop_standard_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _keep_types(rows: list[dict[str, Any]], types: list[str]) -> list[dict[str, Any]]:
-    """Keep the rows whose type (or its other SolidWorks name) is in ``types``."""
+    """Keep the rows whose type is in ``types``.
+
+    The live adapter names an Instant3D extrude Extrusion or Cut; one it
+    couldn't tell stays "ICE", which may be either (pitfall #43).
+    """
     wanted = {name.casefold() for name in types}
 
     def matches(kind: str) -> bool:
-        return kind.casefold() in wanted or (
-            TYPE_ALIASES.get(kind, kind).casefold() in wanted
-        )
+        if kind == INSTANT3D:
+            return bool(wanted & {"extrusion", "cut", INSTANT3D.casefold()})
+        return kind.casefold() in wanted
 
     return [row for row in rows if matches(str(row.get("type") or ""))]
 

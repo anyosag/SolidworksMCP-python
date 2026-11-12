@@ -31,6 +31,7 @@ from .solidworks import (
     SolidWorksSelectionMixin,
     SolidWorksSketchMixin,
     bitmap,
+    feature_editing,
     limits,
     saving,
     stl_settings,
@@ -2143,6 +2144,13 @@ class _FeatureSelectionService:
                 default="Unknown",
             )
         )
+        if feature_type == feature_editing.INSTANT3D:
+            # An Instant3D boss or cut; GetTypeName says which (pitfall #43).
+            feature_type = feature_editing.instant3d_type(
+                self._adapter._attempt(
+                    lambda: self._adapter._get_attr_or_call(feature, "GetTypeName")
+                )
+            )
         dedupe_key = (name, feature_type)
         if dedupe_key in seen:
             return

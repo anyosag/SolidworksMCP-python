@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -369,6 +370,39 @@ class TestPyWin32AdapterBranches:
 
         assert result.is_success
         assert [row["name"] for row in result.data] == ["Front Plane", "Boss-Extrude1"]
+
+    @pytest.mark.asyncio
+    async def test_an_instant3d_boss_and_cut_are_listed_by_their_real_type(
+        self, monkeypatch
+    ):
+        """GetTypeName2 is "ICE" for both; GetTypeName says which (pitfall #43)."""
+        adapter = self._build_adapter(monkeypatch)
+
+        def feature(name: str, older: str | None, nxt: Any = None) -> Any:
+            return SimpleNamespace(
+                Name=name,
+                GetTypeName2=lambda: "ICE",
+                GetTypeName=lambda: older,
+                IsSuppressed=lambda: False,
+                GetNextFeature=lambda: nxt,
+            )
+
+        unknown = feature("Extrude3", None)
+        cut = feature("Cut-Extrude1", "CUT", unknown)
+        boss = feature("Boss-Extrude1", "Extrusion", cut)
+        adapter.currentModel = SimpleNamespace(
+            FirstFeature=lambda: boss,
+            FeatureManager=SimpleNamespace(GetFeatureCount=lambda _all: 0),
+        )
+
+        result = await adapter.list_features(include_suppressed=True)
+
+        assert result.is_success, result.error
+        assert [(row["name"], row["type"]) for row in result.data] == [
+            ("Boss-Extrude1", "Extrusion"),
+            ("Cut-Extrude1", "Cut"),
+            ("Extrude3", "ICE"),
+        ]
 
     @pytest.mark.asyncio
     async def test_list_features_falls_back_to_reverse_positions(self, monkeypatch):

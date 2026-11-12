@@ -116,8 +116,13 @@ async def test_types_match_in_any_case_and_cut_matches_ice(list_features: Any) -
     _serve(adapter, _PART_TREE)
 
     reply = await tool({"types": ["extrusion", "CUT", "Fillet"]})
+    bosses = await tool({"types": ["Extrusion"]})
+    fillets = await tool({"types": ["fillet"]})
 
     assert _names(reply) == ["Boss-Extrude1", "Cut-Extrude1", "Fillet1"]
+    # "ICE" the adapter couldn't resolve may be a boss or a cut.
+    assert _names(bosses) == ["Boss-Extrude1", "Cut-Extrude1"]
+    assert _names(fillets) == ["Fillet1"]
 
 
 async def test_last_applies_after_types(list_features: Any) -> None:

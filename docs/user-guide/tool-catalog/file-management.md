@@ -84,7 +84,7 @@ Report the active document's title, path, type, active configuration, unsaved ch
 
 ### `list_features`
 
-List the feature tree of the active part or assembly, in order.
+List the feature tree of the active part or assembly, in tree order (oldest first).
 
 **Prerequisite:** SolidWorks running
 
@@ -94,6 +94,9 @@ List the feature tree of the active part or assembly, in order.
 |-----------|------|----------|---------|-------------|
 | `include_suppressed` | `bool` | — | `False` | Include suppressed features in the returned list |
 | `max_assembly_depth` | `int` | — | `2` | For Assembly documents, how many levels of sub-assembly to recurse into when flattening component features. Ignored for Part documents. |
+| `include_standard` | `bool` | — | `True` | false drops what every tree has: the Origin, the three default planes, the Mates folder and the system folders (History, Sensors, Annotations, Solid Bodies, Equations, Material, Lights Cameras and Scene, Favorites, Selection Sets and so on). Folders you made stay. |
+| `types` | `List[str]?` | — | `None` | Keep only features of these types (the `type` each entry shows, any case), e.g. ['Extrusion', 'Cut', 'Fillet', 'ProfileFeature']; a sketch is 'ProfileFeature'. An Instant3D extrude whose kind SolidWorks doesn't say ('ICE') matches 'Extrusion' and 'Cut' |
+| `last` | `int?` | — | `None` | Keep only the newest N features: the bottom of the tree (the list stays in tree order, oldest first). In an assembly, the newest N of each document. Applied after include_standard and types |
 
 **Sample call:**
 

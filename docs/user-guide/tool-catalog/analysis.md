@@ -95,6 +95,7 @@ Measure the active part's thinnest walls before 3D printing it.
 |-----------|------|----------|---------|-------------|
 | `min_wall_mm` | `float` | — | `0.8` | The thinnest wall the printer can make, mm (0.8 is two 0.4 mm nozzle lines); thinner spots are listed |
 | `max_rays` | `int` | — | `5000` | The most points to measure; more finds thin spots on big parts, slower (default 5000) |
+| `exclude_boxes_mm` | `List[Annotated[List[float], Field(min_length=6, max_length=6)]]?` | — | `None` | Regions meant to be thin, such as a snap-fit flexure: each box is [x1, y1, z1, x2, y2, z2], two opposite corners in the part's coordinates, mm. Points inside a box (edges included) don't count against ok, min_thickness_mm or thin_spots; data.excluded reports them |
 
 **Sample call:**
 

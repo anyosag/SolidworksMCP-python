@@ -70,6 +70,11 @@ _EXTRUDE_KINDS = ("Extrusion", "Cut", INSTANT3D)
 _UNDERLYING = {"extrusion": "Extrusion", "boss": "Extrusion", "cut": "Cut"}
 
 
+def instant3d_type(older: Any) -> str:
+    """An "ICE" feature's type from its ``GetTypeName``: Extrusion, Cut or ICE."""
+    return _UNDERLYING.get(str(older or "").lower(), INSTANT3D)
+
+
 def feature_kind(adapter: Any, feature: Any) -> str:
     """A feature's ``GetTypeName2``, or for an Instant3D extrude its real type.
 
@@ -80,8 +85,7 @@ def feature_kind(adapter: Any, feature: Any) -> str:
     kind = str(_attempt(adapter, lambda: feature.GetTypeName2()) or "")
     if kind != INSTANT3D:
         return kind
-    older = str(_attempt(adapter, lambda: feature.GetTypeName()) or "")
-    return _UNDERLYING.get(older.lower(), kind)
+    return instant3d_type(_attempt(adapter, lambda: feature.GetTypeName()))
 
 
 #: ``swSketchSegments_e`` -> the id prefix a segment gets.

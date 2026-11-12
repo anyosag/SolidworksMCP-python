@@ -146,8 +146,9 @@ Run a list of tool steps in order in one call, stopping at the first that fails.
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `workflow_name` | `str` | — | `workflow` | A name for the run, used in its messages |
-| `steps` | `List[WorkflowStep]` | ✅ | `` | The steps, run one after another: each a {tool, arguments} pair, e.g. {'tool': 'add_line', 'arguments': {'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}} |
+| `steps` | `List[WorkflowStep]` | ✅ | `` | The steps, run one after another: each a {tool, arguments} pair, with an optional document, e.g. {'tool': 'add_line', 'arguments': {'x1': 0, 'y1': 0, 'x2': 10, 'y2': 0}} |
 | `rollback_on_error` | `bool` | — | `False` | When a step fails, delete the features and sketches the earlier steps added to the document that was active at the start |
+| `detail` | `Literal['summary', 'full']` | — | `summary` | 'summary': each step that worked gives its status, message and small facts (the scalar values of its reply and of each object in it, such as `extrusion.name`, and `measured_change`); 'full': each step's whole reply, as `result`. A failed step always gives its whole reply. |
 
 **Sample call:**
 

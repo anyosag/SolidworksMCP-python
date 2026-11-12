@@ -384,7 +384,7 @@ Loft a solid through two or more closed profile sketches, in order (Insert > Bos
 
 ### `insert_component`
 
-Insert a part or sub-assembly file into the active assembly at a position in mm.
+Insert a part or sub-assembly file into the active assembly with its origin at a point in mm.
 
 **Prerequisite:** SolidWorks running
 
@@ -614,6 +614,7 @@ Select the edges of the active part that match rules, ready for `add_fillet` or 
 | `inside_box` | `List[List[float]]?` | — | `None` | Keep only edges wholly inside this box: [[xmin, ymin, zmin], [xmax, ymax, zmax]] in model mm |
 | `min_length` | `float?` | — | `None` | Keep only edges at least this long, mm |
 | `max_length` | `float?` | — | `None` | Keep only edges at most this long, mm |
+| `any_of` | `List[Dict[str, Any]]?` | — | `None` | Several rules in one call: select the edges any of them matches. Each rule takes the keys above (a source and filters) and is laid over the ones given outside any_of, e.g. {'feature': 'Boss-Extrude1', 'any_of': [{'inside_box': [[0,0,0],[5,5,5]]}, {'inside_box': [[20,0,0],[25,5,5]]}]}. Each source's edges are read once, so this is much faster than one call per rule |
 | `append` | `bool` | — | `False` | Add to the current selection instead of replacing it |
 
 **Sample call:**

@@ -227,7 +227,7 @@ Open an existing sketch for editing, listing its segments with ids.
 
 ### `delete_sketch_entities`
 
-Delete lines, arcs and other entities of the open sketch by id.
+Delete lines, arcs and other entities of the open sketch by id, or all of them.
 
 **Prerequisite:** SolidWorks running
 
@@ -235,14 +235,13 @@ Delete lines, arcs and other entities of the open sketch by id.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `ids` | `List[str]` | ✅ | `` | Ids of the entities to delete, from edit_sketch or the add_* tools |
+| `ids` | `List[str]?` | — | `None` | Ids of the entities to delete, from the latest edit_sketch reply or the add_* tools since (ids change each time a sketch is opened) |
+| `all` | `bool` | — | `False` | true deletes every entity of the open sketch, ids or not; give it instead of ids |
 
 **Sample call:**
 
 ```json
-{
-  "ids": []
-}
+{}
 ```
 
 ---
