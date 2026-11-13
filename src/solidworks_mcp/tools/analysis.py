@@ -121,6 +121,43 @@ class CheckWallThicknessInput(CompatInput):
     )
 
 
+class CheckPrintabilityInput(CompatInput):
+    """Input schema for checking a part for printing in one orientation.
+
+    Attributes:
+        build_direction (str | list[float]): The direction the part grows.
+        support_angle_deg (float): Surfaces under this angle need support.
+        min_bridge_mm (float): Only longer bridges are listed.
+    """
+
+    build_direction: str | list[float] = Field(
+        description=(
+            "The direction the part grows away from the build plate: 'x', 'y', "
+            "'z', '-x', '-y', '-z' or [x, y, z]. A part printed upright on its "
+            "base, with Y up in the model, is 'y'"
+        ),
+    )
+    support_angle_deg: float = Field(
+        default=45.0,
+        gt=0,
+        lt=90,
+        description=(
+            "Surfaces facing the plate at less than this many degrees from "
+            "horizontal need supports (default 45)"
+        ),
+    )
+    min_bridge_mm: float = Field(
+        default=5.0,
+        ge=0,
+        description="Only flat overhangs held at both ends longer than this are listed, mm",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from ..utils.printability import direction_vector
+
+        direction_vector(self.build_direction)
+
+
 class VerifyModelInput(BaseModel):
     """Expectations for ``verify_model``; every field is optional.
 
@@ -552,6 +589,61 @@ async def register_analysis_tools(
                 f"; {excluded['below_minimum']} points under "
                 f"{input_data.min_wall_mm:g} mm inside the boxes are not counted"
             )
+        return {
+            "status": "success",
+            "message": message,
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+
+    @mcp.tool()
+    async def check_printability(input_data: CheckPrintabilityInput) -> dict[str, Any]:
+        """Check the active part for 3D printing (resin or FDM) in one orientation: overhangs, islands, bridges and suction cups.
+
+        Give `build_direction`, the way the part grows from the build plate. It
+        reports the area facing the plate in angle bands and how much needs supports
+        (under `support_angle_deg`), islands (spots that start in mid-air), bridges
+        (flat overhangs held at both ends, with their spans) and suction cups
+        (cavities open toward the plate, which trap resin). Try each orientation you
+        might print in and compare. It checks the part's mesh: a screen, not a
+        slicer. Needs: an open part (check an assembly's parts one by one).
+        Read-only: a temporary STL is written and deleted, and your STL options are
+        put back. Returns: `data` with `down_facing` (`bands`, `needs_support_mm2`),
+        `islands`, `bridges` and `suction_cups` (each `count` and `items` with
+        points in model mm), `ok` and `triangles`.
+
+        Args:
+            input_data: The orientation. `build_direction` is required;
+                `support_angle_deg` (45) and `min_bridge_mm` (5) have defaults.
+
+        Returns:
+            dict[str, Any]: The check.
+        """
+        input_data = normalize_input(input_data, CheckPrintabilityInput)
+        result = await adapter.check_printability(
+            input_data.build_direction,
+            input_data.support_angle_deg,
+            input_data.min_bridge_mm,
+        )
+        require_success(result, context="Failed to check the part for printing")
+        data = result.data if isinstance(result.data, dict) else {}
+        found = [
+            f"{data[key]['count']} {label}"
+            for key, label in (
+                ("islands", "island(s)"),
+                ("bridges", "bridge(s)"),
+                ("suction_cups", "suction cup(s)"),
+            )
+            if (data.get(key) or {}).get("count")
+        ]
+        support = (data.get("down_facing") or {}).get("needs_support_mm2") or 0
+        if support:
+            found.append(f"{support:g} mm² needing supports")
+        message = (
+            "Prints in this orientation without supports"
+            if data.get("ok")
+            else "In this orientation: " + ", ".join(found)
+        )
         return {
             "status": "success",
             "message": message,

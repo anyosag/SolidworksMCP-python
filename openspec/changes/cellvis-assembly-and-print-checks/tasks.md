@@ -58,12 +58,12 @@
   - plate faces, angle bands, regions, islands, bridges (supported runs, span) and suction cups (vectorised rays);
   - tests in `tests/solidworks_mcp/utils/test_printability.py` with meshes built in the test: a block, a shelf, a bottom-open pocket, an island, a bridge.
 - [x] 5.2 `stl_settings`: a `translate_to_positive` setting (toggle 71), set for one export and put back; tests in `test_stl_settings.py`.
-- [ ] 5.3 Adapter `check_printability`:
+- [x] 5.3 Adapter `check_printability`:
   - in `pywin32_adapter.py`: a part only; export to a temporary STL with fine resolution, mm and no translation; analyse; delete the file;
   - forwarded by `base.py`, `connection_pool.py` and `circuit_breaker.py`;
   - tests.
-- [ ] 5.4 `mock_adapter.py` `check_printability`: the real analysis on the mock's STL; tests.
-- [ ] 5.5 Tool `check_printability` in `tools/analysis.py`:
+- [x] 5.4 `mock_adapter.py` `check_printability`: the real analysis on the mock's STL; tests.
+- [x] 5.5 Tool `check_printability` in `tools/analysis.py`:
   - direction names or vector;
   - `support_angle_deg`, `min_bridge_mm`;
   - support level and hints;

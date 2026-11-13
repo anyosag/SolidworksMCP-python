@@ -101,6 +101,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "get_mass_properties": _reads("Get Mass Properties"),
     "check_interference": _reads("Check Assembly Interference"),
     "check_wall_thickness": _reads("Check Wall Thickness"),
+    "check_printability": _reads("Check Printability"),
     "analyze_geometry": _reads("Analyze Geometry"),
     "get_material_properties": _reads("Get Material Properties"),
     "verify_model": _reads("Verify Model Against Expectations"),

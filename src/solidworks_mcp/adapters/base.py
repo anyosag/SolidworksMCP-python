@@ -1235,6 +1235,30 @@ class SolidWorksAdapter(ABC):
             error="check_wall_thickness is not implemented by this adapter",
         )
 
+    async def check_printability(
+        self,
+        build_direction: str | list[float],
+        support_angle_deg: float = 45.0,
+        min_bridge_mm: float = 5.0,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Check the active part for printing in one orientation.
+
+        Args:
+            build_direction (str | list[float]): The direction the part
+                grows from the build plate: ``x``, ``-z`` ... or a vector.
+            support_angle_deg (float): Down-facing surfaces under this angle
+                from horizontal need supports.
+            min_bridge_mm (float): Only longer bridges are listed.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``down_facing``, ``islands``,
+            ``bridges``, ``suction_cups``, ``ok``, ``triangles`` and ``mesh``.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="check_printability is not implemented by this adapter",
+        )
+
     async def edit_feature(
         self, name: str, changes: dict[str, Any]
     ) -> AdapterResult[dict[str, Any]]:
