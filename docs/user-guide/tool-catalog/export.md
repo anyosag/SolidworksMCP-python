@@ -152,6 +152,7 @@ Save a picture of the active model, in a standard view or as it is on screen, as
 | `zoom_to_fit` | `bool?` | — | `None` | Zoom so the whole model fills the picture. Left out: yes for a named view, no for current, so a close-up stays a close-up |
 | `zoom_box_mm` | `List[float]?` | — | `None` | Zoom to this part of the model: two opposite corners of a box in model coordinates, mm, as [x1, y1, z1, x2, y2, z2] |
 | `hide` | `List[DisplayType]?` | — | `None` | Hide these for the picture only, e.g. ["planes", "sketches"]; they are shown again afterwards as they were |
+| `section` | `ImageSection?` | — | `None` | Cut the model on a plane for this picture only, with the cut faces capped, e.g. {"plane": "Front Plane", "offset_mm": 0}, to show a snap inside its socket; the cut is taken off afterwards |
 
 **Sample call:**
 

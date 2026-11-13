@@ -4,7 +4,7 @@ Extract engineering properties from models: mass, volume, centre of mass, moment
 
 > **Prerequisite:** An active model (part or assembly) with solid geometry.
 
-**Total tools in this category: 7**
+**Total tools in this category: 8**
 
 ---
 
@@ -101,6 +101,30 @@ Measure the active part's thinnest walls before 3D printing it.
 
 ```json
 {}
+```
+
+---
+
+### `check_printability`
+
+Check the active part for 3D printing (resin or FDM) in one orientation: overhangs, islands, bridges and suction cups.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `build_direction` | `str | List[float]` | ✅ | `` | The direction the part grows away from the build plate: 'x', 'y', 'z', '-x', '-y', '-z' or [x, y, z]. A part printed upright on its base, with Y up in the model, is 'y' |
+| `support_angle_deg` | `float` | — | `45.0` | Surfaces facing the plate at less than this many degrees from horizontal need supports (default 45) |
+| `min_bridge_mm` | `float` | — | `5.0` | Only flat overhangs held at both ends longer than this are listed, mm |
+
+**Sample call:**
+
+```json
+{
+  "build_direction": "example"
+}
 ```
 
 ---

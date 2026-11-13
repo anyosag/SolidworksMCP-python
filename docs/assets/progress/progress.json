@@ -1,10 +1,10 @@
 {
  "tools": {
-  "total": 165,
+  "total": 168,
   "by_level": {
    "stable": 107,
    "beta": 0,
-   "experimental": 19,
+   "experimental": 22,
    "planned": 39
   },
   "list": [
@@ -303,6 +303,13 @@
     "summary": "Find where the components of the active assembly overlap (Tools > Interference Detection)."
    },
    {
+    "name": "check_printability",
+    "family": "analysis",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Check the active part for 3D printing (resin or FDM) in one orientation: overhangs, islands, bridges and suction cups."
+   },
+   {
     "name": "check_sketch_fully_defined",
     "family": "sketching",
     "level": "stable",
@@ -503,7 +510,7 @@
     "family": "modeling",
     "level": "experimental",
     "reason": "not yet checked by a live test on real SolidWorks.",
-    "summary": "Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius."
+    "summary": "Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges."
    },
    {
     "name": "edit_sketch",
@@ -863,6 +870,13 @@
     "summary": "Read or change the file-level properties of a SolidWorks file on disk."
    },
    {
+    "name": "measure_clearance",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Measure the smallest gap between two components of the active assembly, in mm."
+   },
+   {
     "name": "measure_entities",
     "family": "engineering_data",
     "level": "stable",
@@ -1008,6 +1022,13 @@
     "level": "stable",
     "reason": "",
     "summary": "Fix or float a component of the active assembly, or make a sub-assembly rigid or flexible."
+   },
+   {
+    "name": "set_component_transform",
+    "family": "modeling",
+    "level": "experimental",
+    "reason": "not yet checked by a live test on real SolidWorks.",
+    "summary": "Place a component of the active assembly: put its origin at a point, turn it, and fix or float it."
    },
    {
     "name": "set_custom_property",
@@ -1168,11 +1189,11 @@
  "com": {
   "type_library": "83A33D31-27C5-11CE-BFD4-00400513BB57x0x34x0",
   "core": {
-   "covered": 243,
+   "covered": 249,
    "total": 2838
   },
   "api": {
-   "covered": 270,
+   "covered": 280,
    "total": 5985
   },
   "interfaces": [
@@ -1219,6 +1240,7 @@
      "BlankRefGeom",
      "BlankSketch",
      "ClearSelection2",
+     "ClosestDistance",
      "CreateArc",
      "CreateCenterLine",
      "CreateCircleByRadius",
@@ -1300,6 +1322,7 @@
      "CustomPropertyManager",
      "DeleteSelection2",
      "GetAnnotations",
+     "GetCorrespondingEntity",
      "GetMassProperties",
      "GetPackAndGo",
      "GetUserPreferenceInteger",
@@ -1329,6 +1352,7 @@
      "FeatureRevolve2",
      "FirstFeature",
      "GetBodies2",
+     "GetCorrespondingEntity",
      "GetMaterialPropertyName2",
      "GetPartBox",
      "GetTessNorms",
@@ -1363,6 +1387,7 @@
      "Create1stAngleViews2",
      "Create3rdAngleViews2",
      "CreateDrawViewFromModelView3",
+     "CreateSectionView",
      "EditSheet",
      "EditSketch",
      "EditTemplate",
@@ -1437,7 +1462,9 @@
      "GetBox",
      "GetChildren",
      "GetConfigurationNames",
+     "GetCorrespondingEntity",
      "GetID",
+     "GetMates",
      "GetModelDoc2",
      "GetPathName",
      "GetSuppression2",

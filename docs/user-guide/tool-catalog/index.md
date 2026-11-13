@@ -1,19 +1,19 @@
 # Tool Catalog — All 101 Tools
 
-This reference documents all **165 MCP tools** registered by the SolidWorks MCP server.
+This reference documents all **168 MCP tools** registered by the SolidWorks MCP server.
 Each section covers one functional category with parameter tables and copy-paste sample calls.
 
 ## Quick Navigation
 
 | Category | Count | Description |
 |----------|-------|-------------|
-| [Modeling Tools](modeling.md) | 35 | Create and manipulate SolidWorks parts, assemblies, and drawings. These are the … |
+| [Modeling Tools](modeling.md) | 37 | Create and manipulate SolidWorks parts, assemblies, and drawings. These are the … |
 | [Sketching Tools](sketching.md) | 22 | Build 2-D sketch geometry (lines, circles, arcs, splines, polygons) and apply ge… |
 | [Drawing Tools](drawing.md) | 14 | Create and edit 2-D technical drawings: add projected/section/detail views, plac… |
 | [Drawing Analysis Tools](drawing-analysis.md) | 8 | Quality-gate your drawings. Analyse dimensions, annotations, view coverage, and … |
 | [Drawing Automation Tools](drawing-automation.md) | 7 | Put the model's dimensions on a drawing and lay them out so nothing overlaps, ad… |
 | [Engineering Data Tools](engineering-data.md) | 8 | Read and edit the data drawings, BOMs and analyses are built from: every model d… |
-| [Analysis Tools](analysis.md) | 7 | Extract engineering properties from models: mass, volume, centre of mass, moment… |
+| [Analysis Tools](analysis.md) | 8 | Extract engineering properties from models: mass, volume, centre of mass, moment… |
 | [Export Tools](export.md) | 7 | Convert SolidWorks models to industry-standard interchange and manufacturing for… |
 | [File Management Tools](file-management.md) | 19 | Open, save, and manage SolidWorks documents. Load parts and assemblies, save-as … |
 | [Automation Tools](automation.md) | 8 | Orchestrate multi-step workflows, run batch file processing, manage design table… |

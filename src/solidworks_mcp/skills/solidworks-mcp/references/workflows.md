@@ -86,7 +86,13 @@ build on it; `undo`, then fix the plane or depth, or use `"UpToNext"` or
    A wall meant to be thin (a snap-fit flexure) goes in `exclude_boxes_mm`
    as a box around it: its points are reported under `excluded` and don't
    count against `ok`.
-3. `export_stl`. For a smoother mesh than the user's STL options give, pass
+3. `check_printability` with the `build_direction` you'll print in (the
+   way the part grows from the plate; "y" for a part standing on its base
+   with Y up). It lists islands, bridges, suction cups and the area needing
+   supports; try each orientation you might print in and keep the one with
+   the fewest. A pocket that opens toward the plate is a suction cup on a
+   resin printer: turn the part over or vent the pocket.
+4. `export_stl`. For a smoother mesh than the user's STL options give, pass
    `deviation_mm` (0.01 is fine for most prints) and `angle_deg`; `units`
    and `binary` set the file's units and format. They apply to this file
    only, and the user's options are put back.
@@ -137,7 +143,13 @@ holes (3 holes 60 degrees apart: `count: 3`, `step_angle: 60`);
    - a profile: `edit_sketch`, `delete_sketch_entities` with the ids it
      lists (ids change each time a sketch is opened, so use the latest
      reply's; `all: true` deletes the whole profile), the `add_*` tools for
-     the new shape, then `exit_sketch`;
+     the new shape, then `exit_sketch` (draw before you exit: SolidWorks
+     deletes a sketch exited empty);
+   - a fillet or chamfer whose edges an edit removed (it fails to rebuild):
+     `select_edges` for the new edges, then `edit_feature` with its `name`
+     and `edges: "selection"` (or the rules as `edge_rules`). It keeps its
+     name, radius and place in the tree; its reply says how many edges
+     SolidWorks took;
    - a new feature mid-tree: `set_rollback` with `after` the feature it
      builds on, add it, then `set_rollback` with no input.
 3. `rebuild_model`: an error names each failing feature and how to fix it.
@@ -155,8 +167,11 @@ second call can put them back.
 ## An assembly
 
 1. Save each part first (`save_part`): `insert_component` takes a file path.
-2. `create_assembly`, then `insert_component` for each part, with a
-   position in mm.
+2. `create_assembly`, then `insert_component` for each part, with the
+   position of its origin in mm (`fixed: false` to float the first one).
+   To put a part at an exact place and angle without mates (a stand-in at a
+   height, a copy stacked above), `set_component_transform` with
+   `origin_mm`, and `rotation_deg` or `matrix`; it reads the placement back.
 3. `list_components` for the instance names (e.g. "plate-1").
 4. `add_mate` between components. Each side is a reference plane or axis
    name (`entity_a`: "Front Plane", "Axis1") or a face (`face_a`: a point on
@@ -167,7 +182,10 @@ second call can put them back.
    still, use `set_component_state` (`fixed`); to let a sub-assembly's own
    mates move in the main assembly (a crank that turns), `flexible: true`.
 5. `check_interference`, then `verify_model` with `component_count`,
-   `mate_count` and `no_interference: true`.
+   `mate_count` and `no_interference: true`. For a gap that must stay open
+   (a latch's 0.25 mm play), `measure_clearance` with the two components
+   gives the smallest gap and where it is; `export_image` with `section`
+   (a plane and an offset) shows it cut open.
 6. `save_assembly`, or `pack_and_go_assembly` for a self-contained folder.
 
 ## A drawing

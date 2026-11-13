@@ -607,7 +607,7 @@ async def register_analysis_tools(
         (cavities open toward the plate, which trap resin). Try each orientation you
         might print in and compare. It checks the part's mesh: a screen, not a
         slicer. Needs: an open part (check an assembly's parts one by one).
-        Read-only: a temporary STL is written and deleted, and your STL options are
+        Read-only. A temporary STL is written and deleted, and your STL options are
         put back. Returns: `data` with `down_facing` (`bands`, `needs_support_mm2`),
         `islands`, `bridges` and `suction_cups` (each `count` and `items` with
         points in model mm), `ok` and `triangles`.

@@ -85,9 +85,9 @@
 
 ## 7. Docs and checks
 
-- [ ] 7.1 `docs/agents/com-api-pitfalls.md`: what the probes found (distance calls on cylinders, section removal, fillet `Edges`, STL translation); the skill's assembly and printing workflows (`src/solidworks_mcp/skills/solidworks-mcp/`).
-- [ ] 7.2 Regenerate the tool catalog (`src/utils/generate_tool_catalog.py`) and the progress files (`python -m solidworks_mcp.progress.generate`).
-- [ ] 7.3 `ruff check` / `ruff format --check`, and the full mock suite with the coverage gate.
+- [x] 7.1 `docs/agents/com-api-pitfalls.md`: what the probes found (distance calls on cylinders, section removal, fillet `Edges`, STL translation); the skill's assembly and printing workflows (`src/solidworks_mcp/skills/solidworks-mcp/`).
+- [x] 7.2 Regenerate the tool catalog (`src/utils/generate_tool_catalog.py`) and the progress files (`python -m solidworks_mcp.progress.generate`).
+- [x] 7.3 `ruff check` / `ruff format --check`, and the full mock suite with the coverage gate.
 
 ## 8. Live
 

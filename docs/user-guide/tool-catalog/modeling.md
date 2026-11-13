@@ -4,7 +4,7 @@ Create and manipulate SolidWorks parts, assemblies, and drawings. These are the 
 
 > **Prerequisite:** An active SolidWorks session. Most feature tools require an open Part document.
 
-**Total tools in this category: 35**
+**Total tools in this category: 37**
 
 ---
 
@@ -396,6 +396,7 @@ Insert a part or sub-assembly file into the active assembly with its origin at a
 | `x` | `float` | — | `0.0` | X position in millimetres |
 | `y` | `float` | — | `0.0` | Y position in millimetres |
 | `z` | `float` | — | `0.0` | Z position in millimetres |
+| `fixed` | `bool?` | — | `None` | true fixes the component, false floats it (also the first one, which SolidWorks fixes by itself); leave it out for SolidWorks' choice |
 
 **Sample call:**
 
@@ -452,6 +453,32 @@ Fix or float a component of the active assembly, or make a sub-assembly rigid or
 | `component` | `str` | ✅ | `` | Component instance name, as reported by list_components |
 | `fixed` | `bool?` | — | `None` | true fixes the component in place; false floats it so mates can move it; leave it out to keep it as it is |
 | `flexible` | `bool?` | — | `None` | For a sub-assembly: true lets its own mates move inside this assembly (a crank that turns); false makes it rigid; leave it out to keep it as it is |
+
+**Sample call:**
+
+```json
+{
+  "component": "example"
+}
+```
+
+---
+
+### `set_component_transform`
+
+Place a component of the active assembly: put its origin at a point, turn it, and fix or float it.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `component` | `str` | ✅ | `` | Component instance name, as reported by list_components |
+| `origin_mm` | `List[float]?` | — | `None` | Where the component's own origin goes, [x, y, z] mm in assembly coordinates; leave it out to keep it where it is |
+| `rotation_deg` | `List[float]?` | — | `None` | Turns [rx, ry, rz] in degrees about the assembly's X, then Y, then Z axis (right-hand rule), from unturned: [0, 90, 0] points the component's X axis along -Z. Leave it and matrix out to keep its turn |
+| `matrix` | `List[List[float]]?` | — | `None` | The component's X, Y and Z axes in assembly coordinates, three rows of three numbers, orthonormal; instead of rotation_deg |
+| `fixed` | `bool?` | — | `None` | true leaves it fixed, false floating; leave it out to keep its state (a fixed component is floated for the move and fixed again) |
 
 **Sample call:**
 
@@ -653,7 +680,7 @@ Show or hide planes, axes, points, origins and sketches in the active document.
 
 ### `edit_feature`
 
-Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius.
+Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges.
 
 **Prerequisite:** SolidWorks running
 
@@ -667,6 +694,8 @@ Change an existing feature's parameters in place: an extrude's or cut's depth, e
 | `reverse_direction` | `bool?` | — | `None` | Extrude, cut or revolve: true to go the other way |
 | `angle` | `float?` | — | `None` | Revolve: the new angle, degrees |
 | `radius` | `float?` | — | `None` | Fillet: the new radius, mm |
+| `edges` | `Literal['selection']?` | — | `None` | Fillet or chamfer: 'selection' replaces all its edges with the edges selected now (select_edges or select_face_edges first) |
+| `edge_rules` | `Dict[str, Any]?` | — | `None` | Fillet or chamfer: replace all its edges with those this select_edges query matches (it selects nothing). It takes select_edges' keys except append, any_of included, e.g. {'side': 'top', 'edge_type': 'linear'}. Not with edges |
 
 **Sample call:**
 
@@ -866,6 +895,30 @@ Repeat features of the active part around an axis, e.g. a ring of bosses or ribs
   "features": [],
   "axis": "example",
   "count": 10.0
+}
+```
+
+---
+
+### `measure_clearance`
+
+Measure the smallest gap between two components of the active assembly, in mm.
+
+**Prerequisite:** SolidWorks running
+
+**Parameters:**
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `component_a` | `str` | ✅ | `` | One component's instance name, as list_components reports it |
+| `component_b` | `str` | ✅ | `` | The other component's instance name, e.g. 'latch-1' |
+
+**Sample call:**
+
+```json
+{
+  "component_a": "example",
+  "component_b": "example"
 }
 ```
 

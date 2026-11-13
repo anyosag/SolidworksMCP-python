@@ -1227,6 +1227,9 @@ bounding-box centre, (0, -6.75, +3.7) mm, and every part mated to it followed.
   `IMathUtility::CreateTransform` and a `VT_ARRAY | VT_R8` of the 16 `ArrayData` values.
 - A fixed component (the first in an assembly is fixed) is floated for the move and
   fixed again, as a script that moved components on SolidWorks 2026 had to do.
+- The rotation's rows are the component's axes in assembly coordinates (a point goes
+  to `p . R + t`). After a quarter turn about Y, a block's `IComponent2.GetBox` was
+  exactly the box that predicts (2026-11-13).
 
 - `IMathUtility.CreateTransform` must be flagged as a method first: unflagged, late
   binding reads it as a property and SolidWorks answers "Member not found".
@@ -1302,6 +1305,58 @@ feature. To replace a sketch's contents, draw the new entities before
 
 Measured 2026-11-12 on SOLIDWORKS 2026 (live test
 `test_live_sw_dishrack_fixes.py::test_a_whole_sketch_is_emptied`).
+
+---
+
+## 46. Distances between components: `ClosestDistance` on assembly-context faces
+
+For the smallest gap between two components, take each component's faces
+(`IComponent2.GetBodies2(0)`, then `GetFaces()`) and their assembly-context twins
+(`IComponent2.GetCorrespondingEntity(face)`), then measure pairs with
+`IModelDoc2.ClosestDistance(a, b, pt1, pt2)`. The points are byref VARIANTs and come
+back in assembly coordinates, metres.
+
+- The API help warns that a cylindrical face is measured from its axis. On SOLIDWORKS
+  2026 a Ø9.5 pin in a Ø10 hole measured 0.25 mm, between points on the two
+  surfaces.
+- `IEntity.GetDistance` (minimum) returned 0 for faces that don't touch, with points
+  in the part's coordinates. Don't use it for clearances.
+- `IFace2.GetBox` gives the part's coordinates, on the twin too, and pads a plane's
+  box by about 0.15 mm. Turn it by the component's transform before comparing boxes.
+
+Measured 2026-11-13 (`tests/scripts/probe_clearance.py`).
+
+---
+
+## 47. Section views: create, picture, `RemoveSectionView`
+
+`IModelViewManager.CreateSectionViewData()` gives an `ISectionViewData`. Set
+`FirstPlane` (the plane feature's `GetSpecificFeature2()`), `FirstOffset` (metres) and
+`ShowSectionCap`, then call `IModelViewManager.CreateSectionView(data)`.
+
+- `IModelViewManager.RemoveSectionView()` takes it off. It takes no arguments, so flag
+  it as a method first.
+- Measured: the section changed 22.5% of a picture's pixels, and after the removal
+  the picture was identical to the one before.
+
+Measured 2026-11-13 (`tests/scripts/probe_section_fillet.py`).
+
+---
+
+## 48. A fillet's or chamfer's edges can be replaced through its definition
+
+`GetDefinition` gives `ISimpleFilletFeatureData2` or `IChamferFeatureData2`. Call
+`AccessSelections(model, null component)`, put `Edges` as a
+`VARIANT(VT_ARRAY | VT_DISPATCH, edges)`, then `ModifyDefinition` and rebuild.
+
+- A fillet that failed to rebuild after its sketch was redrawn took a new edge and
+  rebuilt cleanly.
+- SolidWorks drops edges a fillet can't take: given its own top face's four edges
+  (one of them the fillet's own tangent edge), a fillet kept two. Read the count back
+  (`GetEdgeCount`).
+- Gather the new edges before `AccessSelections`, which may clear the selection.
+
+Measured 2026-11-13 (`tests/scripts/probe_section_fillet.py`).
 
 ---
 
