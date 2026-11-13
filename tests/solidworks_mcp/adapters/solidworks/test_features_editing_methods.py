@@ -90,3 +90,98 @@ async def test_deleting_entities_needs_an_open_sketch() -> None:
         "No active sketch"
     )
     assert (await harness.delete_all_sketch_entities()).error == "No active sketch"
+
+
+class _Measured(_Harness):
+    """A harness whose part's volume reads as ``volumes``, one per read."""
+
+    def __init__(self, volumes: list[float | None]) -> None:
+        super().__init__(model=SimpleNamespace())
+        self._volumes = list(volumes)
+        self.reads = 0
+
+    async def get_model_geometry_summary(self) -> AdapterResult[dict[str, Any]]:
+        self.reads += 1
+        volume = self._volumes.pop(0)
+        if volume is None:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error="unreadable")
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data={"volume_mm3": volume}
+        )
+
+
+_EDGES = {"edges_before": 1, "edges_given": 4, "edges_after": 4}
+
+
+async def test_new_edges_report_the_volume_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[dict[str, Any]] = []
+
+    def edit(_adapter: Any, name: str, changes: dict[str, Any], _null: Any) -> Any:
+        seen.append(changes)
+        return {"feature": name, **_EDGES}
+
+    monkeypatch.setattr(feature_editing, "edit_feature", edit)
+    harness = _Measured([11980.0, 11965.3333])
+
+    result = await harness.edit_feature("Chamfer1", {"edge_rules": {"side": "top"}})
+
+    assert result.data["measured_change"] == {
+        "volume_before_mm3": 11980.0,
+        "volume_after_mm3": 11965.3333,
+        "volume_delta_mm3": -14.6667,
+    }
+    assert result.data["edges_given"] == 4
+    assert seen == [{"edge_rules": {"side": "top"}}]
+
+
+@pytest.mark.parametrize(
+    ("changes", "volumes", "reads"),
+    [
+        ({"radius": 2}, [], 0),  # no new edges: the volume isn't read
+        ({"edges": "selection"}, [None], 1),  # unreadable before
+        ({"edges": "selection"}, [100.0, None], 2),  # unreadable after
+    ],
+)
+async def test_no_measured_change_without_both_volumes(
+    monkeypatch: pytest.MonkeyPatch,
+    changes: dict[str, Any],
+    volumes: list[float | None],
+    reads: int,
+) -> None:
+    monkeypatch.setattr(
+        feature_editing, "edit_feature", lambda *_a: {"feature": "Fillet1"}
+    )
+    harness = _Measured(volumes)
+
+    result = await harness.edit_feature("Fillet1", changes)
+
+    assert result.is_success
+    assert "measured_change" not in result.data
+    assert harness.reads == reads
+
+
+async def test_a_failed_edge_change_reads_the_volume_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(*_a: Any) -> Any:
+        raise ValueError("No new edges for 'Fillet1', so it is unchanged: nothing")
+
+    monkeypatch.setattr(feature_editing, "edit_feature", refuse)
+    harness = _Measured([100.0])
+
+    result = await harness.edit_feature("Fillet1", {"edges": "selection"})
+
+    assert result.error == "No new edges for 'Fillet1', so it is unchanged: nothing"
+    assert harness.reads == 1
+
+
+async def test_without_a_model_new_edges_read_no_volume() -> None:
+    harness = _Measured([])
+    harness.currentModel = None
+
+    result = await harness.edit_feature("Fillet1", {"edges": "selection"})
+
+    assert result.error == "No active model"
+    assert harness.reads == 0

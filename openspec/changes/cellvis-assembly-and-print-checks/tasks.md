@@ -71,13 +71,14 @@
 
 ## 6. Fillet and chamfer edges
 
-- [ ] 6.1 `feature_editing.py`:
+- [x] 6.1 `feature_editing.py`:
   - `check_changes` accepts `edges` / `edge_rules` for `Fillet` and `Chamfer`;
   - `replace_edges` (D5: gather edges before `AccessSelections`, put `Edges`, `ModifyDefinition`, counts before and after, release on refusal);
+    done inside `edit_feature` (`new_edges`, `edge_count`), so a fillet's `radius` and its new edges go in one definition edit;
   - tests in `test_feature_editing.py`.
-- [ ] 6.2 Adapter `edit_feature` wiring (`features.py`): the selected edges or `match_rules` handles; `measured_change`; tests.
-- [ ] 6.3 `mock_adapter.py` `edit_feature` with `edges` / `edge_rules`: type check and counts; tests.
-- [ ] 6.4 `EditFeatureInput`:
+- [x] 6.2 Adapter `edit_feature` wiring (`features.py`): the selected edges or `match_rules` handles; `measured_change`; tests.
+- [x] 6.3 `mock_adapter.py` `edit_feature` with `edges` / `edge_rules`: type check and counts; tests.
+- [x] 6.4 `EditFeatureInput`:
   - `edges` (`"selection"`) and `edge_rules` (a `select_edges` query, validated by `validate_edge_query`), exclusive;
   - description;
   - tests.

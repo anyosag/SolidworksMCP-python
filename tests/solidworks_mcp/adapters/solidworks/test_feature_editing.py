@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -220,8 +221,8 @@ def test_end_conditions_by_any_spelling() -> None:
     ("kind", "changes", "fragment"),
     [
         ("Cut", {}, "Give at least one change"),
-        ("Chamfer", {"depth": 1}, "edit_feature changes extrudes, cuts"),
-        ("Fillet", {"depth": 1}, "it takes radius, not depth"),
+        ("Shell", {"depth": 1}, "changes extrudes, cuts, revolves, fillets and"),
+        ("Fillet", {"depth": 1}, "it takes edge_rules, edges, radius, not depth"),
         ("Cut", {"end_condition": "sideways"}, "end_condition must be one of"),
     ],
 )
@@ -311,7 +312,7 @@ def test_a_fillet_radius() -> None:
             "refused the change",
         ),
         (
-            _Feature("Cut-Extrude1", "Chamfer", _ExtrudeData()),
+            _Feature("Cut-Extrude1", "Shell", _ExtrudeData()),
             ValueError,
             "edit_feature",
         ),
@@ -351,6 +352,305 @@ def test_after_falls_back_to_the_changes_when_unreadable() -> None:
     reply = fe.edit_feature(_Adapter(model), "Boss-Extrude1", {"depth": 7}, _NULL)
 
     assert reply["after"] == {"depth": 7}
+
+
+# ---- fillet and chamfer edges ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("kind", "changes", "fragment"),
+    [
+        ("Chamfer", {"radius": 1}, "a Chamfer; it takes edge_rules, edges, not radius"),
+        ("Cut", {"edges": "selection"}, "reverse_direction, not edges"),
+        (
+            "Fillet",
+            {"edges": "selection", "edge_rules": {}},
+            "Give edges or edge_rules, not both.",
+        ),
+        ("Fillet", {"edges": "all"}, "edges takes 'selection' (the edges selected"),
+        ("Chamfer", {"edge_rules": ["top"]}, "edge_rules must be a select_edges"),
+        ("Chamfer", {"edge_rules": {"sides": "top"}}, "unknown key(s) sides; it"),
+        ("Chamfer", {"edge_rules": {"append": True}}, "unknown key(s) append"),
+        ("Fillet", {"edge_rules": {"edge_type": "round"}}, "edge_rules: edge_type"),
+        ("Fillet", {"edge_rules": {"face_point": 5}}, "the wrong type"),
+        (
+            "Fillet",
+            {"edge_rules": {"any_of": [{"side": "top"}, {"color": "red"}]}},
+            "edge_rules: any_of[1] has unknown key(s) color",
+        ),
+    ],
+)
+def test_edge_changes_a_feature_does_not_take(
+    kind: str, changes: dict[str, Any], fragment: str
+) -> None:
+    assert fragment in (fe.check_changes(kind, changes, "F1") or "")
+
+
+@pytest.mark.parametrize(
+    ("kind", "changes"),
+    [
+        ("Fillet", {"edges": "selection", "radius": 2}),
+        ("Fillet", {"edge_rules": {"edge_type": " Linear "}}),
+        ("Chamfer", {"edge_rules": {"any_of": [{"side": "top"}, {"side": "-x"}]}}),
+        ("Chamfer", {"edges": "selection"}),
+    ],
+)
+def test_fillets_and_chamfers_take_new_edges(
+    kind: str, changes: dict[str, Any]
+) -> None:
+    assert fe.check_changes(kind, changes, "F1") is None
+
+
+def test_an_edge_query_is_put_as_select_edges_takes_it() -> None:
+    assert fe.edge_query({"edge_type": " Linear ", "side": "top"}) == {
+        "edge_type": "linear",
+        "side": "top",
+    }
+    assert fe.edge_query({"side": "top"}) == {"side": "top"}
+
+
+class _EdgeData:
+    """``ISimpleFilletFeatureData2`` / ``IChamferFeatureData2`` with edges.
+
+    ``keeps`` is how many of the edges put SolidWorks keeps (all when None).
+    Without ``counts`` there is no ``GetEdgeCount``, so ``Edges`` is read;
+    without ``readable`` that gives None too.
+    """
+
+    def __init__(
+        self,
+        edges: int = 1,
+        keeps: int | None = None,
+        counts: bool = True,
+        manager: _Selection | None = None,
+        readable: bool = True,
+    ) -> None:
+        self._edges: list[Any] = [object() for _ in range(edges)]
+        self._keeps, self._manager, self._readable = keeps, manager, readable
+        self.DefaultRadius = 0.001
+        self.put: Any = None
+        self.released = 0
+        self.accessed = False
+        if counts:
+            self.GetEdgeCount = lambda: len(self._edges)
+
+    @property
+    def Edges(self) -> tuple[Any, ...] | None:  # noqa: N802
+        return tuple(self._edges) if self._readable else None
+
+    @Edges.setter
+    def Edges(self, value: Any) -> None:  # noqa: N802
+        self.put = value
+        given = list(getattr(value, "value", value))
+        self._edges = given[: self._keeps] if self._keeps is not None else given
+
+    def AccessSelections(self, doc: Any, component: Any) -> bool:  # noqa: N802
+        self.accessed = True
+        if self._manager is not None:  # as SolidWorks may: the selection goes
+            self._manager.entities.clear()
+        return True
+
+    def ReleaseSelectionAccess(self) -> None:  # noqa: N802
+        self.released += 1
+
+
+class _Selection:
+    """``ISelectionMgr`` holding ``(type, object)`` entries."""
+
+    def __init__(self, *entities: tuple[int, Any]) -> None:
+        self.entities = list(entities)
+
+    def GetSelectedObjectCount2(self, mark: int) -> int:  # noqa: N802
+        return len(self.entities)
+
+    def GetSelectedObjectType3(self, index: int, mark: int) -> int:  # noqa: N802
+        return self.entities[index - 1][0]
+
+    def GetSelectedObject6(self, index: int, mark: int) -> Any:  # noqa: N802
+        return self.entities[index - 1][1]
+
+
+def _given(value: Any) -> list[Any]:
+    """The edges in a ``dispatch_array``: a VARIANT's value, or the list."""
+    return list(getattr(value, "value", value))
+
+
+def _part(feature: _Feature, selection: _Selection | None = None) -> _Model:
+    model = _Model([feature])
+    model.SelectionManager = selection or _Selection()  # type: ignore[attr-defined]
+    return model
+
+
+def test_a_fillet_takes_the_selected_edges_and_says_what_it_kept() -> None:
+    """Probe 2: given its own top face's four edges, a fillet kept two."""
+    edges = [object(), object(), object(), object()]
+    selection = _Selection(
+        (2, object()), *((fe.SELECTED_EDGE, edge) for edge in edges), (1, None)
+    )
+    data = _EdgeData(edges=1, keeps=2, manager=selection)
+    model = _part(_Feature("Fillet1", "Fillet", data), selection)
+
+    reply = fe.edit_feature(
+        _Adapter(model), "Fillet1", {"edges": "selection", "radius": 2}, _NULL
+    )
+
+    assert _given(data.put) == edges  # gathered before AccessSelections cleared them
+    assert reply["edges_before"] == 1
+    assert reply["edges_given"] == 4
+    assert reply["edges_after"] == 2
+    assert (reply["before"], reply["after"]) == ({"radius": 1.0}, {"radius": 2.0})
+    assert model.calls == ["rebuild"]
+
+
+def test_new_edges_go_in_as_a_dispatch_array() -> None:
+    pythoncom = pytest.importorskip("pythoncom")
+    edge = object()
+
+    put = fe.dispatch_array([edge])
+
+    assert put.varianttype == pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH
+    assert put.value == [edge]
+
+
+def test_without_pywin32_the_edges_go_in_as_a_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(sys.modules, "pythoncom", None)
+    edge = object()
+
+    assert fe.dispatch_array((edge,)) == [edge]
+
+
+def _cube_edges(size: float = 10.0) -> list[Any]:
+    """The twelve straight edges of a cube from the origin, as ``IEdge`` fakes."""
+
+    def vertex(point: list[float]) -> Any:
+        return SimpleNamespace(GetPoint=lambda: [c / 1000 for c in point])
+
+    line = SimpleNamespace(IsCircle=lambda: False, IsLine=lambda: True)
+    edges = []
+    for axis in range(3):
+        others = [i for i in range(3) if i != axis]
+        for a in (0.0, size):
+            for b in (0.0, size):
+                start = [0.0, 0.0, 0.0]
+                start[others[0]], start[others[1]] = a, b
+                end = list(start)
+                end[axis] = size
+                edges.append(
+                    SimpleNamespace(
+                        GetCurve=lambda: line,
+                        GetStartVertex=lambda s=start: vertex(s),
+                        GetEndVertex=lambda e=end: vertex(e),
+                    )
+                )
+    return edges
+
+
+def test_a_chamfer_moves_to_the_edges_a_rule_matches() -> None:
+    """The top face's straight edges, without selecting anything."""
+    cube = _cube_edges()
+    data = _EdgeData(edges=1, counts=False)
+    model = _part(_Feature("Chamfer1", "Chamfer", data))
+    body = SimpleNamespace(GetEdges=lambda: cube)
+    model.GetBodies2 = lambda *_a: [body]  # type: ignore[attr-defined]
+    top = {"edge_type": "Linear", "inside_box": [[-1, 9, -1], [11, 11, 11]]}
+
+    reply = fe.edit_feature(_Adapter(model), "Chamfer1", {"edge_rules": top}, _NULL)
+
+    tops = [e for e in cube if abs(e.GetStartVertex().GetPoint()[1] - 0.01) < 1e-9]
+    tops = [e for e in tops if abs(e.GetEndVertex().GetPoint()[1] - 0.01) < 1e-9]
+    assert _given(data.put) == tops
+    assert (reply["edges_before"], reply["edges_given"], reply["edges_after"]) == (
+        1,
+        4,
+        4,
+    )
+    assert reply["before"] == reply["after"] == {}
+    assert reply["type"] == "Chamfer"
+
+
+@pytest.mark.parametrize(
+    ("selection", "fragment"),
+    [
+        (_Selection(), "nothing is selected. Select its new edges first"),
+        (
+            _Selection((2, object()), (3, object())),
+            "none of the 2 selected entities is an edge",
+        ),
+    ],
+)
+def test_no_selected_edge_leaves_the_fillet_as_it_was(
+    selection: _Selection, fragment: str
+) -> None:
+    data = _EdgeData()
+    model = _part(_Feature("Fillet1", "Fillet", data), selection)
+
+    with pytest.raises(ValueError) as caught:
+        fe.edit_feature(_Adapter(model), "Fillet1", {"edges": "selection"}, _NULL)
+
+    assert str(caught.value).startswith(
+        "No new edges for 'Fillet1', so it is unchanged: "
+    )
+    assert fragment in str(caught.value)
+    assert not data.accessed and data.put is None
+    assert model.calls == []
+
+
+def test_a_rule_that_matches_nothing_leaves_the_chamfer_as_it_was() -> None:
+    data = _EdgeData()
+    model = _part(_Feature("Chamfer1", "Chamfer", data))
+    model.GetBodies2 = lambda *_a: [  # type: ignore[attr-defined]
+        SimpleNamespace(GetEdges=_cube_edges)
+    ]
+
+    with pytest.raises(ValueError) as caught:
+        fe.edit_feature(
+            _Adapter(model),
+            "Chamfer1",
+            {"edge_rules": {"edge_type": "circular"}},
+            _NULL,
+        )
+
+    assert str(caught.value) == (
+        "No new edges for 'Chamfer1', so it is unchanged: no matching edges found: "
+        "the part has 12 edge(s); 0 pass edge_type."
+    )
+    assert not data.accessed
+
+
+def test_a_refused_edge_change_releases_the_definition() -> None:
+    edge = object()
+    data = _EdgeData()
+    feature = _Feature("Fillet1", "Fillet", data, modify=False)
+    model = _part(feature, _Selection((fe.SELECTED_EDGE, edge)))
+
+    with pytest.raises(RuntimeError, match="refused the change to 'Fillet1'"):
+        fe.edit_feature(_Adapter(model), "Fillet1", {"edges": "selection"}, _NULL)
+    assert data.released == 1
+
+
+def test_edge_counts_that_do_not_read_are_none() -> None:
+    edge = object()
+    data = _EdgeData(counts=False, readable=False)
+    feature = _Feature("Fillet1", "Fillet", data)
+    model = _part(feature, _Selection((fe.SELECTED_EDGE, edge)))
+    calls = {"n": 0}
+
+    def definition() -> Any:
+        calls["n"] += 1
+        return data if calls["n"] == 1 else None
+
+    feature.GetDefinition = definition  # type: ignore[method-assign]
+
+    reply = fe.edit_feature(_Adapter(model), "Fillet1", {"edges": "selection"}, _NULL)
+
+    assert (reply["edges_before"], reply["edges_given"], reply["edges_after"]) == (
+        None,
+        1,
+        None,
+    )
+    assert reply["after"] == {}
 
 
 # ---- rollback ------------------------------------------------------------------

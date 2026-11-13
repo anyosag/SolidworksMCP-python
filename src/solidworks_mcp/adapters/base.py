@@ -1267,11 +1267,15 @@ class SolidWorksAdapter(ABC):
         Args:
             name (str): The feature's tree name.
             changes (dict[str, Any]): ``depth`` (mm), ``end_condition``,
-                ``reverse_direction``, ``angle`` (degrees) or ``radius`` (mm).
+                ``reverse_direction``, ``angle`` (degrees) or ``radius`` (mm);
+                for a fillet or chamfer ``edges: "selection"`` or
+                ``edge_rules`` (a ``select_edges`` query), which replace its
+                edges.
 
         Returns:
             AdapterResult[dict[str, Any]]: ``feature``, ``type``, ``before`` and
-            ``after``.
+            ``after``; with new edges also ``edges_before``, ``edges_given``
+            and ``edges_after``, and ``measured_change`` when the volume reads.
         """
         return AdapterResult(
             status=AdapterResultStatus.ERROR,

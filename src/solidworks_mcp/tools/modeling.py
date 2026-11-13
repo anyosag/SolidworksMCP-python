@@ -1006,6 +1006,8 @@ class EditFeatureInput(CompatInput):
         reverse_direction (bool | None): New direction (extrude, cut, revolve).
         angle (float | None): New angle, degrees (revolve).
         radius (float | None): New radius, mm (fillet).
+        edges (str | None): "selection": new edges, those selected now (fillet, chamfer).
+        edge_rules (dict | None): New edges by a select_edges query (fillet, chamfer).
     """
 
     name: str = Field(description="The feature to change, e.g. 'Cut-Extrude2'")
@@ -1028,21 +1030,57 @@ class EditFeatureInput(CompatInput):
     radius: float | None = Field(
         default=None, gt=0, description="Fillet: the new radius, mm"
     )
+    edges: Literal["selection"] | None = Field(
+        default=None,
+        description=(
+            "Fillet or chamfer: 'selection' replaces all its edges with the edges "
+            "selected now (select_edges or select_face_edges first)"
+        ),
+    )
+    edge_rules: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Fillet or chamfer: replace all its edges with those this select_edges "
+            "query matches (it selects nothing). It takes select_edges' keys except "
+            "append, any_of included, e.g. {'side': 'top', 'edge_type': 'linear'}. "
+            "Not with edges"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
+        from ..adapters.solidworks.feature_editing import (
+            edge_query,
+            edge_rules_problem,
+        )
+
         self.name = self.name.strip()
         if not self.name:
             raise ValueError("name is required")
         if not self.changes():
             raise ValueError(
                 "give at least one change: depth, end_condition, "
-                "reverse_direction, angle or radius"
+                "reverse_direction, angle, radius, edges or edge_rules"
             )
+        if self.edges is not None and self.edge_rules is not None:
+            raise ValueError("give edges or edge_rules, not both")
+        if self.edge_rules is not None:
+            problem = edge_rules_problem(self.edge_rules)
+            if problem:
+                raise ValueError(problem)
+            self.edge_rules = edge_query(self.edge_rules)
 
     def changes(self) -> dict[str, Any]:
         """The changes given, by name."""
         return self.model_dump(
-            include={"depth", "end_condition", "reverse_direction", "angle", "radius"},
+            include={
+                "depth",
+                "end_condition",
+                "reverse_direction",
+                "angle",
+                "radius",
+                "edges",
+                "edge_rules",
+            },
             exclude_none=True,
         )
 
@@ -2721,18 +2759,24 @@ async def register_modeling_tools(
 
     @mcp.tool()
     async def edit_feature(input_data: EditFeatureInput) -> dict[str, Any]:
-        """Change an existing feature's parameters in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius.
+        """Change an existing feature in place: an extrude's or cut's depth, end condition or direction, a revolve's angle, a fillet's radius, a fillet's or chamfer's edges.
 
         Use it instead of deleting and re-creating a feature, which takes its
         dependents (fillets, patterns) with it. Give `name` and only the changes:
         `depth` (mm), `end_condition`, `reverse_direction` (extrudes and cuts),
-        `angle` (revolves) or `radius` (fillets). Other features' sizes change with
-        `set_dimension`. Needs: an open part. Changes: the feature, then a rebuild;
-        `undo` reverts it. Returns: `data` with `feature`, `type`, `before` and `after`
-        (read back from SolidWorks after the rebuild).
+        `angle` (revolves), `radius` (fillets). To repair a fillet or chamfer whose
+        edges an edit removed, give `edges: "selection"` or `edge_rules`: they replace
+        all its edges (faces a fillet also uses stay); its name, sizes and place in
+        the tree stay. Other sizes change with `set_dimension`. Needs: an open
+        part. Changes: the feature, then a rebuild; `undo` reverts it. Returns:
+        `data` with `feature`, `type`, `before` and `after` (read back after the
+        rebuild); with new edges `edges_before`, `edges_given`, `edges_after` and
+        `measured_change` (volume), and a `warning` when SolidWorks dropped edges
+        it can't treat.
 
         Args:
-            input_data: The change. `name` and at least one change are required.
+            input_data: The change. `name` and at least one change are required;
+                `edges` and `edge_rules` exclude each other.
 
         Returns:
             dict[str, Any]: The feature's values before and after.
@@ -2747,15 +2791,31 @@ async def register_modeling_tools(
         def _shown(value: Any) -> str:
             return f"{value:g}" if isinstance(value, float) else str(value)
 
-        described = ", ".join(
-            f"{k} {_shown(after.get(k, v))}" for k, v in changes.items()
-        )
-        return {
+        described = [
+            f"{k} {_shown(after.get(k, v))}"
+            for k, v in changes.items()
+            if k not in ("edges", "edge_rules")
+        ]
+        given, kept = data.get("edges_given"), data.get("edges_after")
+        if given is not None:
+            had = data.get("edges_before")
+            described.append(
+                f"edges {given} given, {'?' if kept is None else kept} kept "
+                f"(had {'?' if had is None else had})"
+            )
+        reply: dict[str, Any] = {
             "status": "success",
-            "message": f"Changed {input_data.name}: {described}",
+            "message": f"Changed {input_data.name}: {', '.join(described)}",
             "data": data,
             "execution_time": result.execution_time,
         }
+        if isinstance(given, int) and isinstance(kept, int) and kept < given:
+            reply["warning"] = (
+                f"SolidWorks kept {kept} of the {given} edges given: it dropped "
+                f"{given - kept}. It drops edges a fillet can't take, such as its "
+                "own tangent edges."
+            )
+        return reply
 
     @mcp.tool()
     async def set_rollback(

@@ -7,7 +7,12 @@ dish rack lost two fillets that way). These change it where it stands:
   direction, a revolve's angle, a fillet's radius, through the feature's
   definition (``IFeature.GetDefinition``, ``AccessSelections``, the
   ``Set*`` calls, ``IFeature.ModifyDefinition``). The values are read back
-  after the rebuild, so the reply says what SolidWorks now holds.
+  after the rebuild, so the reply says what SolidWorks now holds. It also
+  replaces a fillet's or chamfer's edges (``Edges`` on
+  ``ISimpleFilletFeatureData2`` / ``IChamferFeatureData2``) with the edges
+  selected now or those an edge query matches, gathered before
+  ``AccessSelections``, which may clear the selection (D5 of the
+  ``cellvis-assembly-and-print-checks`` change, probe 2).
 * :func:`set_rollback`: ``IFeatureManager.EditRollback`` moves the rollback
   bar before or after a feature, or back to the end; new features go in at
   the bar.
@@ -28,6 +33,14 @@ from .. import sw_type_info as _sw_type_info
 from .com_utils import as_list
 from .com_utils import attempt as _attempt
 from .com_utils import flag as _flag
+from .edge_rules import (
+    RULE_KEYS,
+    EdgeRuleSelector,
+    expand_query,
+    match_rules,
+    no_match_message_rules,
+    validate_edge_query,
+)
 
 #: ``swEndConditions_e`` by the name the tool takes (lower case, no spaces).
 END_CONDITIONS: dict[str, tuple[str, int]] = {
@@ -51,6 +64,10 @@ INSTANT3D = "ICE"
 
 _EXTRUDE_EDITS = frozenset({"depth", "end_condition", "reverse_direction"})
 
+#: The changes that replace a fillet's or chamfer's edges, one at a time:
+#: ``edges: "selection"`` or ``edge_rules`` (a ``select_edges`` query).
+EDGE_CHANGES = frozenset({"edges", "edge_rules"})
+
 #: ``IFeature.GetTypeName2`` -> which parameters ``edit_feature`` changes.
 #: "ICE" stays only when ``GetTypeName`` gives no extrude type; boss and
 #: cut take the same changes.
@@ -60,8 +77,15 @@ EDITABLE: dict[str, frozenset[str]] = {
     INSTANT3D: _EXTRUDE_EDITS,
     "Revolution": frozenset({"angle", "reverse_direction"}),
     "RevCut": frozenset({"angle", "reverse_direction"}),
-    "Fillet": frozenset({"radius"}),
+    "Fillet": frozenset({"radius"}) | EDGE_CHANGES,
+    "Chamfer": EDGE_CHANGES,
 }
+
+#: ``swSelectType_e.swSelEDGES``: what ``GetSelectedObjectType3`` says of an edge.
+SELECTED_EDGE = 1
+
+#: The keys an ``edge_rules`` query may give: ``select_edges``' own.
+EDGE_QUERY_KEYS = (*RULE_KEYS, "any_of")
 
 _EXTRUDE_KINDS = ("Extrusion", "Cut", INSTANT3D)
 
@@ -123,16 +147,57 @@ def end_condition_value(name: str) -> tuple[str, int]:
     return END_CONDITIONS[key]
 
 
+def edge_query(rules: dict[str, Any]) -> dict[str, Any]:
+    """An ``edge_rules`` query as ``select_edges`` takes it: ``edge_type`` lower case."""
+    query = dict(rules)
+    if query.get("edge_type") is not None:
+        query["edge_type"] = str(query["edge_type"]).strip().lower()
+    return query
+
+
+def edge_rules_problem(rules: Any) -> str | None:
+    """What is wrong with an ``edge_rules`` query, or None.
+
+    It takes ``select_edges``' keys (:data:`EDGE_QUERY_KEYS`), checked by
+    :func:`edge_rules.validate_edge_query`.
+
+    Args:
+        rules: The query as given.
+
+    Returns:
+        str | None: The problem, starting "edge_rules".
+    """
+    if not isinstance(rules, dict):
+        return (
+            "edge_rules must be a select_edges query: an object such as "
+            "{'side': 'top', 'edge_type': 'linear'}."
+        )
+    unknown = sorted(set(rules) - set(EDGE_QUERY_KEYS))
+    if unknown:
+        return (
+            f"edge_rules has unknown key(s) {', '.join(unknown)}; it takes "
+            f"select_edges' keys: {', '.join(EDGE_QUERY_KEYS)}."
+        )
+    try:
+        problem = validate_edge_query(edge_query(rules))
+    except (TypeError, ValueError) as exc:  # a number where a list goes, ...
+        problem = f"a value has the wrong type ({exc})."
+    return f"edge_rules: {problem}" if problem else None
+
+
 def check_changes(kind: str, changes: dict[str, Any], name: str) -> str | None:
     """What is wrong with editing ``changes`` on a ``kind`` feature, or None."""
     if not changes:
-        return "Give at least one change: depth, end_condition, reverse_direction, angle or radius."
+        return (
+            "Give at least one change: depth, end_condition, reverse_direction, "
+            "angle, radius, edges or edge_rules."
+        )
     allowed = EDITABLE.get(kind)
     if allowed is None:
         return (
             f"{name!r} is a {kind or 'feature'}; edit_feature changes extrudes, "
-            "cuts, revolves and fillets. Change other features' dimensions with "
-            "set_dimension."
+            "cuts, revolves, fillets and chamfers. Change other features' "
+            "dimensions with set_dimension."
         )
     extra = sorted(set(changes) - allowed)
     if extra:
@@ -145,7 +210,146 @@ def check_changes(kind: str, changes: dict[str, Any], name: str) -> str | None:
             end_condition_value(str(changes["end_condition"]))
         except ValueError as exc:
             return str(exc)
+    return _edge_change_problem(changes)
+
+
+def _edge_change_problem(changes: dict[str, Any]) -> str | None:
+    """What is wrong with ``edges`` / ``edge_rules`` in ``changes``, or None."""
+    if EDGE_CHANGES <= set(changes):
+        return "Give edges or edge_rules, not both."
+    if "edges" in changes and changes["edges"] != "selection":
+        return (
+            f"edges takes 'selection' (the edges selected now), not "
+            f"{changes['edges']!r}; give a select_edges query as edge_rules instead."
+        )
+    if "edge_rules" in changes:
+        return edge_rules_problem(changes["edge_rules"])
     return None
+
+
+def no_edges_message(name: str, reason: str) -> str:
+    """The error for a fillet or chamfer given no edges (``invalid_input``).
+
+    ``tools/error_classifier`` gives the ``invalid_input`` rule its opening
+    words, "No new edges for".
+
+    Args:
+        name: The feature's tree name.
+        reason: Why: nothing selected, or what each rule kept.
+
+    Returns:
+        str: The message.
+    """
+    return f"No new edges for {name!r}, so it is unchanged: {reason}"
+
+
+def selection_reason(selected: int) -> str:
+    """Why ``edges: "selection"`` found no edge, with ``selected`` entities selected."""
+    what = (
+        "nothing is selected"
+        if selected == 0
+        else f"none of the {selected} selected entities is an edge"
+    )
+    return (
+        f"{what}. Select its new edges first (select_edges or "
+        "select_face_edges), or give edge_rules."
+    )
+
+
+def rules_reason(rules: list[dict[str, Any]], counts: list[dict[str, int]]) -> str:
+    """Why ``edge_rules`` found no edge: each rule's counts."""
+    text = no_match_message_rules(rules, counts)
+    return text[:1].lower() + text[1:]
+
+
+def selected_edges(adapter: Any, name: str) -> list[Any]:
+    """The edges selected now, in selection order (``GetSelectedObject6``).
+
+    Raises:
+        ValueError: None of the selected entities is an edge.
+    """
+    model = adapter.currentModel
+    manager = _attempt(adapter, lambda: model.SelectionManager)
+    _flag(
+        adapter,
+        manager,
+        "GetSelectedObjectCount2",
+        "GetSelectedObjectType3",
+        "GetSelectedObject6",
+    )
+    count = _attempt(adapter, lambda: int(manager.GetSelectedObjectCount2(-1)), 0)
+    edges = []
+    for index in range(1, count + 1):
+        kind = _attempt(adapter, lambda i=index: manager.GetSelectedObjectType3(i, -1))
+        if kind != SELECTED_EDGE:
+            continue
+        edge = _attempt(adapter, lambda i=index: manager.GetSelectedObject6(i, -1))
+        if edge is not None:
+            edges.append(edge)
+    if not edges:
+        raise ValueError(no_edges_message(name, selection_reason(count)))
+    return edges
+
+
+def matched_edges(adapter: Any, name: str, rules: dict[str, Any]) -> list[Any]:
+    """The edges of the active part an ``edge_rules`` query matches.
+
+    The handles come straight from :func:`edge_rules.match_rules`, so
+    nothing is selected.
+
+    Raises:
+        ValueError: No rule matched an edge.
+        LookupError: A rule's feature, face or plane isn't there.
+    """
+    expanded = expand_query(edge_query(rules))
+    kept, counts = match_rules(expanded, EdgeRuleSelector(adapter).candidates)
+    if not kept:
+        raise ValueError(no_edges_message(name, rules_reason(expanded, counts)))
+    return [edge for edge, _info in kept]
+
+
+def new_edges(adapter: Any, name: str, changes: dict[str, Any]) -> list[Any] | None:
+    """The edges ``changes`` gives a fillet or chamfer, or None when it gives none.
+
+    Gathered before ``AccessSelections``, which may clear the selection.
+    """
+    if "edge_rules" in changes:
+        return matched_edges(adapter, name, changes["edge_rules"])
+    if "edges" in changes:
+        return selected_edges(adapter, name)
+    return None
+
+
+def dispatch_array(items: list[Any]) -> Any:
+    """``VARIANT(VT_ARRAY | VT_DISPATCH, items)``, as ``Edges`` takes a list.
+
+    Probe 2 put a fillet's and a chamfer's ``Edges`` this way through late
+    binding. Without pywin32 (mock and non-Windows runs) the list itself.
+    """
+    try:
+        import pythoncom
+        import win32com.client
+    except ImportError:
+        return list(items)
+    return win32com.client.VARIANT(
+        pythoncom.VT_ARRAY | pythoncom.VT_DISPATCH, list(items)
+    )
+
+
+def edge_count(adapter: Any, data: Any) -> int | None:
+    """How many edges a fillet's or chamfer's definition holds, or None.
+
+    ``GetEdgeCount()``, both interfaces have it, else the length of
+    ``Edges``: the order probe 2 read them in. ``GetEdgeCount`` is flagged
+    here rather than with the other members, so an extrude's edit doesn't
+    pay a failed name lookup for it.
+    """
+    _flag(adapter, data, "GetEdgeCount")
+    count: int | None = _attempt(adapter, lambda: int(data.GetEdgeCount()))
+    if count is not None:
+        return count
+    edges = _attempt(adapter, lambda: data.Edges)
+    return None if edges is None else len(as_list(edges))
 
 
 def _feature(adapter: Any, name: str) -> Any:
@@ -184,8 +388,10 @@ def _read(adapter: Any, kind: str, data: Any) -> dict[str, Any]:
     return values
 
 
-def _write(data: Any, changes: dict[str, Any]) -> None:
-    """Put ``changes`` into a definition whose selections are accessed."""
+def _write(data: Any, changes: dict[str, Any], edges: list[Any] | None) -> None:
+    """Put ``changes``, and ``edges`` when given, into a definition whose selections are accessed."""
+    if edges is not None:
+        data.Edges = dispatch_array(edges)
     if "end_condition" in changes:
         data.SetEndCondition(
             True, end_condition_value(str(changes["end_condition"]))[1]
@@ -205,20 +411,31 @@ def edit_feature(
 ) -> dict[str, Any]:
     """Change an existing feature's parameters and read them back.
 
+    A fillet's or chamfer's edges are replaced as a whole: the edges are
+    gathered first (:func:`new_edges`), then put as its definition's
+    ``Edges``. SolidWorks drops edges a fillet can't take (probe 2: a fillet
+    given its own top face's four edges kept two), so the reply counts what
+    was given and what it kept.
+
     Args:
         adapter: A connected adapter with a ``currentModel``.
         name: The feature's tree name.
         changes: ``depth`` (mm), ``end_condition``, ``reverse_direction``,
-            ``angle`` (degrees) or ``radius`` (mm).
+            ``angle`` (degrees) or ``radius`` (mm); for a fillet or chamfer
+            ``edges: "selection"`` or ``edge_rules`` (a ``select_edges``
+            query).
         null_component: The null ``IComponent2`` the definition calls take
             for a part (a ``VT_DISPATCH`` null; ``None`` is a type mismatch).
 
     Returns:
-        dict[str, Any]: ``feature``, ``type``, ``before`` and ``after``.
+        dict[str, Any]: ``feature``, ``type``, ``before`` and ``after``; with
+        new edges also ``edges_before``, ``edges_given`` and ``edges_after``
+        (``None`` when a count can't be read).
 
     Raises:
-        LookupError: No such feature.
-        ValueError: A change this kind of feature doesn't take.
+        LookupError: No such feature, or a rule's source isn't there.
+        ValueError: A change this kind of feature doesn't take, or no edges
+            were selected or matched.
         RuntimeError: SolidWorks gave no definition or refused the change.
     """
     model = adapter.currentModel
@@ -227,6 +444,7 @@ def edit_feature(
     problem = check_changes(kind, changes, name)
     if problem:
         raise ValueError(problem)
+    edges = new_edges(adapter, name, changes)
     data = _attempt(adapter, lambda: feature.GetDefinition())
     if data is None:
         raise RuntimeError(
@@ -236,6 +454,7 @@ def edit_feature(
         )
     _flag(adapter, data, *_DATA_MEMBERS)
     before = _read(adapter, kind, data)
+    edges_before = edge_count(adapter, data) if edges is not None else None
     if not _attempt(
         adapter, lambda: data.AccessSelections(model, null_component), False
     ):
@@ -243,7 +462,7 @@ def edit_feature(
             f"SolidWorks would not open {name!r}'s definition for editing."
         )
     try:
-        _write(data, changes)
+        _write(data, changes, edges)
     except Exception:
         _attempt(
             adapter, lambda: adapter._get_attr_or_call(data, "ReleaseSelectionAccess")
@@ -262,10 +481,21 @@ def edit_feature(
     after_data = _attempt(adapter, lambda: _feature(adapter, name).GetDefinition())
     if after_data is not None:
         _flag(adapter, after_data, *_DATA_MEMBERS)
-    after = (
-        _read(adapter, kind, after_data) if after_data is not None else dict(changes)
-    )
-    return {"feature": name, "type": kind, "before": before, "after": after}
+    plain = {k: v for k, v in changes.items() if k not in EDGE_CHANGES}
+    after = _read(adapter, kind, after_data) if after_data is not None else plain
+    reply: dict[str, Any] = {
+        "feature": name,
+        "type": kind,
+        "before": before,
+        "after": after,
+    }
+    if edges is not None:
+        reply["edges_before"] = edges_before
+        reply["edges_given"] = len(edges)
+        reply["edges_after"] = (
+            edge_count(adapter, after_data) if after_data is not None else None
+        )
+    return reply
 
 
 def rolled_back_features(adapter: Any) -> list[str]:

@@ -245,6 +245,18 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
         ),
         patterns=(r"built no feature",),
     ),
+    # Before not_found: the message quotes edge_rules' "No matching edges
+    # found", which not_found also matches.
+    ErrorRule(
+        error_type=INVALID_INPUT,
+        hint=(
+            "Nothing was changed: the fillet or chamfer was given no edges. "
+            "Select its new edges first (select_edges or select_face_edges) "
+            "and call again with edges: 'selection', or change edge_rules; "
+            "the message says how many edges each rule kept."
+        ),
+        patterns=(r"\bno new edges for\b",),
+    ),
     ErrorRule(
         error_type="not_found",
         hint=(
