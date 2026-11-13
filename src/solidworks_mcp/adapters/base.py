@@ -1737,6 +1737,25 @@ class SolidWorksAdapter(ABC):
             error="check_interference is not implemented by this adapter",
         )
 
+    async def measure_clearance(
+        self, component_a: str, component_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the minimum distance between two components of the active assembly.
+
+        Args:
+            component_a (str): An instance name, as ``list_components`` gives it.
+            component_b (str): Another one.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``clearance_mm``, ``touching``,
+            ``point_a_mm``, ``point_b_mm``, ``face_a``, ``face_b`` and
+            ``pairs_checked``, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="measure_clearance is not implemented by this adapter",
+        )
+
     # Feature Editing
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False

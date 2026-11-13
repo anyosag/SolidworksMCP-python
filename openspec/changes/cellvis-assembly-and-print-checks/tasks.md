@@ -34,14 +34,14 @@
 
 ## 3. Clearance
 
-- [ ] 3.1 `adapters/solidworks/clearance.py`:
+- [x] 3.1 `adapters/solidworks/clearance.py`:
   - pure box lower bounds and the pair order, with the stop rule;
   - the COM walk of bodies and faces, with the measuring call from probe 1;
   - `limits.check` between measurements;
   - tests in `test_clearance.py` with fake faces.
-- [ ] 3.2 Adapter `measure_clearance` (`pywin32_adapter` / `io.py`), forwarded by `base.py`, `connection_pool.py` and `circuit_breaker.py`; the errors for unknown, same, suppressed and bodiless components; tests.
-- [ ] 3.3 `mock_adapter.py` `measure_clearance` from canned component boxes and the stored transforms; tests.
-- [ ] 3.4 Tool `measure_clearance` in `tools/modeling.py`:
+- [x] 3.2 Adapter `measure_clearance` (`pywin32_adapter` / `io.py`), forwarded by `base.py`, `connection_pool.py` and `circuit_breaker.py`; the errors for unknown, same, suppressed and bodiless components; tests.
+- [x] 3.3 `mock_adapter.py` `measure_clearance` from canned component boxes and the stored transforms; tests.
+- [x] 3.4 Tool `measure_clearance` in `tools/modeling.py`:
   - the `touching` warning;
   - support level and hints;
   - tests.

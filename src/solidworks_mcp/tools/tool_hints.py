@@ -237,6 +237,7 @@ TOOL_HINTS: dict[str, ToolHints] = {
     "create_reference_point": _adds("Create Reference Point"),
     "mirror_feature": _adds("Mirror Feature"),
     "pattern_circular": _adds("Circular Pattern"),
+    "measure_clearance": _reads("Measure Clearance Between Components"),
     # sketching
     "create_sketch": _adds("Create Sketch"),
     "add_line": _adds("Add Sketch Line"),

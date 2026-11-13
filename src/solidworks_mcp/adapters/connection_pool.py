@@ -1649,6 +1649,15 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             "check_interference", lambda adapter: adapter.check_interference(params)
         )
 
+    async def measure_clearance(
+        self, component_a: str, component_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the clearance between two components using pool."""
+        return await self._execute_with_pool(
+            "measure_clearance",
+            lambda adapter: adapter.measure_clearance(component_a, component_b),
+        )
+
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False
     ) -> AdapterResult[dict[str, Any]]:

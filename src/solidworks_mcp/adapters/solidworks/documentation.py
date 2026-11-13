@@ -598,6 +598,61 @@ class SolidWorksDocumentationMixin:
             ),
         )
 
+    async def measure_clearance(
+        self, component_a: str, component_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the minimum distance between two components of the active assembly.
+
+        See ``clearance.measure_clearance``: every face pair of the two
+        components' solid bodies, nearest box first, measured with
+        ``IModelDoc2.ClosestDistance`` until no pair can be nearer.
+
+        Args:
+            component_a: An instance name, as ``list_components`` reports it.
+            component_b: Another one.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``clearance_mm``, ``touching``,
+            ``point_a_mm``, ``point_b_mm``, ``face_a``, ``face_b``,
+            ``pairs_checked`` and ``pairs_total``. An error starting
+            ``Invalid request:`` (the same component twice, not an assembly, a
+            suppressed or bodiless component) or naming a component that
+            isn't there, listing those that are.
+        """
+        from .clearance import InvalidRequest
+        from .clearance import measure_clearance as _measure_clearance
+        from .com_utils import strip_op_prefix
+
+        if not self.currentModel:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR, error="No active model"
+            )
+        doc_type = _doc_type(self)
+        if doc_type != 2:
+            names = {1: "a part", 3: "a drawing"}
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=str(
+                    InvalidRequest(
+                        "measure_clearance measures between components of an "
+                        "assembly, and the active document is "
+                        f"{names.get(doc_type or 0, 'not one')}; activate the "
+                        "assembly first."
+                    )
+                ),
+            )
+        result = cast(
+            "AdapterResult[dict[str, Any]]",
+            self._handle_com_operation(
+                "measure_clearance",
+                lambda: _measure_clearance(self, component_a, component_b),
+            ),
+        )
+        if not result.is_success:
+            # "component_b 'pin-1' is suppressed ...", not "Error in ...: ...".
+            result.error = strip_op_prefix(result.error, "measure_clearance")
+        return result
+
     async def get_material(
         self, configuration: str | None = None
     ) -> AdapterResult[dict[str, Any]]:
