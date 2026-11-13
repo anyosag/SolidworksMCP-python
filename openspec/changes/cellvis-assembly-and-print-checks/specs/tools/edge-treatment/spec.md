@@ -8,7 +8,7 @@
 
 Either one replaces the feature's whole edge set. The feature SHALL keep its name, its other parameters (radius, distances, angle) and its place in the tree, and SHALL rebuild without errors.
 
-The reply SHALL give `edges_before` and `edges_after` (counts read from the feature), and the volume change as `measured_change` when the volume can be read without a rebuild. Giving both, or no edges selected or matched, SHALL fail with `error_type: invalid_input` and leave the feature as it was. Edge changes on any other feature type SHALL be refused, naming what that type takes.
+The reply SHALL give `edges_before`, `edges_given` and `edges_after` (counts read from the feature), and the volume change as `measured_change` when the volume can be read without a rebuild. When SolidWorks keeps fewer edges than were given (it drops edges a fillet can't take, such as its own tangent edges), the reply SHALL include a warning saying how many it dropped. Giving both, or no edges selected or matched, SHALL fail with `error_type: invalid_input` and leave the feature as it was. Edge changes on any other feature type SHALL be refused, naming what that type takes.
 
 #### Scenario: A fillet broken by a shorter spine
 - **WHEN** a fillet failed to rebuild after its spine was shortened, and an agent selects the spine's new top edges with `select_edges`, then calls `edit_feature` with `name: "SpineEdgeFillet"` and `edges: "selection"`

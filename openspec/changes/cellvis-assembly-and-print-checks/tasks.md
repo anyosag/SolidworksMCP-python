@@ -1,15 +1,15 @@
 ## 1. Probes (SolidWorks, scratch documents, each with the user's OK)
 
-- [ ] 1.1 `tests/scripts/probe_clearance.py`.
+- [x] 1.1 `tests/scripts/probe_clearance.py`.
   - Build a Ø9.5 pin concentric in a Ø10 hole, and a 4.0 tongue in a 4.5 slot.
   - Measure each with `IEntity.GetDistance` (min), `ClosestDistance` and `IMeasure`.
   - Check that `GetBodies3` face boxes on an offset component come in the part's coordinates.
   - Record the results in design.md under "Probe results", and settle D2's measuring call.
-- [ ] 1.2 `tests/scripts/probe_section_fillet.py`.
+- [x] 1.2 `tests/scripts/probe_section_fillet.py`.
   - Section: create a section view on Front Plane with an offset; take a picture; find the call that removes it (`CreateSectionView(None)`, `RunCommand`). Prove removal with a second picture.
   - Fillet: put `Edges` on a fillet and on a chamfer through late binding, including a fillet that failed its rebuild after a sketch edit.
   - Record the results; settle D3's removal call and D5.
-- [ ] 1.3 Rotation convention.
+- [x] 1.3 Rotation convention.
   - Put `Transform2` with the quarter turn about Y from the spec.
   - Read where the component's X axis points, and settle D1's row convention.
 

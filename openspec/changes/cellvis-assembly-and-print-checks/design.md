@@ -43,15 +43,16 @@ Every COM call stays on the connect thread through `_handle_com_operation`. New 
 
 `insert_component` and `set_component_transform` both call it.
 
-`IMathTransform.ArrayData` holds the 3×3 rotation as rows, then the translation in metres, then a scale. The spec's convention follows it: a point transforms as `p · R + t`, so each row of `R` is a component axis in assembly coordinates. `rotation_deg` is turned into rows in pure Python: `R = Rx · Ry · Rz` in row-vector form, applied about the assembly's X, then Y, then Z axis. Probe 3 confirms the row convention, using the quarter turn about Y from the spec.
+`IMathTransform.ArrayData` holds the 3×3 rotation as rows, then the translation in metres, then a scale. The spec's convention follows it: a point transforms as `p · R + t`, so each row of `R` is a component axis in assembly coordinates. `rotation_deg` is turned into rows in pure Python: `R = Rx · Ry · Rz` in row-vector form, applied about the assembly's X, then Y, then Z axis. Probe 3 confirmed it (2026-11-13): after the quarter turn about Y, a 20 x 6 x 10 block's `IComponent2.GetBox` in the assembly was exactly the box the row convention predicts.
 
 **Alternative rejected:** `IComponent2.SetTransformAndSolve2`. It solves mates as it moves, so a mated component jumps somewhere unasked. Putting `Transform2` and reading it back makes a refused move visible as `placed: false`.
 
 ### D2. Clearance: face pairs, nearest boxes first
 
 `clearance.py` walks the two components' solid bodies in assembly context:
-- `IComponent2.GetBodies3(swSolidBody)`;
-- each body's `GetFaces()`, with each face's `GetBox()` turned into assembly coordinates by the component's transform.
+- `IComponent2.GetBodies2(swSolidBody)`;
+- each body's `GetFaces()`, and each face's assembly-context twin `IComponent2.GetCorrespondingEntity(face)`;
+- each face's `GetBox()` turned into assembly coordinates by the component's transform. `GetBox` gives the part's own coordinates, on the twin too, and pads a plane by about 0.15 mm, so the box distance is a lower bound, as it should be.
 
 The search runs as follows:
 1. Order the face pairs by the distance between their boxes, a lower bound on the faces' distance.
@@ -60,7 +61,7 @@ The search runs as follows:
 
 A dish-rack latch (around 40 faces each side) then needs tens of measurements, not 1600. `pairs_checked` reports how many were measured.
 
-The measuring call is chosen by **probe 1** (task 1.1): `IEntity.GetDistance` (min) against `ClosestDistance`, on a pin in a hole and a tongue in a slot. The call must give 0.25 mm for both. `IMeasure.Calculate` on the two components is the cross-check for the minimum. If no face call is right for cylinders, the fallback is `IMeasure` for the distance, plus the nearest face pair by boxes for the location, with `point_*_mm` left out.
+The measuring call is `IModelDoc2.ClosestDistance` on the twins, settled by **probe 1**. On a Ø9.5 pin in a Ø10 hole it gave 0.25 mm between points on the two surfaces, not the axes, despite the API help's warning. On a tongue in a slot it also gave 0.25 mm. Its points come in assembly coordinates. `IEntity.GetDistance` (min) returned 0 for faces that don't touch, so it is not used. `IMeasure.Calculate` on the two components agreed (0.25 mm both times), and is not needed.
 
 A distance at or under 1e-6 mm is `touching: true`.
 
@@ -69,11 +70,9 @@ A distance at or under 1e-6 mm is `touching: true`.
 `export_image`'s screenshot operation gains a step between turning to the view and zooming:
 1. It finds the plane by name (`FeatureByName`, then `GetSpecificFeature2`, the `IRefPlane`).
 2. It builds `ISectionViewData` with `FirstPlane`, `FirstOffset` in metres, `FirstReverseDirection` and `ShowSectionCap = True`.
-3. It calls `ModelViewManager.CreateSectionView(data)`.
+3. It calls `ModelViewManager.CreateSectionView(data)`; the data comes from `ModelViewManager.CreateSectionViewData()`.
 
-The removal runs in the same `finally` that shows hidden types again.
-
-How a section view is removed through the API isn't in the type library's names. Candidates are `CreateSectionView(None)` and toggling `swCommands_SectionView` with `RunCommand`. **Probe 2** (task 1.2) picks one, and checks the model shows no section afterwards by comparing two pictures. If neither works, `section` is refused as `not_supported`, and nothing is left sectioned.
+The removal, `ModelViewManager.RemoveSectionView()` (flagged: it takes no arguments), runs in the same `finally` that shows hidden types again. **Probe 2** confirmed both: the section changed 22.5% of the picture's pixels, and after the removal the picture was identical to the one before.
 
 ### D4. Printability on the mesh, not on B-rep faces
 
@@ -154,8 +153,23 @@ The three new tools start as `experimental` in `support_levels.py`, like every n
 - **STL coordinates:** without toggle 71, SolidWorks moves the mesh to positive space and every reported point is off by the part's minimum corner. D4 sets it for the export and puts it back.
 - **Fillet edges:** a fillet made with faces or features as well as edges keeps those. Only its edges are replaced, and the reply says so.
 
+## Probe results
+
+Run on SOLIDWORKS 2026 SP4.1, 2026-11-13, scratch documents (`tests/scripts/probe_clearance.py`, `probe_section_fillet.py`).
+
+- **Distances (probe 1):**
+  - `ClosestDistance` minimum over the face pairs: pin in hole 0.249999 mm (33 pairs), tongue in slot 0.25 mm (66 pairs). The pin's cylinder against the hole's cylinder: 0.25 mm, between (10.61, 0, 1.81) and (10.38, 0, 1.90), points on the two surfaces.
+  - `IEntity.GetDistance` (min): 0 mm on both, and 5.25 mm for the two cylinders, with points in the part's coordinates. Not usable.
+  - `IMeasure.Calculate`: 0.25 mm on both.
+  - `GetBox` on a face and on its assembly twin: the same, in the part's coordinates.
+- **Rotation (probe 3):** after the rows for a quarter turn about Y, the read-back rotation was the rows asked, and the block's assembly box was x 90..100, y 0..6, z -20..0 mm, as `p . R + t` predicts.
+- **Section (probe 2):** `CreateSectionView` and `RemoveSectionView` both returned True. 22.5% of sampled pixels changed with the section, 0% after it was removed.
+- **Fillet and chamfer edges (probe 2):**
+  - Putting `Edges` as a `VT_ARRAY | VT_DISPATCH` and `ModifyDefinition` worked on both.
+  - A chamfer took the four edges given.
+  - A fillet given its own top face's four edges kept two. One of them was the fillet's own tangent edge, and SolidWorks drops edges a fillet can't take. So the reply compares `edges_after` with the edges given, and warns when SolidWorks dropped some.
+  - A fillet that failed after its L-shaped sketch was redrawn as a rectangle took a new edge, and the part rebuilt cleanly.
+
 ## Open Questions
 
-- Which distance call is right on cylinders: `IEntity.GetDistance`, `ClosestDistance` or neither (probe 1)?
-- How to remove a section view through the API (probe 2)?
-- Do `GetBodies3` faces give boxes in assembly coordinates, or in the part's own (probe 1)? D2 assumes part coordinates turned by the component transform. Probe 1 checks it on an offset component.
+None left: the probes settled D1, D2, D3 and D5.

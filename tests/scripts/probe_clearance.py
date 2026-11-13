@@ -291,9 +291,17 @@ async def run() -> int:
         turned = placement.place(
             adapter, model, assembly, components["block"], (0.1, 0.0, 0.0), quarter_y
         )
+        block_component = components["block"]
+        sw_type_info.flag_members(block_component, "GetBox")
+        component_box = adapter._attempt(lambda: block_component.GetBox(False, False))
         report["quarter_turn_about_y"] = {
             "asked_rows": quarter_y,
             "place": turned,
+            "component_box_mm": (
+                [round(float(v) * 1000, 3) for v in component_box]
+                if component_box
+                else None
+            ),
             "face_boxes_mm": [
                 f["box_twin_mm"] for f in _faces(adapter, components["block"])
             ],
