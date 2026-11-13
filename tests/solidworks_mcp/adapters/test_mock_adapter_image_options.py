@@ -41,3 +41,50 @@ async def test_an_unknown_type_is_refused(tmp_path: Path) -> None:
 
     assert result.error == "Unknown display type(s) to hide: ghosts"
     assert not (tmp_path / "a.png").exists()
+
+
+async def test_a_section_is_recorded_and_taken_off(tmp_path: Path) -> None:
+    adapter = await _part()
+
+    result = await adapter.export_image(
+        {
+            "file_path": str(tmp_path / "a.png"),
+            "section": {"plane": "Front Plane", "offset_mm": 3, "reverse": True},
+        }
+    )
+    plain = await adapter.export_image({"file_path": str(tmp_path / "b.png")})
+
+    assert result.data["section"] == {
+        "plane": "Front Plane",
+        "offset_mm": 3.0,
+        "reverse": True,
+        "removed": True,
+    }
+    assert plain.data["section"] is None
+
+
+async def test_a_reference_plane_can_cut_the_picture(tmp_path: Path) -> None:
+    adapter = await _part()
+    await adapter.create_reference_plane("Front Plane", offset=5.0)
+
+    result = await adapter.export_image(
+        {"file_path": str(tmp_path / "a.png"), "section": {"plane": "Plane1"}}
+    )
+
+    assert result.is_success, result.error
+    assert result.data["section"]["offset_mm"] == 0.0
+
+
+async def test_an_unknown_section_plane_takes_no_picture(tmp_path: Path) -> None:
+    adapter = await _part()
+
+    result = await adapter.export_image(
+        {"file_path": str(tmp_path / "a.png"), "section": {"plane": "Plane7"}}
+    )
+
+    assert result.error == (
+        "Section plane not found: the model has no plane named 'Plane7', so no "
+        "picture was taken. Use a plane's name from list_features, such as Front "
+        "Plane."
+    )
+    assert not (tmp_path / "a.png").exists()

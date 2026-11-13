@@ -2922,6 +2922,27 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error=f"Unknown display type(s) to hide: {', '.join(unknown)}",
             )
+        # A section for this picture only, on a plane the mock knows; it is
+        # taken off again at once, as the real adapter's finally does.
+        section = payload.get("section") or None
+        applied_section = None
+        if section:
+            plane = str(section.get("plane") or "")
+            if self._mock_feature_kind(plane) != "RefPlane":
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        "Section plane not found: the model has no plane named "
+                        f"{plane!r}, so no picture was taken. Use a plane's name "
+                        "from list_features, such as Front Plane."
+                    ),
+                )
+            applied_section = {
+                "plane": plane,
+                "offset_mm": float(section.get("offset_mm") or 0.0),
+                "reverse": bool(section.get("reverse", False)),
+                "removed": True,
+            }
 
         await asyncio.sleep(0.3)
         self._operation_count += 1
@@ -2950,6 +2971,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "zoomed_to_fit": zoom_to_fit,
                 "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
                 "hidden": sorted(hide),
+                "section": applied_section,
                 "window_state": self._window_state,
             },
             execution_time=0.3,

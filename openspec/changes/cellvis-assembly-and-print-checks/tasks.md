@@ -48,9 +48,9 @@
 
 ## 4. Section in pictures
 
-- [ ] 4.1 `pywin32_adapter.export_image`: `section` (find the plane, `ISectionViewData`, create, and remove in the `finally`); an unknown plane fails before the picture; tests in `test_pywin32_adapter_image_options.py`.
-- [ ] 4.2 `mock_adapter.py` `export_image` records and reports `section`, and refuses an unknown plane; tests.
-- [ ] 4.3 `ExportImageInput.section` (`plane`, `offset_mm`, `reverse`); description; tests.
+- [x] 4.1 `pywin32_adapter.export_image`: `section` (find the plane, `ISectionViewData`, create, and remove in the `finally`); an unknown plane fails before the picture; tests in `test_pywin32_adapter_image_options.py`.
+- [x] 4.2 `mock_adapter.py` `export_image` records and reports `section`, and refuses an unknown plane; tests.
+- [x] 4.3 `ExportImageInput.section` (`plane`, `offset_mm`, `reverse`); description; tests.
 
 ## 5. Printability
 
