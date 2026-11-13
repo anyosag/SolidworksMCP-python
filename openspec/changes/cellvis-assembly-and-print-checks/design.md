@@ -170,6 +170,18 @@ Run on SOLIDWORKS 2026 SP4.1, 2026-11-13, scratch documents (`tests/scripts/prob
   - A fillet given its own top face's four edges kept two. One of them was the fillet's own tangent edge, and SolidWorks drops edges a fillet can't take. So the reply compares `edges_after` with the edges given, and warns when SolidWorks dropped some.
   - A fillet that failed after its L-shaped sketch was redrawn as a rectangle took a new edge, and the part rebuilt cleanly.
 
+## Live results
+
+Run on SOLIDWORKS 2026 SP4.1, 2026-11-13, scratch documents:
+- `tests/live/test_live_sw_cellvis_gaps.py`: 13 passed on the first run. That covers every spec scenario:
+  - the 137 mm stack, the quarter turn and the fixed base, all checked against `IComponent2.GetBox`;
+  - the floating first insert and the mated component;
+  - the block, shelf and pocket print checks;
+  - the pin and tongue at 0.25 mm, and the 1 mm overlap;
+  - the section picture;
+  - the fillet repaired after a sketch edit, and the chamfer moved by a rule.
+- The related live suites (regression, DishRack fixes, U-joint gaps, feature editing, `select_edges`, image options, STL settings, wall thickness, the `document` argument, beta tools): 107 passed, 2 skipped (they need a local assembly path).
+
 ## Open Questions
 
 None left: the probes settled D1, D2, D3 and D5.

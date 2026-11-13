@@ -27,7 +27,7 @@ Last updated 2026-11-09.
 | 14 | Remove the stale `validate_coverage.py`; decide whether mypy gates CI | #157 | not yet written | |
 | 15 | Skills that improve the agent's results, measured on the U-joint prompt | #207 | not yet written | Tabled 2026-11-09: needs research first (what "better" means, a harness to run and score sessions). See `openspec/research/agent-skill-evaluation.md` |
 | 16 | Keep SolidWorks minimized while tools run: sticky minimized state, screenshots while minimized, assembly saves without the Save Modified Documents dialog, a dialog watchdog, a window tool | none (fork) | `keep-solidworks-minimized` | Implemented 2026-11-10 on `feat/keep-minimized` (fork `anyosag/SolidworksMCP-python`); mock suite green; live sign-off pending |
-| 17 | Cellvis dish rack gaps: set a component's transform and fixed state, clearance between components and section pictures, a resin print-orientation check, replace a fillet's or chamfer's edges | none (fork) | `cellvis-assembly-and-print-checks` | Planned 2026-11-13 on `cellvis-gaps` (from `dishrack-fixes`); plan awaiting review |
+| 17 | Cellvis dish rack gaps: set a component's transform and fixed state, clearance between components and section pictures, a resin print-orientation check, replace a fillet's or chamfer's edges | none (fork) | `cellvis-assembly-and-print-checks` | Implemented 2026-11-13 on `cellvis-gaps` (from `dishrack-fixes`); mock suite green; 13 live tests and 107 related live tests pass; not merged into main |
 
 ## Tools that can't run yet (item 10)
 

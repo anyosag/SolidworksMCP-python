@@ -92,4 +92,4 @@
 ## 8. Live
 
 - [x] 8.1 `tests/live/test_live_sw_cellvis_gaps.py`, one test per spec scenario, on scratch documents: stack 137 mm up, quarter turn, move the fixed base, mated component, floating first insert, tongue and pin clearances, overlap, section picture, block, shelf and cup printability, fillet repair, chamfer by rule.
-- [ ] 8.2 Run it with the user's OK; fix what it finds; record measurements in design.md.
+- [x] 8.2 Run it with the user's OK; fix what it finds; record measurements in design.md.
