@@ -81,6 +81,25 @@ def test_a_deviation_and_angle_make_the_resolution_custom() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("translate", "keep", "label"),
+    [(False, True, "model coordinates"), (True, False, "moved to positive space")],
+)
+def test_model_coordinates_are_toggle_71(
+    translate: bool, keep: bool, label: str
+) -> None:
+    """Off by default, SolidWorks moves the mesh to positive space."""
+    changes = stl.preference_changes({"translate_to_positive": translate})
+
+    assert changes == [("toggle", stl.STL_KEEP_COORDINATES, keep, label)]
+    app = _App()
+    app.values[("toggle", stl.STL_KEEP_COORDINATES)] = not keep
+    applied = stl.apply_changes(app, changes)
+    assert app.values[("toggle", stl.STL_KEEP_COORDINATES)] is keep
+    assert stl.restore(app, applied.previous) == []
+    assert app.values[("toggle", stl.STL_KEEP_COORDINATES)] is not keep
+
+
 def test_only_what_is_given_is_changed() -> None:
     assert stl.preference_changes({}) == []
     assert stl.preference_changes({"resolution": "fine"}) == [

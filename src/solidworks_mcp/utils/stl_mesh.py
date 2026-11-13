@@ -152,6 +152,26 @@ def _measure(triangles: Iterable[Triangle], mm_per_unit: float) -> dict[str, Any
     }
 
 
+def read_triangles(path: str | os.PathLike[str], units: str = "mm") -> list[Triangle]:
+    """An STL file's triangles in mm, for an analysis of the mesh.
+
+    Raises:
+        ValueError: Not an STL, an unknown unit, or more than
+            :data:`MAX_TRIANGLES` triangles.
+        OSError: The file can't be read.
+    """
+    if units not in MM_PER_UNIT:
+        raise ValueError(f"Unknown STL units {units!r}.")
+    scale = MM_PER_UNIT[units]
+    with open(path, "rb") as handle:
+        triangles = []
+        for triangle in _triangles(handle):
+            if len(triangles) >= MAX_TRIANGLES:
+                raise _TooLarge(f"more than {MAX_TRIANGLES} triangles")
+            triangles.append(tuple(c * scale for c in triangle))
+    return triangles
+
+
 def check_stl(path: str | os.PathLike[str], units: str | None) -> dict[str, Any]:
     """Read an STL file and check its mesh; never raises.
 

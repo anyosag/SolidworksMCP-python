@@ -230,3 +230,28 @@ def test_a_mesh_too_large_to_check_is_an_error(
     assert check == {
         "error": "The mesh has more than 5 triangles, too many to check here."
     }
+
+
+def test_triangles_are_read_in_mm(tmp_path: Path) -> None:
+    path = _binary(tmp_path / "c.stl", _cube(side=1.0))
+
+    triangles = stl_mesh.read_triangles(path, "in")
+
+    assert len(triangles) == 12
+    assert max(max(t) for t in triangles) == pytest.approx(25.4)
+
+
+@pytest.mark.parametrize("write", [_binary, _ascii])
+def test_reading_too_many_triangles_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write
+) -> None:
+    path = write(tmp_path / "big.stl", _cube())
+    monkeypatch.setattr(stl_mesh, "MAX_TRIANGLES", 5)
+
+    with pytest.raises(ValueError, match="more than 5 triangles|"):
+        stl_mesh.read_triangles(path)
+
+
+def test_reading_in_an_unknown_unit_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unknown STL units 'furlong'"):
+        stl_mesh.read_triangles(_binary(tmp_path / "c.stl", _cube()), "furlong")

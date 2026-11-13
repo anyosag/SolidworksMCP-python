@@ -13,7 +13,10 @@ the SolidWorks 2026 ``swconst`` help ("System Options > Export > STL"):
   user's 30 degrees read back as 0.5236);
 * units: ``swExportStlUnits`` (integer 211), ``swLengthUnit_e`` mm 0, cm 1,
   m 2, in 3, ft 4;
-* binary or ASCII: ``swSTLBinaryFormat`` (toggle 69).
+* binary or ASCII: ``swSTLBinaryFormat`` (toggle 69);
+* model coordinates: ``swSTLDontTranslateToPositive`` (toggle 71). Off (the
+  default), SolidWorks moves the mesh so every coordinate is positive, and a
+  point in the file is off from the model's by the part's lowest corner.
 
 Measured on SolidWorks 2026 (2026-11-11, COM pitfall #40): SolidWorks derives
 the resolution from the tolerances. ``swSTLQuality`` = custom is ignored (it
@@ -51,6 +54,7 @@ STL_ANGLE_TOLERANCE = 3
 STL_UNITS = 211
 STL_BINARY = 69
 STL_ONE_FILE = 72
+STL_KEEP_COORDINATES = 71
 
 RESOLUTIONS = {"coarse": 1, "fine": 2, "custom": 3}
 UNITS = {"mm": 0, "cm": 1, "m": 2, "in": 3, "ft": 4}
@@ -130,8 +134,8 @@ def preference_changes(settings: dict[str, Any]) -> list[Change]:
 
     Args:
         settings: Any of ``resolution``, ``deviation_mm``, ``angle_deg``,
-            ``units`` and ``binary``. A deviation or angle implies custom
-            resolution.
+            ``units``, ``binary`` and ``translate_to_positive``. A deviation
+            or angle implies custom resolution.
 
     Returns:
         list[Change]: In the order to set them.
@@ -178,6 +182,10 @@ def preference_changes(settings: dict[str, Any]) -> list[Change]:
     if settings.get("binary") is not None:
         binary = bool(settings["binary"])
         changes.append(("toggle", STL_BINARY, binary, "binary" if binary else "ASCII"))
+    if settings.get("translate_to_positive") is not None:
+        moved = bool(settings["translate_to_positive"])
+        label = "moved to positive space" if moved else "model coordinates"
+        changes.append(("toggle", STL_KEEP_COORDINATES, not moved, label))
     return changes
 
 

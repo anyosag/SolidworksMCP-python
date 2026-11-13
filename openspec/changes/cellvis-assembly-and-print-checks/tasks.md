@@ -54,10 +54,10 @@
 
 ## 5. Printability
 
-- [ ] 5.1 `utils/printability.py`:
+- [x] 5.1 `utils/printability.py`:
   - plate faces, angle bands, regions, islands, bridges (supported runs, span) and suction cups (vectorised rays);
   - tests in `tests/solidworks_mcp/utils/test_printability.py` with meshes built in the test: a block, a shelf, a bottom-open pocket, an island, a bridge.
-- [ ] 5.2 `stl_settings`: a `translate_to_positive` setting (toggle 71), set for one export and put back; tests in `test_stl_settings.py`.
+- [x] 5.2 `stl_settings`: a `translate_to_positive` setting (toggle 71), set for one export and put back; tests in `test_stl_settings.py`.
 - [ ] 5.3 Adapter `check_printability`:
   - in `pywin32_adapter.py`: a part only; export to a temporary STL with fine resolution, mm and no translation; analyse; delete the file;
   - forwarded by `base.py`, `connection_pool.py` and `circuit_breaker.py`;
