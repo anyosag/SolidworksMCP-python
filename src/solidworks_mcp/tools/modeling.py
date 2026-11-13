@@ -1034,9 +1034,9 @@ class EditFeatureInput(CompatInput):
         default=None,
         description=(
             "Fillet or chamfer: replace all its edges with those this select_edges "
-            "query matches, nothing selected: select_edges' keys without append, "
-            "any_of included, e.g. {'side': 'top', 'edge_type': 'linear'}. Not "
-            "with edges"
+            "query matches (it selects nothing). It takes select_edges' keys except "
+            "append, any_of included, e.g. {'side': 'top', 'edge_type': 'linear'}. "
+            "Not with edges"
         ),
     )
 
@@ -2619,12 +2619,12 @@ async def register_modeling_tools(
         `angle` (revolves), `radius` (fillets). To repair a fillet or chamfer whose
         edges an edit removed, give `edges: "selection"` or `edge_rules`: they replace
         all its edges (faces a fillet also uses stay); its name, sizes and place in
-        the tree stay. Other sizes change with
-        `set_dimension`. Needs: an open part. Changes: the feature, then a rebuild;
-        `undo` reverts it. Returns: `data` with `feature`, `type`, `before` and `after`
-        (read back after the rebuild); with new edges `edges_before`, `edges_given`,
-        `edges_after` and `measured_change` (volume), and a `warning` when
-        SolidWorks dropped edges it can't treat.
+        the tree stay. Other sizes change with `set_dimension`. Needs: an open
+        part. Changes: the feature, then a rebuild; `undo` reverts it. Returns:
+        `data` with `feature`, `type`, `before` and `after` (read back after the
+        rebuild); with new edges `edges_before`, `edges_given`, `edges_after` and
+        `measured_change` (volume), and a `warning` when SolidWorks dropped edges
+        it can't treat.
 
         Args:
             input_data: The change. `name` and at least one change are required;
