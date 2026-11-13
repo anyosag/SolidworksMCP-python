@@ -7,7 +7,7 @@ STL, PDF, DWG, and image formats.
 from typing import Any, Literal, TypeVar
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..adapters.base import SolidWorksAdapter
 from ..utils import stl_mesh
@@ -114,6 +114,40 @@ class ExportStlInput(ExportFileInput):
         return {n: getattr(self, n) for n in names if getattr(self, n) is not None}
 
 
+class ImageSection(BaseModel):
+    """A plane to cut the model on for one picture.
+
+    Attributes:
+        plane (str): The plane's name.
+        offset_mm (float): How far along its normal the cut is, mm.
+        reverse (bool): Keep the other side.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    plane: str = Field(
+        min_length=1,
+        description=(
+            "The plane to cut on, by name: Front Plane, Top Plane, Right Plane "
+            "or a reference plane such as Plane1"
+        ),
+    )
+    offset_mm: float = Field(
+        default=0.0,
+        description="Move the cut this far along the plane's normal, in mm",
+    )
+    reverse: bool = Field(
+        default=False,
+        description="Keep the other side of the plane (false keeps the default side)",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse a blank plane name."""
+        self.plane = self.plane.strip()
+        if not self.plane:
+            raise ValueError("section.plane needs a plane's name")
+
+
 class ExportImageInput(CompatInput):
     """Input schema for exporting images.
 
@@ -132,6 +166,8 @@ class ExportImageInput(CompatInput):
         zoom_to_fit (bool | None): Whether to zoom so the model fills the view.
         zoom_box_mm (list[float] | None): Two corners of a box to zoom to, mm.
         hide (list[str] | None): Display types hidden for the picture only.
+        section (ImageSection | None): A plane to cut the model on, for the
+            picture only.
     """
 
     file_path: str | None = Field(
@@ -179,6 +215,14 @@ class ExportImageInput(CompatInput):
         description=(
             'Hide these for the picture only, e.g. ["planes", "sketches"]; '
             "they are shown again afterwards as they were"
+        ),
+    )
+    section: ImageSection | None = Field(
+        default=None,
+        description=(
+            "Cut the model on a plane for this picture only, with the cut faces "
+            'capped, e.g. {"plane": "Front Plane", "offset_mm": 0}, to show a '
+            "snap inside its socket; the cut is taken off afterwards"
         ),
     )
 
@@ -604,23 +648,24 @@ async def register_export_tools(
         Use it to show a result, or to check a model's shape after a change. A standard
         view (front, back, left, right, top, bottom, isometric, dimetric, trimetric)
         turns the model to it and zooms so the whole model fits. `current` keeps the
-        view exactly as it is, zoom included: set up a close-up first (or with an
-        earlier call) and it comes out as that close-up. `zoom_to_fit` overrides the
-        zoom either way, and `zoom_box_mm` zooms to a box of the model instead (model
-        coordinates in any view). `hide`
-        hides planes, sketches and the like for this picture only. The picture keeps
-        the graphics area's shape, padded out to `width` x `height`. Needs: an open,
-        active document. Changes: writes the image file; a standard view or a zoom
-        also turns or zooms the model on screen. Returns: `data` with `file_path`,
+        view exactly as it is, zoom included, so a close-up set up first comes out as
+        that close-up. `zoom_to_fit` overrides the zoom either way; `zoom_box_mm`
+        zooms to a box of the model (model coordinates). `hide` hides planes,
+        sketches and the like, and `section` cuts the model on a plane (a snap inside
+        its socket), both for this picture only. The picture keeps the graphics
+        area's shape, padded out to `width` x `height`. Needs: an open, active
+        document. Changes: writes the image file; a standard view or a zoom also
+        turns or zooms the model on screen. Returns: `data` with `file_path`,
         `format`, `dimensions` (the size written), `requested_dimensions`, `view`,
-        `zoomed_to_fit`, `zoom_box_mm`, `zoom_box_view_mm` (that box in the view's
-        coordinates, as zoomed to), `hidden` and `window_state`.
+        `zoomed_to_fit`, `zoom_box_mm`, `zoom_box_view_mm` (that box in view
+        coordinates), `hidden`, `section` (as applied) and `window_state`.
 
         Args:
             input_data: The image. `file_path` (or `output_path`) is needed; the
                 format follows its extension. `width`/`height` (or `resolution` as
                 "1920x1080") and `view_orientation` (isometric) have defaults;
-                `zoom_to_fit` defaults to yes except for `current`.
+                `zoom_to_fit` defaults to yes except for `current`; `section` is
+                off.
 
         Returns:
             dict[str, Any]: The image written.
@@ -629,12 +674,21 @@ async def register_export_tools(
         if hasattr(adapter, "export_image"):
             result = await adapter.export_image(input_data.model_dump())
             require_success(result, "Failed to export image")
-            return {
+            reply: dict[str, Any] = {
                 "status": "success",
                 "message": f"Exported image: {input_data.file_path}",
                 "data": result.data,
                 "execution_time": result.execution_time,
             }
+            data = result.data if isinstance(result.data, dict) else {}
+            section = data.get("section")
+            if isinstance(section, dict) and section.get("removed") is False:
+                reply["warning"] = (
+                    f"The section on {section.get('plane')} could not be taken off, "
+                    "so the model still shows it cut. Take it off in SolidWorks "
+                    "(View > Display > Section View)."
+                )
+            return reply
 
         if hasattr(adapter, "export_file") and input_data.file_path:
             result = await adapter.export_file(  # type: ignore[assignment]

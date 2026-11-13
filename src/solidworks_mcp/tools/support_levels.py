@@ -201,6 +201,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "get_dimension": _UNCHECKED,
     "insert_component": _STABLE,
     "list_components": _STABLE,
+    "measure_clearance": _UNCHECKED,
     "mirror_feature": _STABLE,
     "open_model": _STABLE,
     "pattern_circular": _STABLE,

@@ -1560,6 +1560,36 @@ class PatternCircularInput(CompatInput):
         }
 
 
+class MeasureClearanceInput(CompatInput):
+    """Input schema for measuring the gap between two components.
+
+    Attributes:
+        component_a (str): One component's instance name.
+        component_b (str): The other's.
+    """
+
+    component_a: str = Field(
+        description="One component's instance name, as list_components reports it"
+    )
+    component_b: str = Field(
+        description="The other component's instance name, e.g. 'latch-1'"
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        """Refuse a blank name, or the same component twice."""
+        self.component_a, self.component_b = (
+            self.component_a.strip(),
+            self.component_b.strip(),
+        )
+        if not self.component_a or not self.component_b:
+            raise ValueError("component_a and component_b are both required")
+        if self.component_a == self.component_b:
+            raise ValueError(
+                f"component_a and component_b are both {self.component_a!r}; "
+                "give two different components"
+            )
+
+
 class CreateDrawingInput(CompatInput):
     """Input schema for creating a new drawing.
 
@@ -3119,6 +3149,54 @@ async def register_modeling_tools(
             "pattern": data,
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def measure_clearance(input_data: MeasureClearanceInput) -> dict[str, Any]:
+        """Measure the smallest gap between two components of the active assembly, in mm.
+
+        Use it to check a fit's clearance, such as a latch in its slot or a pin in
+        its hole, where `check_interference` only reports overlaps. It measures the
+        components' solid faces pair by pair, nearest first, a cylinder to its
+        surface (not its axis), and gives where the gap is. Touching or overlapping
+        components read 0 with `touching: true`; for an overlap's volume, use
+        `check_interference`. To see the gap, take `export_image` with `section`.
+        Needs: an open assembly whose two components are unsuppressed and hold a
+        solid body. Read-only. Returns: `data` with `clearance_mm`, `touching`,
+        `point_a_mm` and `point_b_mm` (the nearest points, assembly coordinates),
+        `face_a` and `face_b` (`kind`: plane, cylinder or other, and `box_mm`),
+        `pairs_checked` and `pairs_total`.
+
+        Args:
+            input_data: The two components, by instance name as `list_components`
+                reports them: `component_a` and `component_b`, both required and
+                different.
+
+        Returns:
+            dict[str, Any]: The clearance found.
+        """
+        input_data = normalize_input(input_data, MeasureClearanceInput)
+        result = await adapter.measure_clearance(
+            input_data.component_a, input_data.component_b
+        )
+        require_success(result, context="Failed to measure the clearance")
+        data = result.data if isinstance(result.data, dict) else {}
+        pair = f"{input_data.component_a} and {input_data.component_b}"
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": (
+                f"{pair} touch or overlap"
+                if data.get("touching")
+                else f"Clearance between {pair}: {data.get('clearance_mm')} mm"
+            ),
+            "data": data,
+            "execution_time": result.execution_time,
+        }
+        if data.get("touching"):
+            reply["warning"] = (
+                f"{pair} touch or overlap, so there is no clearance to report; "
+                "use check_interference for the overlap's volume."
+            )
+        return reply
 
     # Counted from the registry rather than hand-maintained. The literal that
     # used to live here had drifted: it read 15 while 16 tools were actually

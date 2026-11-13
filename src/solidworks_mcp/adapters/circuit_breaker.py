@@ -1862,6 +1862,16 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             input_dict=params if isinstance(params, dict) else {},
         )
 
+    async def measure_clearance(
+        self, component_a: str, component_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Measure the clearance between two components through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "measure_clearance",
+            lambda: self.adapter.measure_clearance(component_a, component_b),
+            input_dict={"component_a": component_a, "component_b": component_b},
+        )
+
     async def delete_feature(
         self, name: str, delete_absorbed: bool = False
     ) -> AdapterResult[dict[str, Any]]:

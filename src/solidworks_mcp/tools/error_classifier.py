@@ -274,6 +274,17 @@ DEFAULT_RULES: tuple[ErrorRule, ...] = (
             r"\bno open document matches\b",
         ),
     ),
+    # An adapter that finds the arguments can't be used as given (two names
+    # for one component, a suppressed one) says "Invalid request: ...".
+    ErrorRule(
+        error_type=INVALID_INPUT,
+        hint=(
+            "Nothing was changed: an argument can't be used as given. The "
+            "message names it and why; fix it (or the model, e.g. unsuppress "
+            "a component) and call again."
+        ),
+        patterns=(r"\binvalid request:",),
+    ),
 )
 
 _FALLBACK_HINTS = {

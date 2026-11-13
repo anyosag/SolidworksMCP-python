@@ -274,6 +274,10 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # these to exercise the confirmation flow).
         self._window_state = "normal"
         self._modified_user_files: list[str] = []
+        # Canned clearance geometry (measure_clearance): each component's box
+        # in its own coordinates, mm, as tests set it (None: no solid body);
+        # its place in the assembly is in _component_transforms.
+        self.component_boxes_mm: dict[str, list[float] | None] = {}
 
         # Configurable simulation delays (in seconds)
         self._delays = {
@@ -3002,6 +3006,27 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 status=AdapterResultStatus.ERROR,
                 error=f"Unknown display type(s) to hide: {', '.join(unknown)}",
             )
+        # A section for this picture only, on a plane the mock knows; it is
+        # taken off again at once, as the real adapter's finally does.
+        section = payload.get("section") or None
+        applied_section = None
+        if section:
+            plane = str(section.get("plane") or "")
+            if self._mock_feature_kind(plane) != "RefPlane":
+                return AdapterResult(
+                    status=AdapterResultStatus.ERROR,
+                    error=(
+                        "Section plane not found: the model has no plane named "
+                        f"{plane!r}, so no picture was taken. Use a plane's name "
+                        "from list_features, such as Front Plane."
+                    ),
+                )
+            applied_section = {
+                "plane": plane,
+                "offset_mm": float(section.get("offset_mm") or 0.0),
+                "reverse": bool(section.get("reverse", False)),
+                "removed": True,
+            }
 
         await asyncio.sleep(0.3)
         self._operation_count += 1
@@ -3030,6 +3055,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "zoomed_to_fit": zoom_to_fit,
                 "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
                 "hidden": sorted(hide),
+                "section": applied_section,
                 "window_state": self._window_state,
             },
             execution_time=0.3,
@@ -3804,6 +3830,126 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 ),
                 "scope": "whole assembly",
                 "tolerance_applied": None,
+            },
+            execution_time=self._delays["model_operation"],
+        )
+
+    #: A component's box in its own coordinates when a test set none: a 10 mm
+    #: cube from its origin.
+    _DEFAULT_COMPONENT_BOX_MM = (0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+
+    def _mock_placement(self, name: str) -> tuple[list[list[float]], list[float]]:
+        """A component's rotation rows and origin (mm) in the mock assembly."""
+        held = self._component_transforms.get(name, {})
+        rows = held.get("rotation") or [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+        return [list(r) for r in rows], list(held.get("origin_mm") or [0.0, 0.0, 0.0])
+
+    async def measure_clearance(
+        self, component_a: str, component_b: str
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock clearance between two components, each standing in for its box.
+
+        The mock has no faces: each component is its box,
+        ``component_boxes_mm`` (its own coordinates, mm; a 10 mm cube from its
+        origin when a test set none), placed where ``insert_component`` put
+        it. The refusals are the real adapter's: not an assembly, the same
+        component twice, one not in the assembly, one with no solid body
+        (a box of ``None``).
+
+        Args:
+            component_a (str): An instance name, as ``list_components`` gives it.
+            component_b (str): Another one.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: The real adapter's reply shape.
+        """
+        from .solidworks.clearance import (
+            TOUCHING_MM,
+            InvalidRequest,
+            box_distance,
+            transform_box,
+        )
+
+        def refused(error: str) -> AdapterResult[dict[str, Any]]:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=error)
+
+        if not self._current_model:
+            return refused("No active model")
+        if self._current_model.type != "Assembly":
+            return refused(
+                str(
+                    InvalidRequest(
+                        "measure_clearance measures between components of an "
+                        "assembly, and the active document is a "
+                        f"{self._current_model.type.lower()}; activate the "
+                        "assembly first."
+                    )
+                )
+            )
+        if component_a == component_b:
+            return refused(
+                str(
+                    InvalidRequest(
+                        f"component_a and component_b are both {component_a!r}; "
+                        "give two different components."
+                    )
+                )
+            )
+        missing = [n for n in (component_a, component_b) if n not in self._components]
+        if missing:
+            return refused(
+                f"Component(s) not found: {', '.join(missing)}. "
+                f"The assembly holds: {', '.join(self._components)}."
+            )
+        boxes = []
+        for role, name in (("component_a", component_a), ("component_b", component_b)):
+            box = self.component_boxes_mm.get(name, self._DEFAULT_COMPONENT_BOX_MM)
+            if box is None:
+                return refused(
+                    str(
+                        InvalidRequest(
+                            f"{role} {name!r} holds no solid body (a sketch-only "
+                            "or surface part), so there is nothing of it to "
+                            "measure."
+                        )
+                    )
+                )
+            boxes.append(transform_box(box, *self._mock_placement(name)))
+        await asyncio.sleep(self._delays["model_operation"])
+        self._operation_count += 1
+
+        a, b = boxes
+        point_a, point_b = [], []
+        for k in range(3):
+            if a[k + 3] < b[k]:
+                point_a.append(a[k + 3])
+                point_b.append(b[k])
+            elif b[k + 3] < a[k]:
+                point_a.append(a[k])
+                point_b.append(b[k + 3])
+            else:  # overlapping on this axis: the middle of the overlap
+                middle = (max(a[k], b[k]) + min(a[k + 3], b[k + 3])) / 2
+                point_a.append(middle)
+                point_b.append(middle)
+        clearance = box_distance(a, b)
+        touching = clearance <= TOUCHING_MM
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "component_a": component_a,
+                "component_b": component_b,
+                "clearance_mm": 0.0 if touching else round(clearance, 6),
+                "touching": touching,
+                "point_a_mm": [round(v, 4) + 0.0 for v in point_a],
+                "point_b_mm": [round(v, 4) + 0.0 for v in point_b],
+                "face_a": {"kind": "plane", "box_mm": [round(v, 4) for v in a]},
+                "face_b": {"kind": "plane", "box_mm": [round(v, 4) for v in b]},
+                "pairs_checked": 1,
+                "pairs_total": 1,
             },
             execution_time=self._delays["model_operation"],
         )

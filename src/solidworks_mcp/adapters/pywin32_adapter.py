@@ -3375,6 +3375,11 @@ class PyWin32Adapter(
         "top" | "right" | "isometric" | "current". zoom_to_fit (bool | None): Zoom so the
         model fills the view; ``None`` (default) zooms for every orientation but
         "current", which keeps the view exactly as it is (no turn, no zoom).
+        section (dict | None): ``{plane, offset_mm, reverse}`` cuts the model on
+        that plane for this picture only (``section_view``): the plane is found
+        before anything changes, and the section is taken off again in the
+        ``finally``, the picture taken or not. The reply's ``section`` is the
+        section as applied, with ``removed``.
 
         Args:
             payload (dict): The payload value.
@@ -3402,6 +3407,8 @@ class PyWin32Adapter(
         zoom_to_fit = orientation != "current" if zoom is None else bool(zoom)
         hide = list(payload.get("hide") or [])
         zoom_box = payload.get("zoom_box_mm")
+        # A section view for this picture only: {plane, offset_mm, reverse}.
+        section = payload.get("section") or None
         unknown = visibility.unknown_types(hide)
         if unknown:
             return AdapterResult(
@@ -3434,10 +3441,20 @@ class PyWin32Adapter(
 
             import os as _os
 
+            from .solidworks import section_view
+
             resolved = _os.path.abspath(file_path)
             _os.makedirs(_os.path.dirname(resolved), exist_ok=True)
 
             target_doc = self._resolve_export_target_doc()
+            # Found before anything changes: an unknown plane takes no picture.
+            section_plane = (
+                section_view.find_plane(
+                    self, target_doc, str(section.get("plane") or "")
+                )
+                if section
+                else None
+            )
 
             # Activate target_doc's own MDI window before capturing. Without
             # this, the screenshot renders whatever document
@@ -3462,11 +3479,19 @@ class PyWin32Adapter(
                 if hide
                 else {}
             )
+            # The section as applied; the finally below takes it off again and
+            # records that in this same dict, which the reply carries.
+            applied_section: dict[str, Any] | None = None
             try:
                 # Set view orientation if requested
                 if orientation != "current" and orientation in _VIEW_CONSTANTS:
                     view_const = _VIEW_CONSTANTS[orientation]
                     self._set_view_orientation(target_doc, orientation, view_const)
+
+                if section_plane is not None:
+                    applied_section = section_view.apply(
+                        self, target_doc, section_plane, section
+                    )
 
                 # Zoom to fit so the model fills the viewport before capture;
                 # "current" keeps the view as it is (a close-up stays one).
@@ -3510,9 +3535,17 @@ class PyWin32Adapter(
                     "zoom_box_mm": list(zoom_box) if zoom_box is not None else None,
                     "zoom_box_view_mm": view_box,
                     "hidden": sorted(hidden),
+                    "section": applied_section,
                     "window_state": self._window_state(),
                 }
             finally:
+                if applied_section is not None:
+                    applied_section["removed"] = section_view.remove(self, target_doc)
+                    if not applied_section["removed"]:
+                        logger.warning(
+                            "[export_image] The section on {} could not be removed",
+                            applied_section["plane"],
+                        )
                 if hidden:
                     visibility.restore_display_types(self, hidden, model=target_doc)
 

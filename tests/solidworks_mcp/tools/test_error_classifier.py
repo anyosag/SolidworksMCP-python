@@ -273,3 +273,31 @@ def test_wrong_thread_is_its_own_category() -> None:
 
     assert found.error_type == "com_wrong_thread"
     assert "restart the MCP server" in found.hint
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Failed to measure the clearance: Invalid request: component_b 'pin-1' "
+        "is suppressed, so there is nothing of it to measure; unsuppress it first.",
+        "Invalid request: component_b 'sketch-1' holds no solid body (a "
+        "sketch-only or surface part), so there is nothing of it to measure.",
+        "Invalid request: measure_clearance measures between components of an "
+        "assembly, and the active document is a part; activate the assembly first.",
+    ],
+)
+def test_an_adapter_invalid_request_is_invalid_input(
+    classifier: ErrorClassifier, message: str
+) -> None:
+    found = classifier.classify(message)
+
+    assert found.error_type == "invalid_input"
+    assert "names it and why" in found.hint
+
+
+def test_a_missing_component_stays_not_found(classifier: ErrorClassifier) -> None:
+    found = classifier.classify(
+        "Component(s) not found: pin-1. The assembly holds: plate-1, latch-1."
+    )
+
+    assert found.error_type == "not_found"

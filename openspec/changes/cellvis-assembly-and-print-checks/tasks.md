@@ -34,23 +34,23 @@
 
 ## 3. Clearance
 
-- [ ] 3.1 `adapters/solidworks/clearance.py`:
+- [x] 3.1 `adapters/solidworks/clearance.py`:
   - pure box lower bounds and the pair order, with the stop rule;
   - the COM walk of bodies and faces, with the measuring call from probe 1;
   - `limits.check` between measurements;
   - tests in `test_clearance.py` with fake faces.
-- [ ] 3.2 Adapter `measure_clearance` (`pywin32_adapter` / `io.py`), forwarded by `base.py`, `connection_pool.py` and `circuit_breaker.py`; the errors for unknown, same, suppressed and bodiless components; tests.
-- [ ] 3.3 `mock_adapter.py` `measure_clearance` from canned component boxes and the stored transforms; tests.
-- [ ] 3.4 Tool `measure_clearance` in `tools/modeling.py`:
+- [x] 3.2 Adapter `measure_clearance` (`pywin32_adapter` / `io.py`), forwarded by `base.py`, `connection_pool.py` and `circuit_breaker.py`; the errors for unknown, same, suppressed and bodiless components; tests.
+- [x] 3.3 `mock_adapter.py` `measure_clearance` from canned component boxes and the stored transforms; tests.
+- [x] 3.4 Tool `measure_clearance` in `tools/modeling.py`:
   - the `touching` warning;
   - support level and hints;
   - tests.
 
 ## 4. Section in pictures
 
-- [ ] 4.1 `pywin32_adapter.export_image`: `section` (find the plane, `ISectionViewData`, create, and remove in the `finally`); an unknown plane fails before the picture; tests in `test_pywin32_adapter_image_options.py`.
-- [ ] 4.2 `mock_adapter.py` `export_image` records and reports `section`, and refuses an unknown plane; tests.
-- [ ] 4.3 `ExportImageInput.section` (`plane`, `offset_mm`, `reverse`); description; tests.
+- [x] 4.1 `pywin32_adapter.export_image`: `section` (find the plane, `ISectionViewData`, create, and remove in the `finally`); an unknown plane fails before the picture; tests in `test_pywin32_adapter_image_options.py`.
+- [x] 4.2 `mock_adapter.py` `export_image` records and reports `section`, and refuses an unknown plane; tests.
+- [x] 4.3 `ExportImageInput.section` (`plane`, `offset_mm`, `reverse`); description; tests.
 
 ## 5. Printability
 
