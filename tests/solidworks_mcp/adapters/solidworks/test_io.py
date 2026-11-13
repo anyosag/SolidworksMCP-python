@@ -4049,16 +4049,16 @@ class TestAssemblyAndDrawingSuccessPaths:
         )
         moves: list[tuple[Any, ...]] = []
 
-        def place(_adapter, model, assembly, component, origin):
-            moves.append((model, component, origin))
+        def place(_adapter, model, assembly, component, origin, fixed):
+            moves.append((model, component, origin, fixed))
             return {"placed": True, "moved": True, "origin_mm": [10.0, 0.0, -5.0]}
 
         monkeypatch.setattr(_io_module._placement, "place_origin", place)
 
-        result = await adapter.insert_component(__file__, 10.0, 0.0, -5.0)
+        result = await adapter.insert_component(__file__, 10.0, 0.0, -5.0, False)
 
         assert result.is_success, result.error
-        assert moves == [(adapter.currentModel, bracket, (0.01, 0.0, -0.005))]
+        assert moves == [(adapter.currentModel, bracket, (0.01, 0.0, -0.005), False)]
         assert result.data["placement"]["placed"] is True
 
     @pytest.mark.asyncio
@@ -4266,6 +4266,46 @@ class TestAssemblyAndDrawingSuccessPaths:
 
         assert result.is_error
         assert "crank-1 is still floating" in (result.error or "")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("origin", "origin_m", "mates", "count"),
+        [
+            ([0, 137, 0], [0.0, 0.137, 0.0], [object(), object()], 2),
+            (None, None, None, 0),
+        ],
+    )
+    async def test_set_component_transform_places_the_component(
+        self, monkeypatch, origin, origin_m, mates, count
+    ) -> None:
+        adapter, comp, _calls = self._state_adapter(monkeypatch)
+        comp.GetMates = lambda: mates
+        rows = [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]]
+        seen: list[Any] = []
+
+        def place(_adapter, _model, _assembly, component, at, rotation, fixed):
+            seen.append((component, at, rotation, fixed))
+            return {"placed": True, "moved": True, "fixed": True, "rotation": rows}
+
+        monkeypatch.setattr(_io_module._placement, "place", place)
+
+        result = await adapter.set_component_transform("crank-1", origin, rows, True)
+
+        assert result.is_success, result.error
+        assert seen == [(comp, origin_m, rows, True)]
+        assert result.data["component"] == "crank-1"
+        assert result.data["mates"] == count
+
+    @pytest.mark.asyncio
+    async def test_set_component_transform_refusals(self, monkeypatch) -> None:
+        part = self._document(monkeypatch, 1)
+        adapter, _comp, _calls = self._state_adapter(monkeypatch)
+
+        wrong_doc = await part.set_component_transform("crank-1", [0, 0, 0])
+        missing = await adapter.set_component_transform("ghost-1", [0, 0, 0])
+
+        assert "requires an assembly document" in (wrong_doc.error or "")
+        assert "Component(s) not found: ghost-1" in (missing.error or "")
 
     @pytest.mark.asyncio
     async def test_set_component_state_refusals(self, monkeypatch) -> None:

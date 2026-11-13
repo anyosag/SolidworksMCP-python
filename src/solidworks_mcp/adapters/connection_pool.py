@@ -1491,7 +1491,12 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
     # Assembly operations
 
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        fixed: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Insert component using pool.
 
@@ -1500,13 +1505,30 @@ class ConnectionPoolAdapter(SolidWorksAdapter):
             x (float): X position in millimetres. Defaults to 0.0.
             y (float): Y position in millimetres. Defaults to 0.0.
             z (float): Z position in millimetres. Defaults to 0.0.
+            fixed (bool | None): Fix (True) or float (False) it; None leaves
+                SolidWorks' choice (the first component is fixed).
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         return await self._execute_with_pool(
             "insert_component",
-            lambda adapter: adapter.insert_component(file_path, x, y, z),
+            lambda adapter: adapter.insert_component(file_path, x, y, z, fixed),
+        )
+
+    async def set_component_transform(
+        self,
+        component: str,
+        origin_mm: list[float] | None = None,
+        rotation_rows: list[list[float]] | None = None,
+        fixed: bool | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Place a component using pool."""
+        return await self._execute_with_pool(
+            "set_component_transform",
+            lambda adapter: adapter.set_component_transform(
+                component, origin_mm, rotation_rows, fixed
+            ),
         )
 
     async def list_components(self) -> AdapterResult[list[str]]:

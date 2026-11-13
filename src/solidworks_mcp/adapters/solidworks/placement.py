@@ -150,7 +150,7 @@ def place(
     model: Any,
     assembly: Any,
     component: Any,
-    origin_m: Sequence[float],
+    origin_m: Sequence[float] | None,
     rotation_rows: Sequence[Sequence[float]] | None = None,
     fixed: bool | None = None,
 ) -> dict[str, Any]:
@@ -161,7 +161,7 @@ def place(
         model: The assembly as ``IModelDoc2``.
         assembly: The assembly as ``IAssemblyDoc``.
         component: The ``IComponent2``.
-        origin_m: Where its origin goes, in metres.
+        origin_m: Where its origin goes, in metres; None keeps it.
         rotation_rows: Its axes in assembly coordinates; None keeps them.
         fixed: Fix (True) or float (False) it afterwards; None keeps the
             state it had.
@@ -176,6 +176,8 @@ def place(
     data = _transform_data(adapter, component)
     if data is None:
         return {"placed": False, "moved": False}
+    if origin_m is None:
+        origin_m = data[9:12]
     was_fixed = _is_fixed(adapter, component)
     wanted_fixed = was_fixed if fixed is None else bool(fixed)
     moved = not _matches(data, origin_m, rotation_rows)

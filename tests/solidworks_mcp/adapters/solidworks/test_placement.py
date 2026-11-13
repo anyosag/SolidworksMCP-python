@@ -255,6 +255,18 @@ def test_a_component_in_place_can_still_be_fixed() -> None:
     assert component.calls == ["Select4", "fix"]
 
 
+def test_without_an_origin_the_component_turns_where_it_is() -> None:
+    component = _Component(_data(0.05, 0.0, 0.0))
+
+    reply = placement.place(
+        _Adapter(), _Model(), _Assembly(component), component, None, _QUARTER_Y
+    )
+
+    assert reply["placed"] is True
+    assert reply["origin_mm"] == [50.0, 0.0, 0.0]
+    assert reply["rotation"][0] == [0.0, 0.0, -1.0]
+
+
 def test_a_rotation_that_differs_is_a_move() -> None:
     component = _Component(_data(0.0, 0.0, 0.01))
 

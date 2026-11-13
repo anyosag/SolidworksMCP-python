@@ -1628,7 +1628,12 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
     # Assembly operations
 
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        fixed: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Insert component through circuit breaker.
 
@@ -1637,14 +1642,43 @@ class CircuitBreakerAdapter(SolidWorksAdapter):
             x (float): X position in millimetres. Defaults to 0.0.
             y (float): Y position in millimetres. Defaults to 0.0.
             z (float): Z position in millimetres. Defaults to 0.0.
+            fixed (bool | None): Fix (True) or float (False) it; None leaves
+                SolidWorks' choice (the first component is fixed).
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
         """
         return await self._execute_with_circuit_breaker(
             "insert_component",
-            lambda: self.adapter.insert_component(file_path, x, y, z),
-            input_dict={"file_path": file_path, "x": x, "y": y, "z": z},
+            lambda: self.adapter.insert_component(file_path, x, y, z, fixed),
+            input_dict={
+                "file_path": file_path,
+                "x": x,
+                "y": y,
+                "z": z,
+                "fixed": fixed,
+            },
+        )
+
+    async def set_component_transform(
+        self,
+        component: str,
+        origin_mm: list[float] | None = None,
+        rotation_rows: list[list[float]] | None = None,
+        fixed: bool | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Place a component through circuit breaker."""
+        return await self._execute_with_circuit_breaker(
+            "set_component_transform",
+            lambda: self.adapter.set_component_transform(
+                component, origin_mm, rotation_rows, fixed
+            ),
+            input_dict={
+                "component": component,
+                "origin_mm": origin_mm,
+                "rotation_rows": rotation_rows,
+                "fixed": fixed,
+            },
         )
 
     async def list_components(self) -> AdapterResult[list[str]]:

@@ -1440,7 +1440,12 @@ class SolidWorksAdapter(ABC):
 
     # Assembly Operations
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        fixed: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Insert a part or sub-assembly into the active assembly.
 
@@ -1449,6 +1454,8 @@ class SolidWorksAdapter(ABC):
             x (float): X position in millimetres. Defaults to 0.0.
             y (float): Y position in millimetres. Defaults to 0.0.
             z (float): Z position in millimetres. Defaults to 0.0.
+            fixed (bool | None): Fix (True) or float (False) it; None leaves
+                SolidWorks' choice (the first component is fixed).
 
         Returns:
             AdapterResult[dict[str, Any]]: Component name and counts, or error.
@@ -1557,6 +1564,33 @@ class SolidWorksAdapter(ABC):
         return AdapterResult(
             status=AdapterResultStatus.ERROR,
             error="set_component_state is not implemented by this adapter",
+        )
+
+    async def set_component_transform(
+        self,
+        component: str,
+        origin_mm: list[float] | None = None,
+        rotation_rows: list[list[float]] | None = None,
+        fixed: bool | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Place a component of the active assembly: origin, axes and fixed state.
+
+        Args:
+            component (str): Instance name, as ``list_components`` reports it.
+            origin_mm (list[float] | None): Where its origin goes, in mm;
+                None keeps it.
+            rotation_rows (list[list[float]] | None): Its X, Y and Z axes in
+                assembly coordinates; None keeps them.
+            fixed (bool | None): Fix (True) or float (False) it afterwards;
+                None keeps its state.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``placed``, ``moved``, ``fixed``,
+            ``origin_mm`` and ``rotation`` read back, or error.
+        """
+        return AdapterResult(
+            status=AdapterResultStatus.ERROR,
+            error="set_component_transform is not implemented by this adapter",
         )
 
     async def add_mate(

@@ -723,6 +723,13 @@ class InsertComponentInput(CompatInput):
     x: float = Field(default=0.0, description="X position in millimetres")
     y: float = Field(default=0.0, description="Y position in millimetres")
     z: float = Field(default=0.0, description="Z position in millimetres")
+    fixed: bool | None = Field(
+        default=None,
+        description=(
+            "true fixes the component, false floats it (also the first one, which "
+            "SolidWorks fixes by itself); leave it out for SolidWorks' choice"
+        ),
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if not self.file_path.strip():
@@ -1197,6 +1204,77 @@ class SetComponentStateInput(CompatInput):
             raise ValueError("component is required")
         if self.fixed is None and self.flexible is None:
             raise ValueError("give fixed, flexible or both")
+
+
+class SetComponentTransformInput(CompatInput):
+    """Input schema for placing a component: origin, rotation and fixed state.
+
+    Attributes:
+        component (str): Component instance name.
+        origin_mm (list[float] | None): Where its origin goes, mm.
+        rotation_deg (list[float] | None): Turns about X, Y, Z, degrees.
+        matrix (list[list[float]] | None): Its axes as rows.
+        fixed (bool | None): Fix or float it afterwards.
+    """
+
+    component: str = Field(
+        description="Component instance name, as reported by list_components"
+    )
+    origin_mm: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description=(
+            "Where the component's own origin goes, [x, y, z] mm in assembly "
+            "coordinates; leave it out to keep it where it is"
+        ),
+    )
+    rotation_deg: list[float] | None = Field(
+        default=None,
+        min_length=3,
+        max_length=3,
+        description=(
+            "Turns [rx, ry, rz] in degrees about the assembly's X, then Y, then Z "
+            "axis (right-hand rule), from unturned: [0, 90, 0] points the "
+            "component's X axis along -Z. Leave it and matrix out to keep its turn"
+        ),
+    )
+    matrix: list[list[float]] | None = Field(
+        default=None,
+        description=(
+            "The component's X, Y and Z axes in assembly coordinates, three rows of "
+            "three numbers, orthonormal; instead of rotation_deg"
+        ),
+    )
+    fixed: bool | None = Field(
+        default=None,
+        description=(
+            "true leaves it fixed, false floating; leave it out to keep its state "
+            "(a fixed component is floated for the move and fixed again)"
+        ),
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        from ..adapters.solidworks.placement import rotation_problem
+
+        if not self.component.strip():
+            raise ValueError("component is required")
+        if self.rotation_deg is not None and self.matrix is not None:
+            raise ValueError("give rotation_deg or matrix, not both")
+        if self.matrix is not None:
+            problem = rotation_problem(self.matrix)
+            if problem:
+                raise ValueError(problem)
+
+    def rotation_rows(self) -> list[list[float]] | None:
+        """The rotation as rows (the component's axes), or None to keep it."""
+        from ..adapters.solidworks.placement import rotation_rows_from_deg
+
+        if self.matrix is not None:
+            return [[float(x) for x in row] for row in self.matrix]
+        if self.rotation_deg is not None:
+            return rotation_rows_from_deg(*self.rotation_deg)
+        return None
 
 
 class CreateReferencePlaneInput(CompatInput):
@@ -2155,13 +2233,15 @@ async def register_modeling_tools(
 
         Use it after `create_assembly`, then position components with `add_mate`. The
         component's own origin goes at `x`, `y`, `z`, unrotated (SolidWorks places a
-        new component by its centre; it is moved so its origin is there). The file
-        must contain solid geometry; an empty or missing file is an error. Needs: an
-        open, active assembly and the file on disk. Changes: adds a component.
-        Returns: `component` with its instance name (`component`, which `add_mate`
-        takes), `file_path`, `position`, `placement` (`placed`, and the
-        `origin_mm` and `rotation` read back) and the counts before and after; a
-        `warning` when the origin could not be put there.
+        new component by its centre; it is moved so its origin is there). `fixed`
+        fixes or floats it; SolidWorks fixes the first one by itself. Turn or move it
+        later with `set_component_transform`. The file must contain solid geometry;
+        an empty or missing file is an error. Needs: an open, active assembly and the
+        file on disk. Changes: adds a component. Returns: `component` with its
+        instance name (`component`, which `add_mate` takes), `file_path`,
+        `position`, `placement` (`placed`, `fixed`, and the `origin_mm` and
+        `rotation` read back) and the counts before and after; a `warning` when the
+        origin could not be put there.
 
         Args:
             input_data: The component. `file_path` is required; `x`, `y`, `z` (mm
@@ -2172,7 +2252,11 @@ async def register_modeling_tools(
         """
         input_data = normalize_input(input_data, InsertComponentInput)
         result = await adapter.insert_component(
-            input_data.file_path, input_data.x, input_data.y, input_data.z
+            input_data.file_path,
+            input_data.x,
+            input_data.y,
+            input_data.z,
+            input_data.fixed,
         )
         require_success(result, context="Failed to insert component")
         data = result.data if isinstance(result.data, dict) else {}
@@ -2281,6 +2365,70 @@ async def register_modeling_tools(
             "state": data,
             "execution_time": result.execution_time,
         }
+
+    @mcp.tool()
+    async def set_component_transform(
+        input_data: SetComponentTransformInput,
+    ) -> dict[str, Any]:
+        """Place a component of the active assembly: put its origin at a point, turn it, and fix or float it.
+
+        Use it to put parts at exact positions without mates: a stand-in at a
+        height, a second rack 137 mm up, a base back on the origin. `origin_mm`
+        moves the component's own origin; `rotation_deg` ([rx, ry, rz], about the
+        assembly's X, then Y, then Z axis) or `matrix` (its axes as rows) turns it
+        from unturned; what you leave out stays. A fixed component is floated for
+        the move and fixed again unless `fixed` says otherwise. Mates that hold the
+        component can stop the move: then `placed` is false and a warning says so.
+        Needs: an open assembly. Changes: the component's position and fixed state.
+        Returns: `component`, `placed`, `fixed`, `mates` and `transform`
+        (`origin_mm`, `rotation` as rows), all read back from SolidWorks.
+
+        Args:
+            input_data: The component and where it goes. `component` is
+                required; `origin_mm`, `rotation_deg` or `matrix`, and `fixed`
+                are optional.
+
+        Returns:
+            dict[str, Any]: The placement read back.
+        """
+        input_data = normalize_input(input_data, SetComponentTransformInput)
+        result = await adapter.set_component_transform(
+            input_data.component,
+            input_data.origin_mm,
+            input_data.rotation_rows(),
+            input_data.fixed,
+        )
+        require_success(result, context=f"Failed to place {input_data.component}")
+        data = result.data if isinstance(result.data, dict) else {}
+        reply: dict[str, Any] = {
+            "status": "success",
+            "message": (
+                f"Placed {input_data.component} at {data.get('origin_mm')} mm"
+                + (" (fixed)" if data.get("fixed") else "")
+            ),
+            "component": input_data.component,
+            "placed": data.get("placed"),
+            "fixed": data.get("fixed"),
+            "mates": data.get("mates", 0),
+            "transform": {
+                "origin_mm": data.get("origin_mm"),
+                "rotation": data.get("rotation"),
+            },
+            "execution_time": result.execution_time,
+        }
+        if data.get("placed") is False:
+            mates = int(data.get("mates") or 0)
+            reply["message"] = f"{input_data.component} did not move where asked"
+            reply["warning"] = (
+                "SolidWorks kept the component where `transform` says"
+                + (
+                    f"; it has {mates} mate(s), which likely hold it there. "
+                    "Suppress or delete them, or float the component, and try again."
+                    if mates
+                    else "; check that it isn't fixed by its mates or a pattern."
+                )
+            )
+        return reply
 
     @mcp.tool()
     async def list_components() -> dict[str, Any]:

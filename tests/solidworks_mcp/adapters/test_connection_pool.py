@@ -829,8 +829,15 @@ class TestConnectionPoolAdapterExtras:
             async def activate_document(self, title_or_path):
                 return _ok({"activated": title_or_path})
 
-            async def insert_component(self, file_path, x=0.0, y=0.0, z=0.0):
-                return _ok({"file_path": file_path})
+            async def insert_component(
+                self, file_path, x=0.0, y=0.0, z=0.0, fixed=None
+            ):
+                return _ok({"file_path": file_path, "fixed": fixed})
+
+            async def set_component_transform(
+                self, component, origin_mm=None, rotation_rows=None, fixed=None
+            ):
+                return _ok({"component": component, "origin_mm": origin_mm})
 
             async def list_components(self):
                 return _ok([])
@@ -909,6 +916,8 @@ class TestConnectionPoolAdapterExtras:
             assert (await wrapped.list_open_documents()).is_success
             assert (await wrapped.activate_document("Part1")).is_success
             assert (await wrapped.insert_component("a.sldprt")).is_success
+            placed = await wrapped.set_component_transform("a-1", [0, 137, 0])
+            assert placed.data == {"component": "a-1", "origin_mm": [0, 137, 0]}
             assert (await wrapped.list_components()).is_success
             assert (await wrapped.create_drawing_view()).is_success
             assert (await wrapped.add_drawing_view()).is_success

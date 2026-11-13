@@ -20,12 +20,12 @@
   - an orthonormal check for matrices;
   - `insert_component` moves to `place`;
   - tests in `test_placement.py`.
-- [ ] 2.2 Adapter `set_component_transform`:
+- [x] 2.2 Adapter `set_component_transform`:
   - in `adapters/solidworks/io.py` (find the component, `place`, a warning when held by mates), and `insert_component(..., fixed)`;
   - `base.py`, `connection_pool.py` and `circuit_breaker.py` forward them;
   - tests beside each.
-- [ ] 2.3 `mock_adapter.py`: a transform and fixed state per component, `set_component_transform`, and `insert_component(fixed)`; tests in `test_mock_adapter*.py`.
-- [ ] 2.4 Tools in `tools/modeling.py`:
+- [x] 2.3 `mock_adapter.py`: a transform and fixed state per component, `set_component_transform`, and `insert_component(fixed)`; tests in `test_mock_adapter*.py`.
+- [x] 2.4 Tools in `tools/modeling.py`:
   - `set_component_transform` (`SetComponentTransformInput`: `rotation_deg` and `matrix` exclusive, matrix checked);
   - `fixed` on `InsertComponentInput`;
   - descriptions per the standard;

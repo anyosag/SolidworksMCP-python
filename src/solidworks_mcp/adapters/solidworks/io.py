@@ -2806,7 +2806,12 @@ class SolidWorksIOMixin:
         )
 
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        fixed: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Insert a part or sub-assembly into the active assembly.
 
@@ -2941,6 +2946,7 @@ class SolidWorksIOMixin:
                     assembly,
                     inserted,
                     (x / 1000.0, y / 1000.0, z / 1000.0),
+                    fixed,
                 )
                 if inserted is not None
                 else {"placed": False, "moved": False}
@@ -3144,6 +3150,62 @@ class SolidWorksIOMixin:
         return cast(
             AdapterResult[dict[str, Any]],
             adapter._handle_com_operation("add_mate", _mate),
+        )
+
+    async def set_component_transform(
+        self,
+        component: str,
+        origin_mm: list[float] | None = None,
+        rotation_rows: list[list[float]] | None = None,
+        fixed: bool | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Place a component of the active assembly: origin, axes and fixed state.
+
+        Puts ``IComponent2.Transform2`` through ``placement.place`` and reads
+        it back. A component held by mates may not move: the reply then has
+        ``placed`` False and ``mates``, its mate count, for the tool's warning.
+
+        Args:
+            component (str): Instance name, as ``list_components`` reports it.
+            origin_mm (list[float] | None): Where its origin goes; None keeps it.
+            rotation_rows (list[list[float]] | None): Its axes in assembly
+                coordinates (checked by the tool); None keeps them.
+            fixed (bool | None): Fix or float it afterwards; None keeps it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: ``component``, ``placed``,
+            ``moved``, ``fixed``, ``origin_mm``, ``rotation`` and ``mates``.
+        """
+        adapter = self._adapter(self)
+        if _doc_type(adapter) != 2:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="set_component_transform requires an assembly document",
+            )
+
+        def _place() -> dict[str, Any]:
+            model = adapter.currentModel
+            assembly = _sw_type_info.flagged(model, "IAssemblyDoc")
+            target = _find_components(adapter, assembly, [component])[component]
+            origin_m = (
+                None if origin_mm is None else [float(c) / 1000.0 for c in origin_mm]
+            )
+            placed = _placement.place(
+                adapter, model, assembly, target, origin_m, rotation_rows, fixed
+            )
+            mates = adapter._attempt(
+                lambda: _sw_type_info.flagged(target, "IComponent2").GetMates(),
+                default=None,
+            )
+            return {
+                "component": component,
+                **placed,
+                "mates": len(mates) if isinstance(mates, (list, tuple)) else 0,
+            }
+
+        return cast(
+            AdapterResult[dict[str, Any]],
+            adapter._handle_com_operation("set_component_transform", _place),
         )
 
     async def set_component_state(

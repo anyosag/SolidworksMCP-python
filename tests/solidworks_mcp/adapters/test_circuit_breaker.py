@@ -915,6 +915,7 @@ CAPABILITIES = [
     "list_components",
     "add_mate",
     "set_component_state",
+    "set_component_transform",
 ]
 
 
@@ -1116,3 +1117,28 @@ class TestReset:
         result = await breaker.reset_circuit_breakers()
 
         assert result.is_success and result.data == {"reset": ["a"]}
+
+
+@pytest.mark.asyncio
+async def test_placing_a_component_passes_through_the_breaker() -> None:
+    inner = MagicMock()
+    inner.set_component_transform = AsyncMock(
+        return_value=AdapterResult(
+            status=AdapterResultStatus.SUCCESS, data={"placed": True}
+        )
+    )
+    inner.insert_component = AsyncMock(
+        return_value=AdapterResult(status=AdapterResultStatus.SUCCESS, data={})
+    )
+    cb = CircuitBreakerAdapter(adapter=inner)
+    rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+    placed = await cb.set_component_transform("a-1", [0, 137, 0], rows, True)
+    inserted = await cb.insert_component("a.sldprt", 1, 2, 3, False)
+
+    assert placed.data == {"placed": True}
+    inner.set_component_transform.assert_awaited_once_with(
+        "a-1", [0, 137, 0], rows, True
+    )
+    inner.insert_component.assert_awaited_once_with("a.sldprt", 1, 2, 3, False)
+    assert inserted.is_success

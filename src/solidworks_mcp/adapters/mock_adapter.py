@@ -231,6 +231,9 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         # report a mate count without real geometry.
         self._mates: list[dict[str, Any]] = []
         self._component_states: dict[str, dict[str, bool]] = {}
+        # Each component's origin (mm) and rotation rows, as
+        # set_component_transform reads them back.
+        self._component_transforms: dict[str, dict[str, Any]] = {}
         # Drawing views placed via create_drawing_view / add_drawing_view /
         # create_technical_drawing, in sheet order. See list_drawing_views.
         self._drawing_views: list[str] = []
@@ -3264,18 +3267,26 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         )
 
     async def insert_component(
-        self, file_path: str, x: float = 0.0, y: float = 0.0, z: float = 0.0
+        self,
+        file_path: str,
+        x: float = 0.0,
+        y: float = 0.0,
+        z: float = 0.0,
+        fixed: bool | None = None,
     ) -> AdapterResult[dict[str, Any]]:
         """Mock inserting a component into the active assembly.
 
         Records the component in ``self._components`` so repeated inserts
-        accumulate and ``list_components`` reflects them.
+        accumulate and ``list_components`` reflects them. As in SolidWorks,
+        the first component is fixed unless ``fixed`` says otherwise.
 
         Args:
             file_path (str): Path to the part or sub-assembly to insert.
             x (float): X position in millimetres. Defaults to 0.0.
             y (float): Y position in millimetres. Defaults to 0.0.
             z (float): Z position in millimetres. Defaults to 0.0.
+            fixed (bool | None): Fix or float it; None leaves SolidWorks'
+                choice.
 
         Returns:
             AdapterResult[dict[str, Any]]: The result produced by the operation.
@@ -3284,18 +3295,26 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         self._operation_count += 1
 
         self._components.append(f"component-{len(self._components) + 1}")
+        name = self._components[-1]
+        first = len(self._components) == 1
+        is_fixed = first if fixed is None else bool(fixed)
+        self._component_states[name] = {"fixed": is_fixed, "flexible": False}
+        self._component_transforms[name] = {
+            "origin_mm": [float(x), float(y), float(z)],
+            "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        }
 
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
             data={
-                "component": self._components[-1],
+                "component": name,
                 "file_path": file_path,
                 "position": {"x": x, "y": y, "z": z},
                 "placement": {
                     "placed": True,
                     "moved": True,
-                    "origin_mm": [x, y, z],
-                    "rotation": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                    "fixed": is_fixed,
+                    **self._component_transforms[name],
                 },
                 "components_before": len(self._components) - 1,
                 "components_after": len(self._components),
@@ -3904,6 +3923,66 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
                 "tree_changed": before != after,
             },
             execution_time=self._delays["model_operation"],
+        )
+
+    async def set_component_transform(
+        self,
+        component: str,
+        origin_mm: list[float] | None = None,
+        rotation_rows: list[list[float]] | None = None,
+        fixed: bool | None = None,
+    ) -> AdapterResult[dict[str, Any]]:
+        """Mock placing a component: its stored origin, rotation and fixed state.
+
+        Args:
+            component (str): Instance name.
+            origin_mm (list[float] | None): The new origin; None keeps it.
+            rotation_rows (list[list[float]] | None): The new axes; None
+                keeps them.
+            fixed (bool | None): Fix or float it; None keeps it.
+
+        Returns:
+            AdapterResult[dict[str, Any]]: As the live adapter's.
+        """
+        if getattr(self._current_model, "type", None) != "Assembly":
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error="set_component_transform requires an assembly document",
+            )
+        if component not in self._components:
+            return AdapterResult(
+                status=AdapterResultStatus.ERROR,
+                error=(
+                    f"Component(s) not found: {component}. The assembly holds: "
+                    f"{', '.join(self._components) or 'nothing'}."
+                ),
+            )
+        identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        held = self._component_transforms.setdefault(
+            component, {"origin_mm": [0.0, 0.0, 0.0], "rotation": identity}
+        )
+        before = {"origin_mm": list(held["origin_mm"]), "rotation": held["rotation"]}
+        if origin_mm is not None:
+            held["origin_mm"] = [float(c) for c in origin_mm]
+        if rotation_rows is not None:
+            held["rotation"] = [[float(x) for x in row] for row in rotation_rows]
+        state = self._component_states.setdefault(
+            component, {"fixed": False, "flexible": False}
+        )
+        if fixed is not None:
+            state["fixed"] = bool(fixed)
+        mates = sum(1 for m in self._mates if component in m.get("components", []))
+        return AdapterResult(
+            status=AdapterResultStatus.SUCCESS,
+            data={
+                "component": component,
+                "placed": True,
+                "moved": before != held,
+                "fixed": state["fixed"],
+                "origin_mm": held["origin_mm"],
+                "rotation": held["rotation"],
+                "mates": mates,
+            },
         )
 
     async def set_component_state(

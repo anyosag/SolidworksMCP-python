@@ -209,6 +209,7 @@ SUPPORT_LEVELS: dict[str, Support] = {
     "select_face_edges": _STABLE,
     "select_feature": _STABLE,
     "set_component_state": _STABLE,
+    "set_component_transform": _UNCHECKED,
     "set_dimension": _STABLE,
     "set_rollback": _UNCHECKED,
     "set_units": _STABLE,
