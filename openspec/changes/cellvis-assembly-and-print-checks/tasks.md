@@ -15,7 +15,7 @@
 
 ## 2. Component placement
 
-- [ ] 2.1 `adapters/solidworks/placement.py`:
+- [x] 2.1 `adapters/solidworks/placement.py`:
   - `place(...)` with `rotation_rows` and `fixed` (D1), and `rotation_rows_from_deg`;
   - an orthonormal check for matrices;
   - `insert_component` moves to `place`;
