@@ -1188,6 +1188,7 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         "Cut": "Cut",
         "Revolve": "Revolution",
         "Fillet": "Fillet",
+        "Chamfer": "Chamfer",
     }
     #: ``edit_feature``'s change names -> the mock feature's parameter keys.
     _MOCK_EDIT_KEYS = {
@@ -1205,9 +1206,15 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
 
         The change rules (which feature takes which change) are the live
         ones (``feature_editing.check_changes``); the values are kept in the
-        feature's ``parameters``.
+        feature's ``parameters``. New edges for a fillet or chamfer come from
+        the mock selection's edges or the canned block's edges an edge query
+        matches (as ``select_edges``); the mock keeps every edge given.
         """
-        from .solidworks.feature_editing import check_changes, end_condition_value
+        from .solidworks.feature_editing import (
+            EDGE_CHANGES,
+            check_changes,
+            end_condition_value,
+        )
 
         if not self._current_model:
             return AdapterResult(
@@ -1223,20 +1230,69 @@ class MockSolidWorksAdapter(SolidWorksAdapter):
         problem = check_changes(kind, changes, name)
         if problem:
             return AdapterResult(status=AdapterResultStatus.ERROR, error=problem)
+        try:
+            edges = self._mock_new_edges(name, changes)
+        except (LookupError, ValueError) as exc:
+            return AdapterResult(status=AdapterResultStatus.ERROR, error=str(exc))
         parameters = feature.parameters if feature.parameters is not None else {}
         feature.parameters = parameters
-        before = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in changes}
-        for key, value in changes.items():
+        plain = {k: v for k, v in changes.items() if k not in EDGE_CHANGES}
+        before = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in plain}
+        for key, value in plain.items():
             if key == "end_condition":
                 value = end_condition_value(str(value))[0]
             parameters[self._MOCK_EDIT_KEYS[key]] = value
-        after = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in changes}
+        after = {key: parameters.get(self._MOCK_EDIT_KEYS[key]) for key in plain}
+        data: dict[str, Any] = {
+            "feature": name,
+            "type": kind,
+            "before": before,
+            "after": after,
+        }
+        if edges is not None:
+            data["edges_before"] = len(parameters.get("edges") or [])
+            parameters["edges"] = edges
+            data["edges_given"] = data["edges_after"] = len(edges)
         self._operation_count += 1
         return AdapterResult(
             status=AdapterResultStatus.SUCCESS,
-            data={"feature": name, "type": kind, "before": before, "after": after},
+            data=data,
             execution_time=self._delays["feature_operation"],
         )
+
+    def _mock_new_edges(self, name: str, changes: dict[str, Any]) -> list[str] | None:
+        """The edge names ``changes`` gives a mock fillet or chamfer, or None.
+
+        ``edges: "selection"`` takes the selected ``Edge<n>`` names;
+        ``edge_rules`` names the canned block's matching edges ``Edge<n>``,
+        as ``select_edges`` does.
+
+        Raises:
+            ValueError: No edge selected or matched (the live message).
+            LookupError: A rule's feature, face or plane isn't there.
+        """
+        from .solidworks.edge_rules import expand_query, match_rules
+        from .solidworks.feature_editing import (
+            edge_query,
+            no_edges_message,
+            rules_reason,
+            selection_reason,
+        )
+
+        if "edge_rules" in changes:
+            rules = expand_query(edge_query(changes["edge_rules"]))
+            kept, counts = match_rules(rules, self._mock_rule_edges)
+            if not kept:
+                raise ValueError(no_edges_message(name, rules_reason(rules, counts)))
+            return [f"Edge{i}" for i in range(len(kept))]
+        if "edges" not in changes:
+            return None
+        edges = [s for s in self._selection if s.startswith("Edge")]
+        if not edges:
+            raise ValueError(
+                no_edges_message(name, selection_reason(len(self._selection)))
+            )
+        return edges
 
     async def set_rollback(
         self, before: str | None = None, after: str | None = None

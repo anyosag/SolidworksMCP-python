@@ -173,22 +173,44 @@ class SolidWorksFeaturesMixin:
     ) -> AdapterResult[dict[str, Any]]:
         """Change an existing feature's parameters (``feature_editing``).
 
+        New edges for a fillet or chamfer also get the part's volume before
+        and after, read as ``add_fillet`` reads it: without a rebuild, which
+        would clear the selection ``edges: "selection"`` takes.
+
         Args:
             name: The feature's tree name.
             changes: ``depth`` (mm), ``end_condition``, ``reverse_direction``,
-                ``angle`` (degrees) or ``radius`` (mm).
+                ``angle`` (degrees) or ``radius`` (mm); for a fillet or
+                chamfer ``edges: "selection"`` or ``edge_rules`` (a
+                ``select_edges`` query).
 
         Returns:
             AdapterResult[dict[str, Any]]: ``feature``, ``type``, ``before``
-            and ``after`` (read back after the rebuild).
+            and ``after`` (read back after the rebuild); with new edges also
+            ``edges_before``, ``edges_given``, ``edges_after`` and, when the
+            volume reads both times, ``measured_change``.
         """
-        from .feature_editing import edit_feature
+        from .feature_editing import EDGE_CHANGES, edit_feature
 
-        return _feature_edit_operation(
+        replacing = bool(EDGE_CHANGES & set(changes)) and bool(
+            getattr(self, "currentModel", None)
+        )
+        volume_before = await _volume_keeping_selection(self) if replacing else None
+        result = _feature_edit_operation(
             self,
             "edit_feature",
             lambda: edit_feature(self, name, changes, _null_callout()),
         )
+        if volume_before is None or not result.is_success:
+            return result
+        volume_after = await _volume_keeping_selection(self)
+        if volume_after is not None and isinstance(result.data, dict):
+            result.data["measured_change"] = {
+                "volume_before_mm3": volume_before,
+                "volume_after_mm3": volume_after,
+                "volume_delta_mm3": round(volume_after - volume_before, 4),
+            }
+        return result
 
     async def set_rollback(
         self, before: str | None = None, after: str | None = None

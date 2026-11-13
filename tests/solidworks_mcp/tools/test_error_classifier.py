@@ -96,6 +96,20 @@ def classifier() -> ErrorClassifier:
         ("No .sldmat libraries found in: C:/x", "not_found"),
         ("The active part has no sheet-metal body", "not_found"),
         (
+            "No matching edges found: the part has 12 edge(s); 0 pass edge_type.",
+            "not_found",
+        ),
+        (
+            "Failed to edit Fillet1: No new edges for 'Fillet1', so it is "
+            "unchanged: nothing is selected.",
+            "invalid_input",
+        ),
+        (
+            "No new edges for 'Chamfer1', so it is unchanged: no matching edges "
+            "found: the part has 12 edge(s); 0 pass edge_type.",
+            "invalid_input",
+        ),
+        (
             "SolidWorks showed a dialog during open_model, 'SOLIDWORKS': File "
             "not found; the server cancelled it.",
             "solidworks_dialog",
